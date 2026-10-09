@@ -1,0 +1,218 @@
+// SPDX-License-Identifier: MIT
+
+#include "game/sheet.h"
+
+#include <bit>
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <optional>
+#include <span>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "common/bytes.h"
+
+namespace hsf::game
+{
+namespace
+{
+
+constexpr uint32_t kSymbolTable = 2;  // SHT_SYMTAB
+constexpr uint32_t kRelocations = 4;  // SHT_RELA
+constexpr uint32_t kAbsolute64 = 257; // R_AARCH64_ABS64
+constexpr uint16_t kAarch64 = 183;    // EM_AARCH64
+
+// The sound effect list's records (s_SoundEffectList, counted by s_SoundEffectListCount): 0x88 bytes, a pointer to the
+// name at +0x0, the type at +0x8 (1 for an I3DL2 reverb), and an I3DL2 reverb's 12 parameters from +0x38.
+constexpr std::size_t kRecordSize = 0x88;
+constexpr uint32_t kI3dl2Type = 1;
+constexpr std::size_t kI3dl2Parameters = 0x38;
+
+bool Fits(std::size_t size, uint64_t offset, uint64_t length)
+{
+    return offset <= size && length <= size - offset;
+}
+
+} // namespace
+
+std::optional<std::string> Sheet::Parse(std::vector<uint8_t> data, Sheet& out)
+{
+    out = Sheet{};
+    const std::size_t size = data.size();
+    if (size < 0x40 || data[0] != 0x7F || data[1] != 'E' || data[2] != 'L' || data[3] != 'F' || data[4] != 2 ||
+        data[5] != 1 || LoadLe16(&data[0x12]) != kAarch64)
+    {
+        return std::string("not a little-endian 64-bit AArch64 ELF object");
+    }
+
+    // The sections.
+    const uint64_t table = LoadLe64(&data[0x28]);
+    const uint16_t entry = LoadLe16(&data[0x3A]);
+    const uint16_t count = LoadLe16(&data[0x3C]);
+    if (entry < 0x40 || !Fits(size, table, uint64_t{entry} * count))
+    {
+        return std::string("its section headers run past its end");
+    }
+
+    struct Header
+    {
+        uint32_t type;
+        uint64_t offset;
+        uint64_t size;
+        uint32_t link;
+        uint32_t info;
+    };
+    std::vector<Header> headers;
+    for (uint16_t i = 0; i < count; ++i)
+    {
+        const uint8_t* h = &data[table + uint64_t{entry} * i];
+        Header header{LoadLe32(h + 4), LoadLe64(h + 0x18), LoadLe64(h + 0x20), LoadLe32(h + 0x28), LoadLe32(h + 0x2C)};
+        const bool has_bytes = header.type != 8; // SHT_NOBITS has none
+        if (has_bytes && !Fits(size, header.offset, header.size))
+        {
+            return "section " + std::to_string(i) + " runs past its end";
+        }
+
+        out.sections_.push_back({header.offset, has_bytes ? header.size : 0});
+        headers.push_back(header);
+    }
+
+    // The symbols, and the pointers that the relocations fill in.
+    std::vector<std::pair<uint16_t, uint64_t>> symbol_targets;
+    for (const Header& h : headers)
+    {
+        if (h.type != kSymbolTable || h.link >= headers.size())
+        {
+            continue;
+        }
+
+        const Header& strings = headers[h.link];
+        for (uint64_t at = h.offset; at + 24 <= h.offset + h.size; at += 24)
+        {
+            const uint32_t name = LoadLe32(&data[at]);
+            const uint16_t section = LoadLe16(&data[at + 6]);
+            const uint64_t value = LoadLe64(&data[at + 8]);
+            symbol_targets.emplace_back(section, value);
+            if (name == 0 || name >= strings.size)
+            {
+                continue;
+            }
+
+            const auto* text = reinterpret_cast<const char*>(&data[strings.offset + name]);
+            const std::size_t length = std::string(text, static_cast<std::size_t>(strings.size - name)).find('\0');
+            if (length != std::string::npos)
+            {
+                out.symbols_[std::string(text, length)] = {section, value, LoadLe64(&data[at + 16])};
+            }
+        }
+    }
+    for (const Header& h : headers)
+    {
+        if (h.type != kRelocations || h.info >= headers.size())
+        {
+            continue;
+        }
+
+        for (uint64_t at = h.offset; at + 24 <= h.offset + h.size; at += 24)
+        {
+            const uint64_t info = LoadLe64(&data[at + 8]);
+            const uint64_t symbol = info >> 32;
+            if ((info & 0xFFFFFFFF) != kAbsolute64 || symbol >= symbol_targets.size())
+            {
+                continue;
+            }
+
+            const auto [section, value] = symbol_targets[symbol];
+            const auto addend = static_cast<uint64_t>(static_cast<int64_t>(LoadLe64(&data[at + 16])));
+            out.pointers_[{static_cast<uint16_t>(h.info), LoadLe64(&data[at])}] = {section, value + addend};
+        }
+    }
+
+    out.data_ = std::move(data);
+
+    return std::nullopt;
+}
+
+std::span<const uint8_t> Sheet::Symbol(const std::string& name) const
+{
+    const auto found = symbols_.find(name);
+    if (found == symbols_.end() || found->second.section >= sections_.size())
+    {
+        return {};
+    }
+
+    const Section& section = sections_[found->second.section];
+    if (!Fits(static_cast<std::size_t>(section.size), found->second.value, found->second.size))
+    {
+        return {};
+    }
+
+    return std::span<const uint8_t>(data_).subspan(static_cast<std::size_t>(section.offset + found->second.value),
+                                                   static_cast<std::size_t>(found->second.size));
+}
+
+std::optional<std::string> Sheet::StringAt(const std::string& name, std::size_t offset) const
+{
+    const auto symbol = symbols_.find(name);
+    if (symbol == symbols_.end())
+    {
+        return std::nullopt;
+    }
+
+    const auto pointer = pointers_.find({symbol->second.section, symbol->second.value + offset});
+    if (pointer == pointers_.end() || pointer->second.section >= sections_.size())
+    {
+        return std::nullopt;
+    }
+
+    const Section& section = sections_[pointer->second.section];
+    if (pointer->second.offset >= section.size)
+    {
+        return std::nullopt;
+    }
+
+    const auto* text =
+        reinterpret_cast<const char*>(&data_[static_cast<std::size_t>(section.offset + pointer->second.offset)]);
+    const std::string rest(text, static_cast<std::size_t>(section.size - pointer->second.offset));
+    return rest.substr(0, rest.find('\0'));
+}
+
+std::map<std::string, I3dl2Preset> ReadI3dl2Presets(const Sheet& sheet)
+{
+    std::map<std::string, I3dl2Preset> presets;
+    const std::span<const uint8_t> count_bytes = sheet.Symbol("s_SoundEffectListCount");
+    const std::span<const uint8_t> records = sheet.Symbol("s_SoundEffectList");
+    if (count_bytes.size() < 4)
+    {
+        return presets;
+    }
+
+    const uint32_t count = LoadLe32(count_bytes.data());
+    for (uint32_t i = 0; i < count && (i + 1) * kRecordSize <= records.size(); ++i)
+    {
+        const std::size_t base = i * kRecordSize;
+        const std::optional<std::string> name = sheet.StringAt("s_SoundEffectList", base);
+        if (!name || LoadLe32(&records[base + 8]) != kI3dl2Type)
+        {
+            continue;
+        }
+
+        I3dl2Preset p;
+        for (std::size_t k = 0; k < p.size(); ++k)
+        {
+            p[k] = std::bit_cast<float>(LoadLe32(&records[base + kI3dl2Parameters + 4 * k]));
+        }
+        p[2] = p[2] / 1000.0f;
+        p[3] = p[3] / 100.0f;
+        p[5] = p[5] / 1000.0f;
+        p[7] = p[7] / 1000.0f;
+        p[11] = p[11] / 100.0f;
+        presets[*name] = p;
+    }
+
+    return presets;
+}
+
+} // namespace hsf::game
