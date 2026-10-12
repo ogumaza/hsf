@@ -60,6 +60,53 @@ struct RendererParameter
     int32_t voice_count = 1;
 };
 
+// Sees each call that the client makes on a renderer once the renderer has taken it: the arguments the client passed,
+// and what the call gave back. A test makes the same calls on Nintendo's renderer through it. A renderer has no
+// observer unless one is set.
+class RendererObserver
+{
+public:
+    virtual ~RendererObserver() = default;
+
+    // The renderer as the client opened it (OpenAudioRenderer), when the observer is set.
+    virtual void OpenAudioRenderer(const RendererParameter& parameter) = 0;
+
+    virtual void AcquireVoiceSlot(int32_t sample_rate, int channel_count, SampleFormat format, int32_t priority,
+                                  const AdpcmCoefficients* coefficients, int voice) = 0;
+    virtual void ReleaseVoiceSlot(int voice) = 0;
+    virtual void SetVoicePlayState(int voice, PlayState state) = 0;
+    virtual void GetVoicePlayState(int voice, PlayState state) = 0;
+    virtual void SetVoicePitch(int voice, float pitch) = 0;
+    virtual void SetVoiceVolume(int voice, float volume) = 0;
+    virtual void SetVoicePriority(int voice, int32_t priority) = 0;
+    virtual void SetVoiceSrcQuality(int voice, SrcQuality quality) = 0;
+    virtual void SetVoiceBiquadFilterParameter(int voice, int index, const BiquadFilterParameter& parameter) = 0;
+    virtual void SetVoiceDestination(int voice, int mix) = 0;
+    virtual void SetVoiceMixVolume(int voice, float volume, int channel, int buffer) = 0;
+    virtual void AppendWaveBuffer(int voice, const WaveBufferInfo& buffer, bool appended) = 0;
+    virtual void GetReleasedWaveBuffer(int voice, const void* tag) = 0;
+    virtual void GetVoicePlayedSampleCount(int voice, uint64_t count) = 0;
+    virtual void IsVoiceDroppedFlagOn(int voice, bool dropped) = 0;
+    virtual void AcquireFinalMix(int buffer_count, bool acquired) = 0;
+    virtual void AcquireSubMix(int32_t sample_rate, int buffer_count, int sub_mix) = 0;
+    virtual void SetSubMixDestination(int sub_mix, int destination) = 0;
+    virtual void SetSubMixMixVolume(int sub_mix, float volume, int source, int destination) = 0;
+    virtual void AddDeviceSink(std::span<const int> inputs) = 0;
+    virtual void AddAux(int mix, uint32_t buffer_size, int aux) = 0;
+    virtual void SetAuxInputOutput(int aux, std::span<const int8_t> inputs, std::span<const int8_t> outputs) = 0;
+    virtual void SetAuxEnabled(int aux, bool enabled) = 0;
+    virtual void GetAuxSampleCount(int aux, int32_t count) = 0;
+    virtual void GetAuxSampleRate(int aux, int32_t rate) = 0;
+
+    // The client's buffer after the read, with how many samples the renderer gave. The samples the client wrote, with
+    // how many the renderer took.
+    virtual void ReadAuxSendBuffer(int aux, std::span<const int32_t> samples, int32_t read) = 0;
+    virtual void WriteAuxReturnBuffer(int aux, std::span<const int32_t> samples, int32_t written) = 0;
+
+    // A frame: the update, and the command list's generation and processing.
+    virtual void RenderFrame() = 0;
+};
+
 class Renderer
 {
 public:
@@ -77,6 +124,10 @@ public:
     {
         return parameter_;
     }
+
+    // Shows every call from now on to `observer`, or to none when it's null, starting with the parameter the renderer
+    // was opened with. The observer has to outlive the renderer, or be replaced first.
+    void SetObserver(RendererObserver* observer);
 
     // A voice is its slot, or -1 when there is no free slot or not enough channel resources (AcquireVoiceSlot). A new
     // voice is stopped, at pitch 1 and volume 1, with no destination.
@@ -274,6 +325,16 @@ private:
     void Insert(int voice);
     void Remove(int voice);
 
+    // What the client calls of the same names do, before the observer sees them.
+    int TakeVoiceSlot(int32_t sample_rate, int channel_count, SampleFormat format, int32_t priority,
+                      const AdpcmCoefficients* coefficients);
+    bool QueueWaveBuffer(int voice, const WaveBufferInfo& buffer);
+    const void* TakeReleasedWaveBuffer(int voice);
+    bool TakeFinalMix(int buffer_count);
+    int TakeSubMix(int32_t sample_rate, int buffer_count);
+    int32_t ReadAuxSend(int aux, std::span<int32_t> samples);
+    int32_t WriteAuxReturn(int aux, std::span<const int32_t> samples);
+
     void Update();
     void Generate();
     void LayOutMixes();
@@ -295,6 +356,7 @@ private:
     std::vector<int32_t> buffers_; // the mix buffers, then a working buffer for each channel a voice may have
     std::vector<int32_t> depop_;   // a value for each mix buffer
     std::vector<int16_t> output_;
+    RendererObserver* observer_ = nullptr;
 };
 
 } // namespace hsf::audio

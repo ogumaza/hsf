@@ -68,7 +68,6 @@ struct DecodeFromWaveBuffersArgs
     int32_t count = 240;
     const AdpcmCoefficients* coefficients = nullptr;
     bool reset_played_at_loop = false;
-    bool skip_src = false;
 };
 
 // Decodes and converts `count` samples of one channel into `out` (nn::audio::DecodeFromWaveBuffers, 0x6eda0). The

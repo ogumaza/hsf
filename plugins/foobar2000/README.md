@@ -9,7 +9,7 @@ Clang builds it into one bundle for Apple Silicon and Intel. CI builds the compo
 changes more than documentation. The Windows jobs build it with clang-cl for x64 and x86, and with MSVC for x64. The
 macOS ARM64 job builds it for Apple Silicon only. The bundle with both Mac architectures comes from the manual workflow
 (see "Building"). Releases include a package for 64-bit and 32-bit foobar2000 on Windows
-(`.github/workflows/release.yml`). `ctest` covers the player core and rendering ahead.
+(`.github/workflows/release.yml`). `ctest` covers the player core. xsflib's tests cover rendering ahead.
 
 ## Features
 
@@ -37,13 +37,12 @@ macOS ARM64 job builds it for Apple Silicon only. The bundle with both Mac archi
 (`.github/workflows/foobar2000.yml`) builds the 32-bit and 64-bit DLLs and the Mac bundle. The workflow uploads one
 `.fb2k-component` with all three. Start it from the repository's Actions tab (Run workflow). GitHub lists a manual
 workflow only once it's on the default branch (`main`). The workflow requires GitHub Actions to be enabled for the
-repository. The workflow downloads the SDK version specified in `.github/actions/foobar2000-sdk/action.yml` from
-foobar2000.org. CI uses the same version.
+repository. The workflow downloads the SDK version that xsflib's action, `externals/xsflib/ci/foobar2000-sdk`, names
+from foobar2000.org. CI uses the same version.
 
 To build it yourself, you need the foobar2000 SDK, from <https://www.foobar2000.org/SDK>. Unpack it and use the folder
-containing `pfc` and `foobar2000` as the SDK path below. CI builds with the version that
-`.github/actions/foobar2000-sdk/action.yml` specifies. A newer SDK may require changes to
-`plugins/foobar2000/CMakeLists.txt`.
+containing `pfc` and `foobar2000` as the SDK path below. CI builds with the version that xsflib's action names. A newer
+SDK may require changes to xsflib's `cmake/XsflibApps.cmake`.
 
 **On macOS:** you need the Xcode command line tools (`xcode-select --install`), CMake 3.20 or later, and the SDK
 unpacked somewhere (macOS's `tar -xf SDK-<date>.7z` unpacks it).
@@ -77,8 +76,8 @@ ClangCL` selects MSVC. MSVC should produce the same audio.
 
 The build compiles the SDK's `pfc`, `foobar2000/SDK` and `foobar2000/foobar2000_component_client` sources directly. On
 Windows, the build links `foobar2000/shared/shared-<arch>.lib` (or `shared.lib`). On macOS, the build compiles the parts
-of `foobar2000/shared` and the Objective-C++ files that the SDK's Xcode projects build. If the SDK layout has changed,
-adjust `plugins/foobar2000/CMakeLists.txt`.
+of `foobar2000/shared` and the Objective-C++ files that the SDK's Xcode projects build. xsflib's
+`xsflib_add_foobar2000_component` (`cmake/XsflibApps.cmake`) does this.
 
 On Windows, everything is built with the static C runtime (`/MT`). So the component requires no runtime DLLs. On macOS,
 the component uses only the system's libraries.

@@ -69,6 +69,15 @@ Renderer::Renderer(const RendererParameter& parameter)
     mixes_[kFinalMix].sample_rate = parameter.sample_rate;
 }
 
+void Renderer::SetObserver(RendererObserver* observer)
+{
+    observer_ = observer;
+    if (observer_ != nullptr)
+    {
+        observer_->OpenAudioRenderer(parameter_);
+    }
+}
+
 Renderer::Voice& Renderer::At(int voice)
 {
     return voices_.at(static_cast<std::size_t>(voice));
@@ -95,6 +104,18 @@ void Renderer::Remove(int voice)
 
 int Renderer::AcquireVoiceSlot(int32_t sample_rate, int channel_count, SampleFormat format, int32_t priority,
                                const AdpcmCoefficients* coefficients)
+{
+    const int voice = TakeVoiceSlot(sample_rate, channel_count, format, priority, coefficients);
+    if (observer_ != nullptr)
+    {
+        observer_->AcquireVoiceSlot(sample_rate, channel_count, format, priority, coefficients, voice);
+    }
+
+    return voice;
+}
+
+int Renderer::TakeVoiceSlot(int32_t sample_rate, int channel_count, SampleFormat format, int32_t priority,
+                            const AdpcmCoefficients* coefficients)
 {
     // A free slot, and the first free channel resources, one for each channel.
     const auto slot = std::find_if(voices_.begin(), voices_.end(), [](const Voice& v) { return !v.in_use; });
@@ -149,26 +170,48 @@ void Renderer::ReleaseVoiceSlot(int voice)
     }
     v.in_use = false;
     Remove(voice);
+    if (observer_ != nullptr)
+    {
+        observer_->ReleaseVoiceSlot(voice);
+    }
 }
 
 void Renderer::SetVoicePlayState(int voice, PlayState state)
 {
     At(voice).play_state = state;
+    if (observer_ != nullptr)
+    {
+        observer_->SetVoicePlayState(voice, state);
+    }
 }
 
 PlayState Renderer::GetVoicePlayState(int voice) const
 {
-    return At(voice).play_state;
+    const PlayState state = At(voice).play_state;
+    if (observer_ != nullptr)
+    {
+        observer_->GetVoicePlayState(voice, state);
+    }
+
+    return state;
 }
 
 void Renderer::SetVoicePitch(int voice, float pitch)
 {
     At(voice).pitch = pitch;
+    if (observer_ != nullptr)
+    {
+        observer_->SetVoicePitch(voice, pitch);
+    }
 }
 
 void Renderer::SetVoiceVolume(int voice, float volume)
 {
     At(voice).volume = volume;
+    if (observer_ != nullptr)
+    {
+        observer_->SetVoiceVolume(voice, volume);
+    }
 }
 
 void Renderer::SetVoicePriority(int voice, int32_t priority)
@@ -176,30 +219,61 @@ void Renderer::SetVoicePriority(int voice, int32_t priority)
     At(voice).priority = priority;
     Remove(voice);
     Insert(voice);
+    if (observer_ != nullptr)
+    {
+        observer_->SetVoicePriority(voice, priority);
+    }
 }
 
 void Renderer::SetVoiceSrcQuality(int voice, SrcQuality quality)
 {
     At(voice).quality = quality;
+    if (observer_ != nullptr)
+    {
+        observer_->SetVoiceSrcQuality(voice, quality);
+    }
 }
 
 void Renderer::SetVoiceBiquadFilterParameter(int voice, int index, const BiquadFilterParameter& parameter)
 {
     At(voice).biquads.at(static_cast<std::size_t>(index)) = parameter;
+    if (observer_ != nullptr)
+    {
+        observer_->SetVoiceBiquadFilterParameter(voice, index, parameter);
+    }
 }
 
 void Renderer::SetVoiceDestination(int voice, int mix)
 {
     At(voice).mix = mix;
+    if (observer_ != nullptr)
+    {
+        observer_->SetVoiceDestination(voice, mix);
+    }
 }
 
 void Renderer::SetVoiceMixVolume(int voice, float volume, int channel, int buffer)
 {
     const int resource = At(voice).resources.at(static_cast<std::size_t>(channel));
     resources_[static_cast<std::size_t>(resource)].client_mix.at(static_cast<std::size_t>(buffer)) = volume;
+    if (observer_ != nullptr)
+    {
+        observer_->SetVoiceMixVolume(voice, volume, channel, buffer);
+    }
 }
 
 bool Renderer::AppendWaveBuffer(int voice, const WaveBufferInfo& buffer)
+{
+    const bool appended = QueueWaveBuffer(voice, buffer);
+    if (observer_ != nullptr)
+    {
+        observer_->AppendWaveBuffer(voice, buffer, appended);
+    }
+
+    return appended;
+}
+
+bool Renderer::QueueWaveBuffer(int voice, const WaveBufferInfo& buffer)
 {
     Voice& v = At(voice);
     if (v.buffer_count >= kWaveBufferCount)
@@ -217,6 +291,17 @@ bool Renderer::AppendWaveBuffer(int voice, const WaveBufferInfo& buffer)
 
 const void* Renderer::GetReleasedWaveBuffer(int voice)
 {
+    const void* tag = TakeReleasedWaveBuffer(voice);
+    if (observer_ != nullptr)
+    {
+        observer_->GetReleasedWaveBuffer(voice, tag);
+    }
+
+    return tag;
+}
+
+const void* Renderer::TakeReleasedWaveBuffer(int voice)
+{
     Voice& v = At(voice);
     if (v.consumed == v.released || v.buffer_count == 0)
     {
@@ -233,15 +318,38 @@ const void* Renderer::GetReleasedWaveBuffer(int voice)
 
 uint64_t Renderer::GetVoicePlayedSampleCount(int voice) const
 {
-    return At(voice).played;
+    const uint64_t count = At(voice).played;
+    if (observer_ != nullptr)
+    {
+        observer_->GetVoicePlayedSampleCount(voice, count);
+    }
+
+    return count;
 }
 
 bool Renderer::IsVoiceDroppedFlagOn(int voice) const
 {
-    return At(voice).dropped;
+    const bool dropped = At(voice).dropped;
+    if (observer_ != nullptr)
+    {
+        observer_->IsVoiceDroppedFlagOn(voice, dropped);
+    }
+
+    return dropped;
 }
 
 bool Renderer::AcquireFinalMix(int buffer_count)
+{
+    const bool acquired = TakeFinalMix(buffer_count);
+    if (observer_ != nullptr)
+    {
+        observer_->AcquireFinalMix(buffer_count, acquired);
+    }
+
+    return acquired;
+}
+
+bool Renderer::TakeFinalMix(int buffer_count)
 {
     Mix& mix = mixes_[kFinalMix];
     if (mix.in_use || buffer_count < 1 || buffer_count > kMaxMixBuffers)
@@ -258,6 +366,17 @@ bool Renderer::AcquireFinalMix(int buffer_count)
 }
 
 int Renderer::AcquireSubMix(int32_t sample_rate, int buffer_count)
+{
+    const int sub_mix = TakeSubMix(sample_rate, buffer_count);
+    if (observer_ != nullptr)
+    {
+        observer_->AcquireSubMix(sample_rate, buffer_count, sub_mix);
+    }
+
+    return sub_mix;
+}
+
+int Renderer::TakeSubMix(int32_t sample_rate, int buffer_count)
 {
     for (std::size_t id = 1; id < mixes_.size(); ++id)
     {
@@ -288,18 +407,30 @@ void Renderer::SetSubMixDestination(int sub_mix, int destination)
 {
     mixes_.at(static_cast<std::size_t>(sub_mix)).destination = destination;
     mixes_changed_ = true;
+    if (observer_ != nullptr)
+    {
+        observer_->SetSubMixDestination(sub_mix, destination);
+    }
 }
 
 void Renderer::SetSubMixMixVolume(int sub_mix, float volume, int source, int destination)
 {
     Mix& mix = mixes_.at(static_cast<std::size_t>(sub_mix));
     mix.mix_volumes.at(static_cast<std::size_t>(source)).at(static_cast<std::size_t>(destination)) = volume;
+    if (observer_ != nullptr)
+    {
+        observer_->SetSubMixMixVolume(sub_mix, volume, source, destination);
+    }
 }
 
 void Renderer::AddDeviceSink(std::span<const int> inputs)
 {
     sinks_.assign(inputs.begin(), inputs.end());
     output_.assign(static_cast<std::size_t>(parameter_.sample_count) * sinks_.size(), 0);
+    if (observer_ != nullptr)
+    {
+        observer_->AddDeviceSink(inputs);
+    }
 }
 
 uint32_t Renderer::GetRequiredBufferSizeForAuxSendReturnBuffer(const RendererParameter& parameter, int frames,
@@ -325,6 +456,10 @@ int Renderer::AddAux(int mix, uint32_t buffer_size)
 
     const int id = static_cast<int>(auxes_.size()) - 1;
     mixes_.at(static_cast<std::size_t>(mix)).effects.push_back(id);
+    if (observer_ != nullptr)
+    {
+        observer_->AddAux(mix, buffer_size, id);
+    }
 
     return id;
 }
@@ -339,6 +474,10 @@ void Renderer::SetAuxInputOutput(int aux, std::span<const int8_t> inputs, std::s
     a.ring = count < 1 ? 0
                        : a.capacity_frames / static_cast<uint32_t>(count) * static_cast<uint32_t>(count) *
                              static_cast<uint32_t>(parameter_.sample_count);
+    if (observer_ != nullptr)
+    {
+        observer_->SetAuxInputOutput(aux, inputs, outputs);
+    }
 }
 
 void Renderer::SetAuxEnabled(int aux, bool enabled)
@@ -347,19 +486,46 @@ void Renderer::SetAuxEnabled(int aux, bool enabled)
     a.enabled = enabled;
     a.send_read = 0;
     a.receive_write = 0;
+    if (observer_ != nullptr)
+    {
+        observer_->SetAuxEnabled(aux, enabled);
+    }
 }
 
 int32_t Renderer::GetAuxSampleCount(int aux) const
 {
-    return static_cast<int32_t>(auxes_.at(static_cast<std::size_t>(aux)).capacity);
+    const auto count = static_cast<int32_t>(auxes_.at(static_cast<std::size_t>(aux)).capacity);
+    if (observer_ != nullptr)
+    {
+        observer_->GetAuxSampleCount(aux, count);
+    }
+
+    return count;
 }
 
 int32_t Renderer::GetAuxSampleRate(int aux) const
 {
-    return mixes_.at(static_cast<std::size_t>(auxes_.at(static_cast<std::size_t>(aux)).mix)).sample_rate;
+    const int32_t rate = mixes_.at(static_cast<std::size_t>(auxes_.at(static_cast<std::size_t>(aux)).mix)).sample_rate;
+    if (observer_ != nullptr)
+    {
+        observer_->GetAuxSampleRate(aux, rate);
+    }
+
+    return rate;
 }
 
 int32_t Renderer::ReadAuxSendBuffer(int aux, std::span<int32_t> samples)
+{
+    const int32_t count = ReadAuxSend(aux, samples);
+    if (observer_ != nullptr)
+    {
+        observer_->ReadAuxSendBuffer(aux, samples, count);
+    }
+
+    return count;
+}
+
+int32_t Renderer::ReadAuxSend(int aux, std::span<int32_t> samples)
 {
     // Everything the renderer has written since the last read, up to the span.
     Aux& a = auxes_.at(static_cast<std::size_t>(aux));
@@ -381,6 +547,17 @@ int32_t Renderer::ReadAuxSendBuffer(int aux, std::span<int32_t> samples)
 }
 
 int32_t Renderer::WriteAuxReturnBuffer(int aux, std::span<const int32_t> samples)
+{
+    const int32_t written = WriteAuxReturn(aux, samples);
+    if (observer_ != nullptr)
+    {
+        observer_->WriteAuxReturnBuffer(aux, samples, written);
+    }
+
+    return written;
+}
+
+int32_t Renderer::WriteAuxReturn(int aux, std::span<const int32_t> samples)
 {
     // As far as the renderer's next read, or a whole ring when the two are at the same place.
     Aux& a = auxes_.at(static_cast<std::size_t>(aux));
@@ -410,6 +587,10 @@ void Renderer::RenderFrame()
 {
     Update();
     Generate();
+    if (observer_ != nullptr)
+    {
+        observer_->RenderFrame();
+    }
 }
 
 // RequestUpdateAudioRenderer: the renderer takes the client's parameters, and the client takes the voices' statuses.
@@ -470,12 +651,14 @@ void Renderer::Update()
             {
                 continue;
             }
+
             const uint64_t size = info.buffer.size();
-            const bool fits =
-                voice.format == SampleFormat::kAdpcm
-                    ? static_cast<uint64_t>(AdpcmBytes(info.start)) <= size &&
-                          static_cast<uint64_t>(AdpcmBytes(info.end)) <= size
-                    : static_cast<uint64_t>(info.start) * 2 <= size && static_cast<uint64_t>(info.end) * 2 <= size;
+            const uint64_t bytes = voice.format == SampleFormat::kPcmFloat ? 4 : 2;
+            const bool fits = voice.format == SampleFormat::kAdpcm
+                                  ? static_cast<uint64_t>(AdpcmBytes(info.start)) <= size &&
+                                        static_cast<uint64_t>(AdpcmBytes(info.end)) <= size
+                                  : static_cast<uint64_t>(info.start) * bytes <= size &&
+                                        static_cast<uint64_t>(info.end) * bytes <= size;
             if (!fits)
             {
                 continue;
@@ -598,6 +781,7 @@ void Renderer::Generate()
                          {
                              return x.priority > y.priority;
                          }
+
                          return x.sort_order > y.sort_order;
                      });
     for (const int index : sorted)
@@ -793,6 +977,7 @@ void Renderer::RenderVoice(Voice& voice)
             {
                 continue;
             }
+
             if (!server.biquads_were_enabled[i])
             {
                 s.biquads[i] = {};
@@ -829,6 +1014,7 @@ void Renderer::RenderVoice(Voice& voice)
                 last = 0;
                 continue;
             }
+
             last = ApplyMixRamp(Buffer(destination->offset + b), work, start, RampStep(start, end, count), count,
                                 kGainBits);
         }

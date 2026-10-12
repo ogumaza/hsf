@@ -93,7 +93,7 @@ struct BiquadFilterState
 // The biquad filter in floating point (nn::audio::dsp::ApplyBiquadFilter, 0x6d620): y = b0 x + b1 x1 + b2 x2 + a1 y1 +
 // a2 y2 with the coefficients in Q14, the feedback terms added. The filter computes four samples at a time from
 // coefficients derived for each place in the block. The rounding therefore differs from the plain recursion's rounding.
-// `count` is a multiple of 4.
+// `count` is a multiple of 4, and `out` may be `in`.
 void ApplyBiquadFilter(float* out, const float* in, const std::array<int16_t, 3>& b, const std::array<int16_t, 2>& a,
                        BiquadFilterState& state, int count);
 

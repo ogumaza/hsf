@@ -93,6 +93,21 @@ std::optional<int> VoiceCount(const std::vector<uint8_t>& text)
     return std::nullopt;
 }
 
+// Adds the I3DL2 reverbs of a sound effect list to `out`. A list that doesn't parse adds none.
+void AddEffectList(std::vector<uint8_t> bytes, GameFiles& out)
+{
+    Sheet sheet;
+    if (Sheet::Parse(std::move(bytes), sheet))
+    {
+        return;
+    }
+
+    for (auto& [preset, parameters] : ReadI3dl2Presets(sheet))
+    {
+        out.i3dl2_presets[preset] = parameters;
+    }
+}
+
 // Where a file in a Bezel Engine archive is.
 struct InArchive
 {
@@ -123,14 +138,9 @@ void AddArchive(const fs::path& path, const std::string& prefix, GameFiles& out,
         }
 
         std::vector<uint8_t> sheet_bytes;
-        Sheet sheet;
-        if (asset.name == kEffectList && bea.Read(data, asset, sheet_bytes) &&
-            !Sheet::Parse(std::move(sheet_bytes), sheet))
+        if (asset.name == kEffectList && bea.Read(data, asset, sheet_bytes))
         {
-            for (auto& [preset, parameters] : ReadI3dl2Presets(sheet))
-            {
-                out.i3dl2_presets[preset] = parameters;
-            }
+            AddEffectList(std::move(sheet_bytes), out);
         }
     }
 }
@@ -180,7 +190,9 @@ std::optional<std::string> LoadGame(const fs::path& input, GameFiles& out)
         std::vector<std::pair<std::string, fs::path>> found;
         for (fs::recursive_directory_iterator it(input, ec), end; !ec && it != end; it.increment(ec))
         {
-            if (it->is_regular_file(ec))
+            // A file whose type can't be read, such as a broken link, is passed over. The walk goes on.
+            std::error_code type_error;
+            if (it->is_regular_file(type_error))
             {
                 found.emplace_back(it->path().lexically_relative(input).generic_string(), it->path());
             }
@@ -191,6 +203,8 @@ std::optional<std::string> LoadGame(const fs::path& input, GameFiles& out)
         }
 
         std::sort(found.begin(), found.end());
+        const fs::path* boot = nullptr;
+        std::ptrdiff_t boot_depth = 0;
         for (const auto& [name, path] : found)
         {
             out.files.push_back(name);
@@ -204,14 +218,32 @@ std::optional<std::string> LoadGame(const fs::path& input, GameFiles& out)
             {
                 AddArchive(path, name + "/", out, *in_archives);
             }
-            else if (name == kBoot)
+            else if (name == kEffectList || name.ends_with(std::string("/") + kEffectList))
             {
-                std::vector<uint8_t> text;
-                if (ReadFile(path, text, 1 << 20))
+                // The list in a Bezel Engine archive that was unpacked into a folder.
+                std::vector<uint8_t> sheet_bytes;
+                if (ReadFile(path, sheet_bytes))
                 {
-                    out.voice_count = VoiceCount(text);
+                    AddEffectList(std::move(sheet_bytes), out);
                 }
             }
+            else if (path.filename() == kBoot)
+            {
+                // The game's boot.lua is the one nearest the folder's top. The folder may be the RomFS or a folder that
+                // holds it.
+                const std::ptrdiff_t depth = std::count(name.begin(), name.end(), '/');
+                if (boot == nullptr || depth < boot_depth)
+                {
+                    boot = &path;
+                    boot_depth = depth;
+                }
+            }
+        }
+
+        std::vector<uint8_t> text;
+        if (boot != nullptr && ReadFile(*boot, text, 1 << 20))
+        {
+            out.voice_count = VoiceCount(text);
         }
 
         const fs::path root = input;

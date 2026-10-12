@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MIT
 
-// Tests the player and its playback (src/hsf/player.* and playback.*), on sets made from a small archive. The output
-// must be the model's output. A tagged length and fade must be kept. A set without a length must end half a second
-// after its sound. A seek must land where a straight render does. The volume tag must apply. A group file outside the
-// archive must be found. A reverb on an aux bus must play as the model plays it. A set that can't play must report why.
+// Tests the player and its playback (src/hsf/player.* and xsflib's Playback), on sets made from a small archive. The
+// output must be the model's output. A tagged length and fade must be kept. A set without a length must end half a
+// second after its sound. A seek must land where a straight render does. The volume tag must apply. A group file
+// outside the archive must be found. A reverb on an aux bus must play as the model plays it. A set that can't play must
+// report why.
+
+#include "hsf/player.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -17,14 +18,18 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/testing/sar_files.h"
+#include "xsflib/testing/check.h"
+#include "xsflib/testing/sets.h"
+
 #include "atk/effect.h"
 #include "atk/engine.h"
 #include "audio/i3dl2.h"
-#include "check.h"
-#include "fsar/formats.h"
-#include "fsar_files.h"
 #include "hsf/format.h"
-#include "hsf/playback.h"
+#include "hsf/sar.h"
+
+using namespace ntdlib::testing;
+using namespace xsflib::testing;
 
 namespace
 {
@@ -52,19 +57,19 @@ TestArchive MakeArchive(bool grouped)
     {
         samples[i + 1] = 0x10; // 0x1000, little-endian
     }
-    fsar_files::WaveSpec wave;
+    sar_files::WaveSpec wave;
     wave.encoding = 1;
     wave.loop_end = 32000;
     wave.channels = {samples};
 
-    fsar_files::Region region;
+    sar_files::Region region;
     region.original_key = 60;
     region.adshr = {127, 127, 127, 0, 127};
-    fsar_files::VelocityTable velocities;
+    sar_files::VelocityTable velocities;
     velocities.entries = {{0, region}};
-    fsar_files::KeyTable keys;
+    sar_files::KeyTable keys;
     keys.entries = {{0, velocities}};
-    fsar_files::BankSpec bank;
+    sar_files::BankSpec bank;
     bank.waves = {{0x05000000, 0}};
     bank.instruments = {keys};
 
@@ -73,10 +78,10 @@ TestArchive MakeArchive(bool grouped)
     const std::vector<uint8_t> kBytecode = {0xB0, 48,   0xE1, 120,  0x00, 60,   127,  24,   0xFF, 0xB0, 48,   0xE1,
                                             120,  0x00, 60,   127,  24,   0x89, 0x0E, 0x00, 0x00, 0xFF, 0xB0, 48,
                                             0xE1, 120,  0x00, 0xDB, 0,    0xD9, 127,  60,   127,  24,   0xFF};
-    fsar_files::ArchiveSpec spec;
+    sar_files::ArchiveSpec spec;
     for (const uint32_t start : {0u, 9u, 22u})
     {
-        fsar_files::SoundSpec sound;
+        sar_files::SoundSpec sound;
         sound.name = start == 0 ? "SEQ_NOTE" : start == 9 ? "SEQ_LOOP" : "SEQ_SENT";
         sound.volume = 127;
         sound.banks = {0};
@@ -86,34 +91,22 @@ TestArchive MakeArchive(bool grouped)
     spec.banks = {{"BANK", 1}};
     spec.wave_archives = {{"WARC", 2}};
     spec.players = {{"PLAYER", 2}};
-    const std::vector<uint8_t> waves = fsar_files::WaveArchive(false, {fsar_files::Wave(false, wave)});
-    spec.files = {{fsar_files::Sequence(false, kBytecode, {{"Start", 0}}), "", false},
-                  {fsar_files::Bank(false, bank), "", false},
+    const std::vector<uint8_t> waves = sar_files::WaveArchive(false, {sar_files::Wave(false, wave)});
+    spec.files = {{sar_files::Sequence(false, kBytecode, {{"Start", 0}}), "", false},
+                  {sar_files::Bank(false, bank), "", false},
                   {grouped ? std::vector<uint8_t>{} : waves, "", grouped}};
     if (grouped)
     {
         spec.groups = {{"GROUP_WAVES", 0xFFFFFFFF}};
     }
 
-    return {fsar_files::Archive(false, spec),
-            grouped ? fsar_files::Group(false, {{2, waves}}) : std::vector<uint8_t>{}};
+    return {sar_files::Archive(false, spec), grouped ? sar_files::Group(false, {{2, waves}}) : std::vector<uint8_t>{}};
 }
 
 // The files of the sets under test, and a reader of them.
 std::map<std::string, std::vector<uint8_t>> files;
 
-const hsf::FileReader kReader = [](const std::string& path, std::vector<uint8_t>& out)
-{
-    const auto it = files.find(std::filesystem::path(path).lexically_normal().generic_string());
-    if (it == files.end())
-    {
-        return false;
-    }
-
-    out = it->second;
-
-    return true;
-};
+const hsf::FileReader kReader = xsflib::testing::MapReader(files);
 
 // Writes a library holding `archive` (and its group file, if it has one) with `descriptor`, and returns the library's
 // path.
@@ -148,20 +141,7 @@ std::string WriteMini(const std::string& name, const std::string& library, uint3
 // The whole of a playback, rendered in blocks of `block` frames, or nothing if it doesn't start.
 std::vector<int16_t> RenderAll(const std::string& path, std::size_t block = 1000)
 {
-    hsf::Playback playback;
-    if (!Check(playback.Open(path, kReader) && playback.Start(), path + " plays: " + playback.Error()))
-    {
-        return {};
-    }
-
-    std::vector<int16_t> out;
-    std::vector<int16_t> buffer(block * 2);
-    while (const std::size_t got = playback.Render(buffer.data(), block))
-    {
-        out.insert(out.end(), buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(got * 2));
-    }
-
-    return out;
+    return xsflib::testing::RenderAll<hsf::Playback>(path, kReader, block);
 }
 
 // The model's output for `sound` (`frames` frames), with `reverb` on aux bus A when given, and the frame in which the
@@ -169,7 +149,7 @@ std::vector<int16_t> RenderAll(const std::string& path, std::size_t block = 1000
 std::vector<int16_t> ModelOutput(const std::vector<uint8_t>& archive_bytes, uint32_t sound, int frames, int& idle,
                                  const hsf::audio::I3dl2ReverbParameterSet* reverb = nullptr)
 {
-    const hsf::fsar::SoundArchive archive = hsf::fsar::SoundArchive::Load(archive_bytes);
+    const hsf::fsar::SoundArchive archive = hsf::fsar::SoundArchive::Load(archive_bytes, hsf::kSarOptions);
     hsf::atk::ArchiveModel model(archive);
     if (reverb)
     {
@@ -206,45 +186,17 @@ int main()
     // A tagged length and fade: 1 s, then a fade of half a second, rendered in blocks that don't divide a frame.
     const std::vector<int16_t> tagged =
         RenderAll(WriteMini("tagged", library, kLoop, {{"length", "0:01"}, {"fade", "0.5"}}), 1001);
-    Check(tagged.size() == 2 * 72000, "the tagged set plays for 1.5 s");
-    Check(tagged.size() >= 2 * 48000 && std::equal(tagged.begin(), tagged.begin() + 2 * 48000, loop.begin()),
-          "the tagged set plays the model's output");
-    bool faded = tagged.size() == 2 * 72000;
-    for (std::size_t i = 0; faded && i < 2 * 24000 && 2 * 48000 + i < loop.size(); ++i)
-    {
-        const double gain = 1.0 - static_cast<double>(i / 2) / 24000.0;
-        faded = tagged[2 * 48000 + i] == static_cast<int16_t>(std::round(loop[2 * 48000 + i] * gain));
-    }
-    Check(faded, "the fade falls linearly over its half second");
+    CheckLengthAndFade(tagged, loop, 48000, 24000);
 
     // Without a length, the sound ends half a second after the model goes idle and its output falls silent.
     const std::vector<int16_t> untagged = RenderAll(WriteMini("untagged", library, kNote, {}));
-    Check(idle > 0 && untagged.size() == 2 * (static_cast<std::size_t>(idle) * kFrame + 24000),
-          "the set without a length ends half a second after its sound");
-    Check(note.size() >= untagged.size() && std::equal(untagged.begin(), untagged.end(), note.begin()),
-          "the set without a length plays the model's output");
+    CheckEnd(untagged, note, static_cast<std::size_t>(idle) * kFrame, 24000);
 
     // A seek forward and a seek back land where the straight render does.
-    {
-        hsf::Playback playback;
-        std::vector<int16_t> buffer(2 * 1000);
-        const bool opened = playback.Open("sets/tagged.minihsf", kReader) && playback.Start();
-        const bool forward = opened && playback.Seek(30000) && playback.Render(buffer.data(), 1000) == 1000 &&
-                             std::equal(buffer.begin(), buffer.end(), tagged.begin() + 2 * 30000);
-        const bool back = opened && playback.Seek(10000) && playback.Position() == 10000 &&
-                          playback.Render(buffer.data(), 1000) == 1000 &&
-                          std::equal(buffer.begin(), buffer.end(), tagged.begin() + 2 * 10000);
-        Check(forward && back, "seeks land where a straight render does");
-    }
+    CheckSeeks<hsf::Playback>("sets/tagged.minihsf", kReader, tagged, {30000, 10000});
 
     // The volume tag scales every sample.
-    const std::vector<int16_t> quiet = RenderAll(WriteMini("quiet", library, kNote, {{"volume", "0.5"}}));
-    bool scaled = quiet.size() == untagged.size();
-    for (std::size_t i = 0; scaled && i < quiet.size(); ++i)
-    {
-        scaled = quiet[i] == static_cast<int16_t>(std::round(untagged[i] * 0.5));
-    }
-    Check(scaled, "the volume tag halves every sample");
+    CheckVolume(RenderAll(WriteMini("quiet", library, kNote, {{"volume", "0.5"}})), untagged, 0.5);
 
     // A wave archive that only a group file outside the archive holds is found there.
     const TestArchive grouped = MakeArchive(true);
@@ -298,19 +250,7 @@ int main()
         {WriteMini("absent", library, 0x01000005, {}), "isn't a sequence"},
         {WriteMini("bank", library, 0x05000000, {}), "isn't a sequence"},
         {WriteMini("many", many_library, kNote, {}), "voice count is 97"}};
-    for (const auto& [path, error] : refusals)
-    {
-        hsf::Playback playback;
-        const bool refused = !(playback.Open(path, kReader) && playback.Start());
-        Check(refused && playback.Error().find(error) != std::string::npos,
-              path + " is refused for its reason: " + playback.Error());
-    }
+    CheckRefusals<hsf::Playback>(refusals, kReader);
 
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
-        return 1;
-    }
-
-    return 0;
+    return xsflib::testing::Summary("player");
 }

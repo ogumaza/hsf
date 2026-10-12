@@ -5,18 +5,23 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <span>
+#include <string>
 #include <vector>
+
+#include "ntdlib/testing/sar_files.h"
+#include "xsflib/testing/check.h"
 
 #include "atk/engine.h"
 #include "atk/low_level_voice.h"
 #include "audio/renderer.h"
-#include "check.h"
-#include "fsar/formats.h"
-#include "fsar_files.h"
+#include "hsf/sar.h"
+
+using namespace ntdlib::testing;
+using namespace xsflib::testing;
 
 namespace
 {
@@ -46,7 +51,6 @@ struct Stage
         renderer.AcquireFinalMix(6);
         constexpr std::array<int, 2> kInputs = {0, 1};
         renderer.AddDeviceSink(kInputs);
-        receiver.type = atk::OutputReceiver::Type::kFinalMix;
         receiver.mix = audio::Renderer::kFinalMix;
         receiver.channel_count = 6;
         receiver.bus_count = 1;
@@ -87,6 +91,7 @@ void TestLowLevelVoice()
     {
         return;
     }
+
     const std::vector<uint8_t> wave = ConstantWave(4800, 10000);
     atk::WaveBuffer buffer;
     buffer.data = wave;
@@ -103,15 +108,15 @@ void TestLowLevelVoice()
     const bool started = voice->Slot() >= 0;
     stage.Frame();
 
-    HSF_CHECK(started && buffer.status == atk::WaveBuffer::Status::kPlay);
-    HSF_CHECK(stage.renderer.GetVoicePlayState(voice->Slot()) == audio::PlayState::kStarted);
+    XSFLIB_CHECK(started && buffer.status == atk::WaveBuffer::Status::kPlay);
+    XSFLIB_CHECK(stage.renderer.GetVoicePlayState(voice->Slot()) == audio::PlayState::kStarted);
     const std::span<const int16_t> output = stage.renderer.DeviceOutput();
-    HSF_CHECK(output.size() == 480 && output[0] == 4980 && output[1] == 1245 && output[478] == 4980);
+    XSFLIB_CHECK(output.size() == 480 && output[0] == 4980 && output[1] == 1245 && output[478] == 4980);
 
     // Stopping releases the renderer's voice at once, and the buffer is done.
     voice->FreeAllWaveBuffer();
     voice->SetState(atk::LowLevelVoice::State::kStop);
-    HSF_CHECK(voice->Slot() < 0 && buffer.status == atk::WaveBuffer::Status::kDone);
+    XSFLIB_CHECK(voice->Slot() < 0 && buffer.status == atk::WaveBuffer::Status::kDone);
 }
 
 void TestWaveBufferQueue()
@@ -126,6 +131,7 @@ void TestWaveBufferQueue()
     {
         return;
     }
+
     std::vector<uint8_t> wave = ConstantWave(100, 1000);
     const std::vector<uint8_t> rest = ConstantWave(300, 2000);
     wave.insert(wave.end(), rest.begin(), rest.end());
@@ -153,47 +159,47 @@ void TestWaveBufferQueue()
     stage.Frame();
     stage.Frame();
 
-    HSF_CHECK(frame1[2 * 50] == 995 && frame1[2 * 150] == 0 && frame1[2 * 239] == 0);
-    HSF_CHECK(frame2[2 * 100] == 1991 && frame2[2 * 239] == 1991);
-    HSF_CHECK(moved_on);
-    HSF_CHECK(second.status == atk::WaveBuffer::Status::kDone);
-    HSF_CHECK(stage.renderer.GetVoicePlayState(voice->Slot()) == audio::PlayState::kStopped);
+    XSFLIB_CHECK(frame1[2 * 50] == 995 && frame1[2 * 150] == 0 && frame1[2 * 239] == 0);
+    XSFLIB_CHECK(frame2[2 * 100] == 1991 && frame2[2 * 239] == 1991);
+    XSFLIB_CHECK(moved_on);
+    XSFLIB_CHECK(second.status == atk::WaveBuffer::Status::kDone);
+    XSFLIB_CHECK(stage.renderer.GetVoicePlayState(voice->Slot()) == audio::PlayState::kStopped);
 }
 
 // An archive with one sequence sound that plays `bytecode` on a bank of one instrument: a PCM16 wave of `samples`
 // samples of 0x1000 at 48 kHz for every key, at original key 60.
 std::vector<uint8_t> NoteArchive(const std::vector<uint8_t>& bytecode, int samples)
 {
-    fsar_files::WaveSpec wave;
+    sar_files::WaveSpec wave;
     wave.encoding = 1;
     wave.sample_rate = 48000;
     wave.loop_end = static_cast<uint32_t>(samples);
     wave.channels = {ConstantWave(samples, 0x1000)};
 
-    fsar_files::Region region;
+    sar_files::Region region;
     region.original_key = 60;
-    fsar_files::VelocityTable velocities;
+    sar_files::VelocityTable velocities;
     velocities.entries = {{0, region}};
-    fsar_files::KeyTable keys;
+    sar_files::KeyTable keys;
     keys.entries = {{0, velocities}};
-    fsar_files::BankSpec bank;
+    sar_files::BankSpec bank;
     bank.waves = {{0x05000000, 0}};
     bank.instruments = {keys};
 
-    fsar_files::SoundSpec sound;
+    sar_files::SoundSpec sound;
     sound.name = "SEQ_NOTE";
     sound.volume = 127;
     sound.banks = {0};
-    fsar_files::ArchiveSpec spec;
+    sar_files::ArchiveSpec spec;
     spec.sounds = {sound};
     spec.banks = {{"BANK_NOTE", 1}};
     spec.wave_archives = {{"WARC_NOTE", 2}};
     spec.players = {{"PLAYER_NOTE", 1}};
-    spec.files = {{fsar_files::Sequence(false, bytecode, {{"Note", 0}}), "", false},
-                  {fsar_files::Bank(false, bank), "", false},
-                  {fsar_files::WaveArchive(false, {fsar_files::Wave(false, wave)}), "", false}};
+    spec.files = {{sar_files::Sequence(false, bytecode, {{"Note", 0}}), "", false},
+                  {sar_files::Bank(false, bank), "", false},
+                  {sar_files::WaveArchive(false, {sar_files::Wave(false, wave)}), "", false}};
 
-    return fsar_files::Archive(false, spec);
+    return sar_files::Archive(false, spec);
 }
 
 // Whether a frame's output has any sound.
@@ -216,11 +222,12 @@ void TestEngine()
     // first frame takes the start to the sound thread. The note starts in the second, and its voice sounds in the same
     // frame. The wave ends after 100 ms, and the sequence after its 24 ticks.
     const std::vector<uint8_t> kBytecode = {0xB0, 48, 0xE1, 120, 0x00, 60, 127, 24, 0xFF};
-    const hsf::fsar::SoundArchive archive = hsf::fsar::SoundArchive::Load(NoteArchive(kBytecode, 4800));
+    const hsf::fsar::SoundArchive archive =
+        hsf::fsar::SoundArchive::Load(NoteArchive(kBytecode, 4800), hsf::kSarOptions);
     atk::ArchiveModel model(archive);
     atk::Engine& engine = *model.engine;
-    HSF_CHECK(engine.StartSequence(0) != nullptr);
-    HSF_CHECK(engine.StartSequence(1) == nullptr);
+    XSFLIB_CHECK(engine.StartSequence(0) != nullptr);
+    XSFLIB_CHECK(engine.StartSequence(1) == nullptr);
 
     engine.RunFrame();
     const bool silent_at_first = engine.Channels().ActiveCount() == 0 && !Sounds(model.renderer.DeviceOutput());
@@ -233,11 +240,11 @@ void TestEngine()
         ++frames;
     }
 
-    HSF_CHECK(silent_at_first);
-    HSF_CHECK(sounds_next);
+    XSFLIB_CHECK(silent_at_first);
+    XSFLIB_CHECK(sounds_next);
     Check(!engine.IsBusy() && frames >= 50 && frames <= 54, "the sequence ends after " + std::to_string(frames));
-    HSF_CHECK(engine.Channels().ActiveCount() == 0 && engine.Voices().ActiveCount() == 0);
-    HSF_CHECK(engine.LowLevelVoices().AllocatedCount() == 0);
+    XSFLIB_CHECK(engine.Channels().ActiveCount() == 0 && engine.Voices().ActiveCount() == 0);
+    XSFLIB_CHECK(engine.LowLevelVoices().AllocatedCount() == 0);
 }
 
 void TestNoteOffBeforeUpdate()
@@ -246,7 +253,8 @@ void TestNoteOffBeforeUpdate()
     // release waits for that update's envelope step. The note therefore sounds for a frame. Released at once, as on the
     // Wii U, it would be silent.
     const std::vector<uint8_t> kBytecode = {0xB0, 48, 0xE1, 0xFF, 0x03, 60, 127, 1, 0x80, 48, 0xFF};
-    const hsf::fsar::SoundArchive archive = hsf::fsar::SoundArchive::Load(NoteArchive(kBytecode, 4800));
+    const hsf::fsar::SoundArchive archive =
+        hsf::fsar::SoundArchive::Load(NoteArchive(kBytecode, 4800), hsf::kSarOptions);
     atk::ArchiveModel model(archive);
     atk::Engine& engine = *model.engine;
     engine.StartSequence(0);
@@ -257,14 +265,15 @@ void TestNoteOffBeforeUpdate()
     engine.RunFrame();
     engine.RunFrame();
 
-    HSF_CHECK(sounds);
-    HSF_CHECK(engine.Channels().ActiveCount() == 0);
+    XSFLIB_CHECK(sounds);
+    XSFLIB_CHECK(engine.Channels().ActiveCount() == 0);
 }
 
 // The output of `frames` frames of the archive's sound.
 std::vector<int16_t> Render(const std::vector<uint8_t>& bytecode, int frames, const atk::EngineOptions& options = {})
 {
-    const hsf::fsar::SoundArchive archive = hsf::fsar::SoundArchive::Load(NoteArchive(bytecode, 48000));
+    const hsf::fsar::SoundArchive archive =
+        hsf::fsar::SoundArchive::Load(NoteArchive(bytecode, 48000), hsf::kSarOptions);
     atk::ArchiveModel model(archive, options);
     model.engine->StartSequence(0);
     std::vector<int16_t> output;
@@ -287,7 +296,7 @@ void TestAuxSend()
     const std::vector<int16_t> through_main = Render(kMain, 20);
     const std::vector<int16_t> through_aux = Render(kAux, 20);
 
-    HSF_CHECK(Sounds(through_main) && through_aux == through_main);
+    XSFLIB_CHECK(Sounds(through_main) && through_aux == through_main);
 }
 
 void TestAuxReverb()
@@ -317,10 +326,10 @@ void TestAuxReverb()
 
     const auto last = std::find_if(dry.rbegin(), dry.rend(), [](int16_t s) { return s != 0; });
     const std::size_t end = static_cast<std::size_t>(dry.rend() - last);
-    HSF_CHECK(Sounds(dry) && end + kRoundTrip < dry.size());
-    HSF_CHECK(!Sounds(std::span(delayed).first(kRoundTrip)));
-    HSF_CHECK(std::equal(dry.begin(), dry.end() - kRoundTrip, delayed.begin() + kRoundTrip));
-    HSF_CHECK(Sounds(std::span(reverberant).subspan(end + kRoundTrip)));
+    XSFLIB_CHECK(Sounds(dry) && end + kRoundTrip < dry.size());
+    XSFLIB_CHECK(!Sounds(std::span(delayed).first(kRoundTrip)));
+    XSFLIB_CHECK(std::equal(dry.begin(), dry.end() - kRoundTrip, delayed.begin() + kRoundTrip));
+    XSFLIB_CHECK(Sounds(std::span(reverberant).subspan(end + kRoundTrip)));
 }
 
 } // namespace

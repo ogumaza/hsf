@@ -5,18 +5,18 @@
 
 #pragma once
 
-#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <set>
 #include <span>
-#include <string>
 #include <vector>
 
+#include "ntdlib/rip/archive.h"
+#include "xsflib/rip/file_names.h"
+
 #include "atk/engine.h"
-#include "fsar/formats.h"
 #include "hsf/format.h"
+#include "hsf/sar.h"
 
 namespace hsf::rip
 {
@@ -26,52 +26,21 @@ namespace hsf::rip
 // ripper refuses such an archive.
 bool IsWiiUArchive(std::span<const uint8_t> bytes);
 
-// The names of the groups `archive` lists with no file: those that the game keeps outside the archive in group files.
-std::vector<std::string> ExternalGroups(const fsar::SoundArchive& archive);
-
-// An .hsflib holding the sound archive and the group files that its sequences require, by their paths in the game's
-// files. The .hsflib has an archive descriptor with `settings`' voice count, SDK version and aux effects.
-std::vector<uint8_t> BuildArchiveLibrary(const FileChunk& archive, const std::vector<FileChunk>& groups,
-                                         ArchiveDescriptor settings, const Tags& tags);
-
-// A .minihsf that plays sound `index` from the library `lib_name`.
-std::vector<uint8_t> BuildMini(uint32_t index, const std::string& lib_name, Tags tags);
-
-// Lists the data that sound `index` requires and the archive (with its added group files) doesn't hold: the sound's
-// sequence and banks, and the banks' wave archives. Such data is kept in another file, or cut off by truncation. Empty
-// when nothing is missing.
-std::vector<std::string> MissingData(const fsar::SoundArchive& archive, uint32_t index);
-
-// Whether `hsfrip --bgm` picks the sound at `index` as music: a sequence whose label has BGM in it, or one that plays
-// on a music player. Games give their music players names with BGM, MUSIC, SONG or FANFARE among the words that
-// underscores separate (PLAYER_BGM, SONG_PLAYER), even where the music's labels don't say so. A player whose name also
-// has the word SE plays sound effects.
-bool IsMusic(const fsar::SoundArchive& archive, uint32_t index);
+// HSF's types for the libraries and minis that a rip writes (ntdlib::rip's BuildArchiveLibrary and BuildMini).
+struct RipFormat
+{
+    using ProgramBuilder = hsf::ProgramBuilder;
+    using ArchiveDescriptor = hsf::ArchiveDescriptor;
+    using FileChunk = hsf::FileChunk;
+    static constexpr uint8_t kPsfVersion = kPsfVersionHsf;
+};
 
 // Filenames for the rips in one folder, valid on Windows, macOS and Linux and unique even on case-insensitive
-// filesystems.
-class FileNames
-{
-public:
-    // "<base>.hsflib".
-    std::string Library(const std::string& base);
+// filesystems (xsflib::rip). HSF's are "<base>.hsflib" and "<index, four digits> <label>.minihsf".
+using FileNames = xsflib::rip::FileNames;
 
-    // "<index, four digits> <label>.minihsf".
-    std::string Mini(uint32_t index, const std::string& label);
-
-private:
-    std::string Unique(const std::string& stem, const std::string& extension);
-
-    std::set<std::string> taken_; // the names given out so far, in lowercase
-};
-
-// A sequence's length and fade in milliseconds, and whether it never makes a sound.
-struct Timing
-{
-    long long length_ms;
-    long long fade_ms;
-    bool silent = false;
-};
+// A sequence's length and fade in milliseconds, and whether it never makes a sound (xsflib::rip).
+using Timing = ntdlib::rip::Timing;
 
 // Works out how long sequences play by running them on HSF's model of nn::atk and the audio renderer (src/atk and
 // src/audio), with the effects a rip puts on the aux buses. Analyze can be called from several threads at once.

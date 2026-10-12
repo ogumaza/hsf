@@ -362,6 +362,7 @@ void LowLevelVoiceAllocator::FreeVoice(LowLevelVoice& voice)
     {
         return;
     }
+
     --count_;
     LowLevelVoice* last = list_[static_cast<std::size_t>(count_)];
     list_[static_cast<std::size_t>(place)] = last;

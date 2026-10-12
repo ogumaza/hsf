@@ -18,13 +18,6 @@ namespace hsf::atk
 // has (GetChannelCount, GetBusCount and IsSoundSendClampEnabled of FinalMix and SubMix).
 struct OutputReceiver
 {
-    enum class Type : uint8_t
-    {
-        kSubMix = 0,
-        kFinalMix = 1,
-    };
-
-    Type type = Type::kSubMix;
     int mix = 0; // the renderer's id of the mix
     int channel_count = 6;
     int bus_count = 4;

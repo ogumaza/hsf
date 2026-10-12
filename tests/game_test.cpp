@@ -3,16 +3,16 @@
 // Tests the readers of a Switch game's files (src/game). The test builds a Bezel Engine archive with stored and
 // compressed assets, a data sheet with a sound effect list, and a boot.lua, and puts them in a folder with a loose
 // sound archive. It checks what LoadGame finds in the folder and in the archive alone: the files, the sound archives,
-// the voice count and the I3DL2 reverbs, and that each file reads back as it was written. Damaged archives and sheets
-// must be refused, and the encrypted forms a game comes in must be recognised.
+// the voice count and the I3DL2 reverbs, and that each file reads back as it was written. The test also loads a
+// title's folder whose archive was unpacked. That folder holds three boot.lua files at two depths. Damaged archives
+// and sheets must be refused, and the encrypted forms a game comes in must be recognised.
 //
 // usage: game_test
 
 #include "game/game.h"
 
-#include <zstd.h>
-
 #include <bit>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -22,10 +22,14 @@
 #include <string>
 #include <vector>
 
-#include "check.h"
-#include "common/bytes.h"
+#include "xsflib/bytes.h"
+#include "xsflib/testing/check.h"
+#include <zstd.h>
+
 #include "game/bea.h"
 #include "game/sheet.h"
+
+using namespace xsflib::testing;
 
 namespace
 {
@@ -83,7 +87,7 @@ std::vector<uint8_t> Compress(const std::vector<uint8_t>& data)
 {
     std::vector<uint8_t> out(ZSTD_compressBound(data.size()));
     const std::size_t size = ZSTD_compress(out.data(), out.size(), data.data(), data.size(), 3);
-    HSF_CHECK(!ZSTD_isError(size));
+    XSFLIB_CHECK(!ZSTD_isError(size));
     out.resize(ZSTD_isError(size) ? 0 : size);
 
     return out;
@@ -100,15 +104,15 @@ std::vector<uint8_t> Bea(const std::vector<AssetSpec>& assets)
     out[3] = 'E';
     out[0xC] = 0xFF;
     out[0xD] = 0xFE;
-    hsf::StoreLe32(&out[0x20], static_cast<uint32_t>(assets.size()));
-    hsf::StoreLe64(&out[0x28], out.size());
+    xsflib::StoreLe32(&out[0x20], static_cast<uint32_t>(assets.size()));
+    xsflib::StoreLe64(&out[0x28], out.size());
     const std::size_t table = out.size();
     out.resize(table + 8 * assets.size());
 
     for (std::size_t i = 0; i < assets.size(); ++i)
     {
         const std::size_t entry = out.size();
-        hsf::StoreLe64(&out[table + 8 * i], entry);
+        xsflib::StoreLe64(&out[table + 8 * i], entry);
         out.resize(entry + 0x30);
         out[entry] = 'A';
         out[entry + 1] = 'S';
@@ -117,16 +121,16 @@ std::vector<uint8_t> Bea(const std::vector<AssetSpec>& assets)
 
         const std::size_t name = out.size();
         out.resize(name + 2);
-        hsf::StoreLe16(&out[name], static_cast<uint16_t>(assets[i].name.size()));
+        xsflib::StoreLe16(&out[name], static_cast<uint16_t>(assets[i].name.size()));
         out.insert(out.end(), assets[i].name.begin(), assets[i].name.end());
         Pad(out, 8);
 
         const std::vector<uint8_t> stored = assets[i].compress ? Compress(assets[i].data) : assets[i].data;
         out[entry + 0x10] = assets[i].compress ? 2 : 0;
-        hsf::StoreLe32(&out[entry + 0x14], static_cast<uint32_t>(stored.size()));
-        hsf::StoreLe64(&out[entry + 0x18], assets[i].data.size());
-        hsf::StoreLe64(&out[entry + 0x20], out.size());
-        hsf::StoreLe64(&out[entry + 0x28], name);
+        xsflib::StoreLe32(&out[entry + 0x14], static_cast<uint32_t>(stored.size()));
+        xsflib::StoreLe64(&out[entry + 0x18], assets[i].data.size());
+        xsflib::StoreLe64(&out[entry + 0x20], out.size());
+        xsflib::StoreLe64(&out[entry + 0x28], name);
         out.insert(out.end(), stored.begin(), stored.end());
         Pad(out, 8);
     }
@@ -145,34 +149,34 @@ std::vector<uint8_t> EffectSheet(const std::vector<EffectSpec>& effects)
     for (std::size_t i = 0; i < effects.size(); ++i)
     {
         uint8_t* record = &records[0x88 * i];
-        hsf::StoreLe32(record + 8, effects[i].type);
+        xsflib::StoreLe32(record + 8, effects[i].type);
         for (std::size_t k = 0; k < effects[i].parameters.size(); ++k)
         {
-            hsf::StoreLe32(record + 0x38 + 4 * k, std::bit_cast<uint32_t>(effects[i].parameters[k]));
+            xsflib::StoreLe32(record + 0x38 + 4 * k, std::bit_cast<uint32_t>(effects[i].parameters[k]));
         }
 
         const std::size_t relocation = relocations.size();
         relocations.resize(relocation + 24);
-        hsf::StoreLe64(&relocations[relocation], 0x88 * i);
-        hsf::StoreLe64(&relocations[relocation + 8], (uint64_t{1} << 32) | 257); // symbol 1, R_AARCH64_ABS64
-        hsf::StoreLe64(&relocations[relocation + 16], names.size());
+        xsflib::StoreLe64(&relocations[relocation], 0x88 * i);
+        xsflib::StoreLe64(&relocations[relocation + 8], (uint64_t{1} << 32) | 257); // symbol 1, R_AARCH64_ABS64
+        xsflib::StoreLe64(&relocations[relocation + 16], names.size());
         names.insert(names.end(), effects[i].name.begin(), effects[i].name.end());
         names.push_back(0);
     }
-    hsf::StoreLe32(&records[0x88 * effects.size()], static_cast<uint32_t>(effects.size()));
+    xsflib::StoreLe32(&records[0x88 * effects.size()], static_cast<uint32_t>(effects.size()));
 
     // The symbols: none, section 2's symbol, then the list and its count in section 1.
     const std::vector<uint8_t> strings = Bytes(std::string("\0s_SoundEffectList\0s_SoundEffectListCount\0", 42));
     std::vector<uint8_t> symbols(4 * 24);
     symbols[24 + 4] = 3; // STT_SECTION
-    hsf::StoreLe16(&symbols[24 + 6], 2);
-    hsf::StoreLe32(&symbols[48], 1);
-    hsf::StoreLe16(&symbols[48 + 6], 1);
-    hsf::StoreLe64(&symbols[48 + 16], 0x88 * effects.size());
-    hsf::StoreLe32(&symbols[72], 19);
-    hsf::StoreLe16(&symbols[72 + 6], 1);
-    hsf::StoreLe64(&symbols[72 + 8], 0x88 * effects.size());
-    hsf::StoreLe64(&symbols[72 + 16], 4);
+    xsflib::StoreLe16(&symbols[24 + 6], 2);
+    xsflib::StoreLe32(&symbols[48], 1);
+    xsflib::StoreLe16(&symbols[48 + 6], 1);
+    xsflib::StoreLe64(&symbols[48 + 16], 0x88 * effects.size());
+    xsflib::StoreLe32(&symbols[72], 19);
+    xsflib::StoreLe16(&symbols[72 + 6], 1);
+    xsflib::StoreLe64(&symbols[72 + 8], 0x88 * effects.size());
+    xsflib::StoreLe64(&symbols[72 + 16], 4);
 
     // The header, the sections' data, then the section headers.
     std::vector<uint8_t> out(0x40);
@@ -183,12 +187,12 @@ std::vector<uint8_t> EffectSheet(const std::vector<EffectSpec>& effects)
     out[4] = 2;
     out[5] = 1;
     out[6] = 1;
-    hsf::StoreLe16(&out[0x10], 1);
-    hsf::StoreLe16(&out[0x12], 183);
-    hsf::StoreLe32(&out[0x14], 1);
-    hsf::StoreLe16(&out[0x34], 0x40);
-    hsf::StoreLe16(&out[0x3A], 0x40);
-    hsf::StoreLe16(&out[0x3C], 6);
+    xsflib::StoreLe16(&out[0x10], 1);
+    xsflib::StoreLe16(&out[0x12], 183);
+    xsflib::StoreLe32(&out[0x14], 1);
+    xsflib::StoreLe16(&out[0x34], 0x40);
+    xsflib::StoreLe16(&out[0x3A], 0x40);
+    xsflib::StoreLe16(&out[0x3C], 6);
 
     struct SectionSpec
     {
@@ -205,15 +209,15 @@ std::vector<uint8_t> EffectSheet(const std::vector<EffectSpec>& effects)
         Pad(out, 8);
         const std::size_t header = headers.size();
         headers.resize(header + 0x40);
-        hsf::StoreLe32(&headers[header + 4], section.type);
-        hsf::StoreLe64(&headers[header + 0x18], out.size());
-        hsf::StoreLe64(&headers[header + 0x20], section.data->size());
-        hsf::StoreLe32(&headers[header + 0x28], section.link);
-        hsf::StoreLe32(&headers[header + 0x2C], section.info);
+        xsflib::StoreLe32(&headers[header + 4], section.type);
+        xsflib::StoreLe64(&headers[header + 0x18], out.size());
+        xsflib::StoreLe64(&headers[header + 0x20], section.data->size());
+        xsflib::StoreLe32(&headers[header + 0x28], section.link);
+        xsflib::StoreLe32(&headers[header + 0x2C], section.info);
         out.insert(out.end(), section.data->begin(), section.data->end());
     }
     Pad(out, 8);
-    hsf::StoreLe64(&out[0x28], out.size());
+    xsflib::StoreLe64(&out[0x28], out.size());
     out.insert(out.end(), headers.begin(), headers.end());
 
     return out;
@@ -224,7 +228,7 @@ void WriteFile(const fs::path& path, const std::vector<uint8_t>& data)
     fs::create_directories(path.parent_path());
     std::ofstream f(path, std::ios::binary);
     f.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
-    HSF_CHECK(f.good());
+    XSFLIB_CHECK(f.good());
 }
 
 // What the game's files hold, by their paths in the game.
@@ -233,14 +237,21 @@ const std::vector<uint8_t> kPacked = SoundArchive(0x22);
 const std::vector<uint8_t> kLoose = SoundArchive(0x33);
 const std::vector<uint8_t> kText = Bytes("not a sound archive\n");
 
-std::vector<AssetSpec> GameAssets()
+// The game's sound effect list: the default reverb, a hall and a delay. The two reverbs are I3DL2 presets.
+std::vector<uint8_t> GameEffectList()
 {
     EffectSpec hall{"Hall", 1, kGameUnits};
     hall.parameters[2] = 3920.0f;
     const EffectSpec kDelay{"Delay", 2, kGameUnits};
+
+    return EffectSheet({{"I3DL2_Default", 1, kGameUnits}, hall, kDelay});
+}
+
+std::vector<AssetSpec> GameAssets()
+{
     return {{"Audio/Stored.bfsar", kStored, false},
             {"Audio/Packed.bfsar", kPacked, true},
-            {"Data/SheetBin/SoundEffectList.elf", EffectSheet({{"I3DL2_Default", 1, kGameUnits}, hall, kDelay}), true},
+            {"Data/SheetBin/SoundEffectList.elf", GameEffectList(), true},
             {"Audio/Readme.txt", kText, false}};
 }
 
@@ -256,9 +267,9 @@ void CheckPresets(const GameFiles& game)
     I3dl2Preset hall = expected;
     hall[2] = 3920.0f / 1000.0f;
 
-    HSF_CHECK(game.i3dl2_presets.size() == 2);
-    HSF_CHECK(game.i3dl2_presets.contains("I3DL2_Default") && game.i3dl2_presets.at("I3DL2_Default") == expected);
-    HSF_CHECK(game.i3dl2_presets.contains("Hall") && game.i3dl2_presets.at("Hall") == hall);
+    XSFLIB_CHECK(game.i3dl2_presets.size() == 2);
+    XSFLIB_CHECK(game.i3dl2_presets.contains("I3DL2_Default") && game.i3dl2_presets.at("I3DL2_Default") == expected);
+    XSFLIB_CHECK(game.i3dl2_presets.contains("Hall") && game.i3dl2_presets.at("Hall") == hall);
 }
 
 // Reads `path` from the game's files, and checks that it holds `expected`.
@@ -279,8 +290,8 @@ void TestFolder(const fs::path& dir)
     GameFiles game;
     const std::optional<std::string> error = hsf::game::LoadGame(dir / "game", game);
 
-    HSF_CHECK(!error);
-    HSF_CHECK(game.name == "game");
+    XSFLIB_CHECK(!error);
+    XSFLIB_CHECK(game.name == "game");
     const std::vector<std::string> kFiles = {"Archive/Music.nx.bea",
                                              "Archive/Music.nx.bea/Audio/Stored.bfsar",
                                              "Archive/Music.nx.bea/Audio/Packed.bfsar",
@@ -289,19 +300,41 @@ void TestFolder(const fs::path& dir)
                                              "Audio/Loose.bfsar",
                                              "Notes.txt",
                                              "boot.lua"};
-    HSF_CHECK(game.files == kFiles);
+    XSFLIB_CHECK(game.files == kFiles);
     const std::vector<std::string> kSoundArchives = {"Archive/Music.nx.bea/Audio/Stored.bfsar",
                                                      "Archive/Music.nx.bea/Audio/Packed.bfsar", "Audio/Loose.bfsar"};
-    HSF_CHECK(game.sound_archives == kSoundArchives);
-    HSF_CHECK(game.voice_count == 72);
+    XSFLIB_CHECK(game.sound_archives == kSoundArchives);
+    XSFLIB_CHECK(game.voice_count == 72);
     CheckPresets(game);
     CheckRead(game, "Archive/Music.nx.bea/Audio/Stored.bfsar", kStored);
     CheckRead(game, "Archive/Music.nx.bea/Audio/Packed.bfsar", kPacked);
     CheckRead(game, "Archive/Music.nx.bea/Audio/Readme.txt", kText);
     CheckRead(game, "Audio/Loose.bfsar", kLoose);
     std::vector<uint8_t> data;
-    HSF_CHECK(!game.read_file("Missing.bfsar", data));
-    HSF_CHECK(!game.read_file("Archive/Music.nx.bea/Missing.bfsar", data));
+    XSFLIB_CHECK(!game.read_file("Missing.bfsar", data));
+    XSFLIB_CHECK(!game.read_file("Archive/Music.nx.bea/Missing.bfsar", data));
+}
+
+void TestUnpackedFolder(const fs::path& dir)
+{
+    // A title's folder holds the RomFS. The RomFS holds the Bezel Engine archive unpacked into a folder, the game's
+    // boot.lua at the top, two deeper decoys named boot.lua and the sound effect list as a loose file. The walk reads
+    // one decoy before the game's boot.lua and the other after it.
+    const fs::path romfs = dir / "title" / "romfs";
+    WriteFile(romfs / "boot.lua", Bytes("engine:SetVoiceCountMax(72)\n"));
+    WriteFile(romfs / "Scripts" / "boot.lua", Bytes("engine:SetVoiceCountMax(10)\n"));
+    WriteFile(romfs / "data" / "boot.lua", Bytes("engine:SetVoiceCountMax(20)\n"));
+    WriteFile(romfs / "Archive" / "Music.nx.bea" / "Data" / "SheetBin" / "SoundEffectList.elf", GameEffectList());
+    WriteFile(romfs / "Archive" / "Music.nx.bea" / "Audio" / "Stored.bfsar", kStored);
+
+    GameFiles game;
+    const std::optional<std::string> error = hsf::game::LoadGame(dir / "title", game);
+
+    XSFLIB_CHECK(!error);
+    XSFLIB_CHECK(game.voice_count == 72);
+    CheckPresets(game);
+    const std::vector<std::string> kSoundArchives = {"romfs/Archive/Music.nx.bea/Audio/Stored.bfsar"};
+    XSFLIB_CHECK(game.sound_archives == kSoundArchives);
 }
 
 void TestArchive(const fs::path& dir)
@@ -311,86 +344,86 @@ void TestArchive(const fs::path& dir)
     GameFiles game;
     const std::optional<std::string> error = hsf::game::LoadGame(dir / "Music.nx.bea", game);
 
-    HSF_CHECK(!error);
-    HSF_CHECK(game.name == "Music.nx");
-    HSF_CHECK(game.files.size() == 4 && game.files[0] == "Music.nx.bea/Audio/Stored.bfsar");
+    XSFLIB_CHECK(!error);
+    XSFLIB_CHECK(game.name == "Music.nx");
+    XSFLIB_CHECK(game.files.size() == 4 && game.files[0] == "Music.nx.bea/Audio/Stored.bfsar");
     const std::vector<std::string> kSoundArchives = {"Music.nx.bea/Audio/Stored.bfsar",
                                                      "Music.nx.bea/Audio/Packed.bfsar"};
-    HSF_CHECK(game.sound_archives == kSoundArchives);
-    HSF_CHECK(!game.voice_count);
+    XSFLIB_CHECK(game.sound_archives == kSoundArchives);
+    XSFLIB_CHECK(!game.voice_count);
     CheckPresets(game);
     CheckRead(game, "Music.nx.bea/Audio/Packed.bfsar", kPacked);
     std::vector<uint8_t> data;
-    HSF_CHECK(!game.read_file("Audio/Packed.bfsar", data));
+    XSFLIB_CHECK(!game.read_file("Audio/Packed.bfsar", data));
 
     // A file that's neither a folder nor an archive, and a path that doesn't exist, are refused.
     WriteFile(dir / "Notes.txt", kText);
-    HSF_CHECK(hsf::game::LoadGame(dir / "Notes.txt", game).has_value());
-    HSF_CHECK(hsf::game::LoadGame(dir / "Missing.bea", game).has_value());
+    XSFLIB_CHECK(hsf::game::LoadGame(dir / "Notes.txt", game).has_value());
+    XSFLIB_CHECK(hsf::game::LoadGame(dir / "Missing.bea", game).has_value());
 }
 
 void TestDamagedArchives()
 {
     const std::vector<uint8_t> good = Bea(GameAssets());
     BeaArchive bea;
-    HSF_CHECK(!BeaArchive::Parse(good, bea) && bea.Assets().size() == 4);
+    XSFLIB_CHECK(!BeaArchive::Parse(good, bea) && bea.Assets().size() == 4);
 
     // The first bytes of a compressed asset, without the rest.
     std::vector<uint8_t> head;
-    HSF_CHECK(bea.ReadHead(good, bea.Assets()[1], 4, head) && head == Bytes("FSAR"));
+    XSFLIB_CHECK(bea.ReadHead(good, bea.Assets()[1], 4, head) && head == Bytes("FSAR"));
 
     // A big-endian byte order mark, a table past the end, an asset without its ASST header, an asset whose data runs
     // past the end, and an unknown compression.
     std::vector<uint8_t> damaged = good;
     damaged[0xC] = 0xFE;
     damaged[0xD] = 0xFF;
-    HSF_CHECK(!BeaArchive::Is(damaged) && BeaArchive::Parse(damaged, bea).has_value());
+    XSFLIB_CHECK(!BeaArchive::Is(damaged) && BeaArchive::Parse(damaged, bea).has_value());
     damaged = good;
-    hsf::StoreLe32(&damaged[0x20], 0x10000000);
-    HSF_CHECK(BeaArchive::Parse(damaged, bea).has_value());
+    xsflib::StoreLe32(&damaged[0x20], 0x10000000);
+    XSFLIB_CHECK(BeaArchive::Parse(damaged, bea).has_value());
     damaged = good;
-    damaged[hsf::LoadLe64(&good[0x30])] = 'X';
-    HSF_CHECK(BeaArchive::Parse(damaged, bea).has_value());
+    damaged[xsflib::LoadLe64(&good[0x30])] = 'X';
+    XSFLIB_CHECK(BeaArchive::Parse(damaged, bea).has_value());
     damaged = good;
-    hsf::StoreLe64(&damaged[hsf::LoadLe64(&good[0x30]) + 0x18], good.size());
-    HSF_CHECK(BeaArchive::Parse(damaged, bea).has_value());
+    xsflib::StoreLe64(&damaged[xsflib::LoadLe64(&good[0x30]) + 0x18], good.size());
+    XSFLIB_CHECK(BeaArchive::Parse(damaged, bea).has_value());
     damaged = good;
-    damaged[hsf::LoadLe64(&good[0x38]) + 0x10] = 1;
+    damaged[xsflib::LoadLe64(&good[0x38]) + 0x10] = 1;
     std::vector<uint8_t> data;
-    HSF_CHECK(!BeaArchive::Parse(damaged, bea) && !bea.Read(damaged, bea.Assets()[1], data));
+    XSFLIB_CHECK(!BeaArchive::Parse(damaged, bea) && !bea.Read(damaged, bea.Assets()[1], data));
 }
 
 void TestDamagedSheets()
 {
     const std::vector<uint8_t> good = EffectSheet({{"I3DL2_Default", 1, kGameUnits}});
     Sheet sheet;
-    HSF_CHECK(!Sheet::Parse(good, sheet));
-    HSF_CHECK(sheet.Symbol("s_SoundEffectListCount").size() == 4 && sheet.Symbol("s_Missing").empty());
-    HSF_CHECK(sheet.StringAt("s_SoundEffectList", 0) == "I3DL2_Default");
-    HSF_CHECK(!sheet.StringAt("s_SoundEffectList", 8));
+    XSFLIB_CHECK(!Sheet::Parse(good, sheet));
+    XSFLIB_CHECK(sheet.Symbol("s_SoundEffectListCount").size() == 4 && sheet.Symbol("s_Missing").empty());
+    XSFLIB_CHECK(sheet.StringAt("s_SoundEffectList", 0) == "I3DL2_Default");
+    XSFLIB_CHECK(!sheet.StringAt("s_SoundEffectList", 8));
 
     // Not an ELF object, a 32-bit or big-endian one, one for another machine, and section headers past the end.
     std::vector<uint8_t> damaged = good;
     damaged[1] = 'X';
-    HSF_CHECK(Sheet::Parse(damaged, sheet).has_value());
+    XSFLIB_CHECK(Sheet::Parse(damaged, sheet).has_value());
     damaged = good;
     damaged[4] = 1;
-    HSF_CHECK(Sheet::Parse(damaged, sheet).has_value());
+    XSFLIB_CHECK(Sheet::Parse(damaged, sheet).has_value());
     damaged = good;
     damaged[5] = 2;
-    HSF_CHECK(Sheet::Parse(damaged, sheet).has_value());
+    XSFLIB_CHECK(Sheet::Parse(damaged, sheet).has_value());
     damaged = good;
-    hsf::StoreLe16(&damaged[0x12], 62);
-    HSF_CHECK(Sheet::Parse(damaged, sheet).has_value());
+    xsflib::StoreLe16(&damaged[0x12], 62);
+    XSFLIB_CHECK(Sheet::Parse(damaged, sheet).has_value());
     damaged = good;
     damaged.resize(damaged.size() - 1);
-    HSF_CHECK(Sheet::Parse(damaged, sheet).has_value());
+    XSFLIB_CHECK(Sheet::Parse(damaged, sheet).has_value());
 
     // A record with no pointer to its name is left out.
     damaged = good;
-    const std::size_t relocations = hsf::LoadLe64(&good[hsf::LoadLe64(&good[0x28]) + 5 * 0x40 + 0x18]);
-    hsf::StoreLe64(&damaged[relocations], 8);
-    HSF_CHECK(!Sheet::Parse(damaged, sheet) && hsf::game::ReadI3dl2Presets(sheet).empty());
+    const std::size_t relocations = xsflib::LoadLe64(&good[xsflib::LoadLe64(&good[0x28]) + 5 * 0x40 + 0x18]);
+    xsflib::StoreLe64(&damaged[relocations], 8);
+    XSFLIB_CHECK(!Sheet::Parse(damaged, sheet) && hsf::game::ReadI3dl2Presets(sheet).empty());
 }
 
 void TestEncrypted(const fs::path& dir)
@@ -407,23 +440,26 @@ void TestEncrypted(const fs::path& dir)
     WriteFile(dir / "content.NCA", kText);
     WriteFile(dir / "Notes.txt", kText);
 
-    HSF_CHECK(hsf::game::EncryptedKind(dir / "game.nsp") == "an NSP");
-    HSF_CHECK(hsf::game::EncryptedKind(dir / "game.bin") == "an XCI");
-    HSF_CHECK(hsf::game::EncryptedKind(dir / "content.NCA") == "an NCA");
-    HSF_CHECK(!hsf::game::EncryptedKind(dir / "Notes.txt"));
-    HSF_CHECK(!hsf::game::EncryptedKind(dir));
-    HSF_CHECK(!hsf::game::EncryptedKind(dir / "Missing.nsp"));
+    XSFLIB_CHECK(hsf::game::EncryptedKind(dir / "game.nsp") == "an NSP");
+    XSFLIB_CHECK(hsf::game::EncryptedKind(dir / "game.bin") == "an XCI");
+    XSFLIB_CHECK(hsf::game::EncryptedKind(dir / "content.NCA") == "an NCA");
+    XSFLIB_CHECK(!hsf::game::EncryptedKind(dir / "Notes.txt"));
+    XSFLIB_CHECK(!hsf::game::EncryptedKind(dir));
+    XSFLIB_CHECK(!hsf::game::EncryptedKind(dir / "Missing.nsp"));
 }
 
 } // namespace
 
 int main()
 {
-    const fs::path dir = fs::temp_directory_path() / "hsf_game_test";
+    // A new folder for each run. Two runs at once then don't remove each other's files.
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const fs::path dir = fs::temp_directory_path() / ("hsf_game_test_" + std::to_string(stamp));
     fs::remove_all(dir);
     fs::create_directories(dir);
 
     TestFolder(dir / "folder");
+    TestUnpackedFolder(dir / "unpacked");
     TestArchive(dir / "archive");
     TestDamagedArchives();
     TestDamagedSheets();

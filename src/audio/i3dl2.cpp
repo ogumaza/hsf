@@ -4,9 +4,10 @@
 
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
+
+#include "ntdlib/aarch64.h"
 
 #include "audio/dsp.h"
 #include "audio/tables.h"
@@ -38,43 +39,9 @@ int32_t WrapMul(int32_t a, int32_t b)
     return static_cast<int32_t>(static_cast<uint32_t>(a) * static_cast<uint32_t>(b));
 }
 
-// AArch64's fmin: a NaN gives NaN, and -0 wins over +0.
-float Fmin(float a, float b)
-{
-    if (std::isnan(a))
-    {
-        return a;
-    }
-    if (std::isnan(b))
-    {
-        return b;
-    }
-    if (a == 0.0f && b == 0.0f)
-    {
-        return std::signbit(a) ? a : b;
-    }
-
-    return a < b ? a : b;
-}
-
-// AArch64's fmax: a NaN gives NaN, and +0 wins over -0.
-float Fmax(float a, float b)
-{
-    if (std::isnan(a))
-    {
-        return a;
-    }
-    if (std::isnan(b))
-    {
-        return b;
-    }
-    if (a == 0.0f && b == 0.0f)
-    {
-        return std::signbit(a) ? b : a;
-    }
-
-    return a > b ? a : b;
-}
+// AArch64's fmin and fmax.
+using ntdlib::aarch64::Fmax;
+using ntdlib::aarch64::Fmin;
 
 // A float in Q14, towards zero and held to 32 bits (fcvtzs with 14 fraction bits).
 int32_t ToQ14(float x)
@@ -509,8 +476,10 @@ void AuxI3dl2Reverb::Update(bool reset)
         DelayLine& fdn = s.fdn[i];
         const float least = tables::kI3dl2FdnMinDelay[i];
         const float time = least + p.late_reverb_density / 100.0f * (tables::kI3dl2FdnMaxDelay[i] - least);
+        // A delay below 0, from a density below 0, would put the line's write position before its first cell. A line
+        // keeps its delay when the new one is below 0 or too long for the line.
         int32_t delay = Samples(ToQ14(time), k);
-        if (fdn.length >= delay)
+        if (delay >= 0 && fdn.length >= delay)
         {
             const int64_t position = static_cast<int64_t>(fdn.read) + delay;
             fdn.write = static_cast<int32_t>(position % (static_cast<int64_t>(fdn.length) + 1));

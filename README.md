@@ -1,7 +1,7 @@
 # hsf
 
 HSF is a PSF-family music rip format for Nintendo Switch sequenced audio: the music that Switch games play from
-NintendoWare sound archives (`.bfsar`). It's the Switch counterpart of 3SF (3DS), WSF (Wii) and CSF (Wii U).
+NintendoWare sound archives (`.bfsar`).
 
 A rip holds a game's sound archive. HSF's player plays it with a model of the SDK's sound library (`nn::atk`) and of the
 console's audio renderer. The renderer mixes the sound outside the game, in the system. The model does the same
@@ -35,8 +35,8 @@ archives. Then `hsfplay romfs_hsf/*/*.minihsf` renders every sequence in it. `--
 
 ### Downloads
 
-The Releases page has `hsfrip` and `hsfplay` for 64-bit and 32-bit Windows, and the foobar2000 component for 64-bit and
-32-bit foobar2000 on Windows. On other systems, build HSF from source (see "Building").
+The Releases page has `hsfrip` and `hsfplay` for 64-bit Windows, and the foobar2000 component for 64-bit and 32-bit
+foobar2000 on Windows. On macOS, build HSF from source (see "Building").
 
 ### Drag and drop
 
@@ -50,21 +50,21 @@ that requires Windows 10 version 1903 or later.
 
 ## Building
 
-You need Git, CMake 3.20 or later, and C and C++20 compilers. Zstandard, zlib and libFLAC are downloaded and built along
-with HSF when they aren't installed.
+You need Git, CMake 3.20 or later, and C and C++20 compilers. HSF builds on two libraries in submodules: xsflib, for
+the players and rippers of the PSF family, in `externals/xsflib`, and ntdlib, for the hardware and formats of
+Nintendo's consoles, in `externals/ntdlib`. Clone with `git clone --recursive`, or run
+`git submodule update --init --recursive` in a clone. xsflib takes seqlib as a submodule. Zstandard, zlib and libFLAC
+are downloaded and built along with HSF when they aren't installed.
 
 - **Windows:** Visual Studio 2022 or later with the "Desktop development with C++" workload and its "C++ Clang tools for
-  Windows" component. The workload includes CMake. The component adds clang-cl. Configure with `cmake -S . -B build -T
-  ClangCL` in place of the configure command below. Run the commands in a Developer PowerShell or Developer Command
-  Prompt.
-- **macOS:** the Xcode command line tools (`xcode-select --install`) and CMake (`brew install cmake`). `brew install
-  zstd flac` saves building Zstandard and libFLAC. A universal build (two architectures in `CMAKE_OSX_ARCHITECTURES`)
-  always builds them.
-- **Linux:** GCC or Clang, CMake and Git from your distribution. The Zstandard, zlib and FLAC development packages (on
-  Debian and Ubuntu, `libzstd-dev`, `zlib1g-dev` and `libflac-dev`) save building them.
+  Windows" component. The workload includes CMake. The component adds clang-cl. Configure with `cmake -S . -B build -A
+  x64 -T ClangCL` in place of the configure command below. Run the commands in a Developer PowerShell or Developer
+  Command Prompt.
+- **macOS on Apple Silicon:** the Xcode command line tools (`xcode-select --install`) and CMake (`brew install cmake`).
+  `brew install zstd flac` saves building Zstandard and libFLAC.
 
-MinGW, GCC and GNU-style Clang aren't supported on Windows. GCC and Clang aren't supported for 32-bit x86 either. In
-those configurations, the floating-point arithmetic gives different results from the other builds. CMake rejects them.
+Linux, Intel Macs, MSVC and 32-bit Windows aren't supported. The one exception is the 32-bit foobar2000 component. Build
+it with clang-cl, configured with `-A Win32 -T ClangCL`.
 
 ```sh
 cmake -S . -B build
@@ -73,48 +73,40 @@ ctest --test-dir build -C Release
 ```
 
 `CMakePresets.json` has `release` and `debug` presets for the same steps (`cmake --preset release`, `cmake --build
---preset release` and `ctest --preset release`). The presets require CMake 3.21 or later.
-
-The sound archive test (`tests/fsar_test.cpp`) builds sound archives, sequences, banks with every kind of region table,
-wave archives, waves, and the group files that a game keeps outside its archive. Each file is built in the Switch's byte
-order and in the Wii U's byte order. The test checks what the readers read from each file, and that the readers refuse
-damaged files.
+--preset release` and `ctest --preset release`). The presets require CMake 3.23 or later. They don't select clang-cl.
+On Windows, use the commands above.
 
 The model tests (`tests/atk_test.cpp` and `tests/audio_test.cpp`) check the models of the sound library and the
 renderer against their formulas on made-up input. The engine test (`tests/atk_engine_test.cpp`) plays notes from small
 archives through the sound library's model, with and without a reverb on an aux bus.
 
-The format test (`tests/format_test.cpp`) checks the PSF container, tags, times, chunks, the descriptor and the loading
-of libraries. The player test (`tests/player_test.cpp`) plays sets made from a small archive and checks lengths, fades,
-seeks, volume, group files and a reverb's tail. The render-ahead test (`tests/render_ahead_test.cpp`) renders ahead from
-a stand-in source and checks reads, seeks, the buffer's limit, errors and stopping. The ripper's test
-(`tests/rip_test.cpp`) measures a sequence of each kind that the length analysis distinguishes. The game test
-(`tests/game_test.cpp`) builds a Bezel Engine archive, a data sheet with a sound effect list and a `boot.lua`. It checks
-what `hsfrip` finds in a folder of them and in the archive alone, and that the readers refuse damaged files. The audio
-writer's test (`tests/audio_out_test.cpp`) writes a WAV file and a FLAC file and checks that both hold the samples it
-wrote.
+The format test (`tests/format_test.cpp`) checks the descriptor and the loading of libraries. The player test
+(`tests/player_test.cpp`) plays sets made from a small archive and checks lengths, fades, seeks, volume, group files and
+a reverb's tail. The ripper's test (`tests/rip_test.cpp`) measures a sequence of each kind that the length analysis
+distinguishes. The game test (`tests/game_test.cpp`) builds a Bezel Engine archive, a data sheet with a sound effect
+list and a `boot.lua`. It checks what `hsfrip` finds in a folder of them, in the archive alone and in a title's folder
+that holds the archive unpacked. The test also checks that the readers refuse damaged files.
 
 ## Layout
 
 ```
 docs/         the format's specification (hsf.md)
-src/common/   small helpers shared by the rest (byte order, ASCII)
-src/fsar/     the sound formats: sound archives (FSAR), sequences, banks, wave archives and waves
-src/atk/      the model of the Switch's sound library, nn::atk: its arithmetic, envelopes, voices, sequences and
-              aux effects
+src/atk/      the parts of the model of the Switch's sound library, nn::atk, that ntdlib doesn't hold: the Switch's
+              policy, the voices on the renderer, the engine and the aux effects
 src/audio/    the model of the Switch's audio renderer: voices, mixes, aux effects and sinks, the frames it renders,
               and the I3DL2 reverb that games run on aux effects
 src/game/     a Switch game's files: folders, and Bezel Engine's archives and data sheets
-src/hsf/      the HSF format, the player, playback and rendering ahead
+src/hsf/      the HSF format and the player
 src/rip/      the ripper: sets and the length analysis
-src/cli/      hsfrip and hsfplay, and their WAV and FLAC writer and console
+src/cli/      hsfrip and hsfplay
 plugins/      the foobar2000 component
-platform/     the Windows manifest and version resource, and the macOS droplet apps of hsfrip and hsfplay
 tests/        ctest suites
+externals/    xsflib, the code that the PSF players share, and ntdlib, for Nintendo's formats (submodules)
 ```
 
 ## Licence
 
-HSF is under the MIT licence (`LICENSE`). `THIRD-PARTY-NOTICES.md` lists the libraries HSF uses and what a binary
-distribution must include. Game data is not covered by this licence. Rips contain a game's sound data, and they are for
-personal use.
+HSF is under the MIT licence (`LICENSE`). It builds on xsflib and ntdlib, both under the MIT licence too, in the
+submodules `externals/xsflib` and `externals/ntdlib`. `THIRD-PARTY-NOTICES.md` lists the libraries HSF uses and what a
+binary distribution must include. Game data is not covered by this licence. Rips contain a game's sound data, and they
+are for personal use.

@@ -10,6 +10,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -60,7 +61,8 @@ struct WaveBuffer
 // / c. A mix has 24 buffers at most.
 using OutputMix = std::array<float, 24>;
 
-// What a voice plays with this frame (the parameters at a Voice's +0x8 and at a LowLevelVoice's +0x2c).
+// What a voice plays with this frame (the parameters at a Voice's +0x8 and at a LowLevelVoice's +0x2c). The renderer
+// never reads the interpolation type.
 struct VoiceParam
 {
     float volume = 1.0f;
@@ -70,6 +72,7 @@ struct VoiceParam
     bool biquad_on = false;
     std::array<int16_t, 5> biquad{}; // b0, b1, b2, a1 and a2 in Q14
     uint16_t lpf_freq = 0;           // the cutoff in Hz
+    uint8_t interpolation = 0;       // +0x76
 };
 
 class LowLevelVoiceAllocator;
@@ -202,6 +205,22 @@ public:
     std::span<const LowLevelVoice> All() const
     {
         return voices_;
+    }
+
+    // The voice at a place among the sound system's voices, and a voice's place there.
+    LowLevelVoice& At(int place)
+    {
+        return voices_[static_cast<std::size_t>(place)];
+    }
+
+    const LowLevelVoice& At(int place) const
+    {
+        return voices_[static_cast<std::size_t>(place)];
+    }
+
+    int PlaceOf(const LowLevelVoice& voice) const
+    {
+        return static_cast<int>(&voice - voices_.data());
     }
 
 private:

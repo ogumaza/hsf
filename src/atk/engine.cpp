@@ -39,136 +39,25 @@ Engine::Engine(audio::Renderer& renderer, const fsar::SoundArchive& archive, con
       receiver_(&receiver),
       options_(options),
       allocator_(renderer, options_.hardware, options.voice_count),
-      voices_(allocator_, options_.hardware, options.voice_count),
-      channels_(voices_, options.voice_count)
+      voice_renderer_(allocator_, options_.hardware, options.voice_count),
+      voices_(options.voice_count),
+      channels_(options.voice_count),
+      files_(archive, kSarOptions)
 {
     global_vars_.fill(-1);
 }
 
-const fsar::Bank* Engine::GetBank(uint32_t bank_item)
-{
-    if (const auto it = banks_.find(bank_item); it != banks_.end())
-    {
-        return it->second.get();
-    }
-
-    const uint32_t index = bank_item & 0xFFFFFF;
-    if ((bank_item >> 24) != 0x03 || index >= archive_->Banks().size())
-    {
-        return nullptr;
-    }
-    const std::span<const uint8_t> file = archive_->FileData(archive_->Banks()[index].file_id);
-    if (file.empty())
-    {
-        return nullptr;
-    }
-
-    return banks_.emplace(bank_item, std::make_unique<const fsar::Bank>(fsar::Bank::Parse(file))).first->second.get();
-}
-
-const fsar::WaveArchive* Engine::GetWaveArchive(uint32_t wave_archive_item)
-{
-    if (const auto it = wave_archives_.find(wave_archive_item); it != wave_archives_.end())
-    {
-        return it->second.get();
-    }
-
-    const uint32_t index = wave_archive_item & 0xFFFFFF;
-    if ((wave_archive_item >> 24) != 0x05 || index >= archive_->WaveArchives().size())
-    {
-        return nullptr;
-    }
-    const std::span<const uint8_t> file = archive_->FileData(archive_->WaveArchives()[index].file_id);
-    if (file.empty())
-    {
-        return nullptr;
-    }
-
-    auto archive = std::make_unique<const fsar::WaveArchive>(fsar::WaveArchive::Parse(file));
-    return wave_archives_.emplace(wave_archive_item, std::move(archive)).first->second.get();
-}
-
-std::optional<WaveInfo> Engine::GetWave(uint32_t wave_archive_item, uint32_t index)
-{
-    const auto key = std::make_pair(wave_archive_item, index);
-    if (const auto it = waves_.find(key); it != waves_.end())
-    {
-        return it->second;
-    }
-
-    // WaveFileReader::ReadWaveInfo (0xc0b410): PCM8 and PCM16 by their codes, and any other code as DSP-ADPCM.
-    std::optional<WaveInfo> result;
-    const fsar::WaveArchive* archive = GetWaveArchive(wave_archive_item);
-    if (archive != nullptr && index < archive->waves.size())
-    {
-        const fsar::Wave wave = fsar::Wave::Parse(archive->waves[index]);
-        if (!wave.channels.empty())
-        {
-            WaveInfo info;
-            switch (wave.encoding)
-            {
-            case fsar::WaveEncoding::kPcm8:
-                info.format = SampleFormat::kPcm8;
-                break;
-            case fsar::WaveEncoding::kPcm16:
-                info.format = SampleFormat::kPcm16;
-                break;
-            default:
-                info.format = SampleFormat::kDspAdpcm;
-                break;
-            }
-            info.loop = wave.loop;
-            info.channel_count = static_cast<int>(wave.channels.size());
-            info.sample_rate = wave.sample_rate;
-            info.loop_start = wave.loop_start;
-            info.loop_end = wave.loop_end;
-            info.original_loop_start = wave.loop_start;
-            for (std::size_t c = 0; c < std::min<std::size_t>(wave.channels.size(), 2); ++c)
-            {
-                const fsar::WaveChannel& from = wave.channels[c];
-                WaveInfo::Channel& to = info.channels[c];
-                to.data = from.data;
-                if (from.adpcm)
-                {
-                    to.coefs = from.adpcm->coefs;
-                    to.context = {from.adpcm->pred_scale, from.adpcm->yn1, from.adpcm->yn2};
-                    to.loop_context = {from.adpcm->loop_pred_scale, from.adpcm->loop_yn1, from.adpcm->loop_yn2};
-                }
-            }
-            result = info;
-        }
-    }
-
-    waves_.emplace(key, result);
-
-    return result;
-}
-
 Channel* Engine::NoteOn(const std::vector<uint32_t>& banks, int slot, const NoteOnInfo& info)
 {
-    if (slot < 0 || static_cast<std::size_t>(slot) >= banks.size())
+    const std::optional<Files::Note> note = files_.FindNote(banks, slot, info.prg_no, info.key, info.velocity);
+    if (!note)
     {
         return nullptr;
     }
 
-    const fsar::Bank* bank = GetBank(banks[static_cast<std::size_t>(slot)]);
-    if (bank == nullptr || info.prg_no >= bank->instruments.size() || !bank->instruments[info.prg_no])
-    {
-        return nullptr;
-    }
-    const fsar::VelocityRegion* region = bank->instruments[info.prg_no]->Find(info.key, info.velocity);
-    if (region == nullptr || region->wave_id_index >= bank->waves.size())
-    {
-        return nullptr;
-    }
-    const fsar::WaveId& id = bank->waves[region->wave_id_index];
-    const std::optional<WaveInfo> wave = GetWave(id.wave_archive_item, id.index);
-    if (!wave)
-    {
-        return nullptr;
-    }
-
-    Channel* channel = channels_.AllocChannel(std::min(wave->channel_count, 2), info.priority, info.callback);
+    const fsar::VelocityRegion* region = note->region;
+    Channel* channel = channels_.AllocChannel(*this, std::min(note->wave.channel_count, 2), info.priority,
+                                              info.owner_player, info.owner_track);
     if (channel == nullptr)
     {
         return nullptr;
@@ -187,14 +76,19 @@ Channel* Engine::NoteOn(const std::vector<uint32_t>& banks, int slot, const Note
     channel->init_pan = static_cast<float>(info.init_pan + static_cast<int>(region->pan) - 0x40) / 63.0f;
     channel->key_group = region->key_group;
     channel->ignore_note_off = region->ignore_note_off;
-    channel->interpolation_type = region->interpolation_type;
-    if (channel->voice != nullptr)
+    channel->interpolation_type = region->interpolation;
+    if (channel->voice != ntdlib::nwsnd::kNoVoice)
     {
-        channel->voice->SetOutputReceiver(info.receiver);
+        channel->Voice(*this).SetOutputReceiver(info.receiver);
     }
-    channel->Start(*wave, info.length);
+    channel->Start(*this, note->wave, info.length);
 
     return channel;
+}
+
+void Engine::ChannelEvent(int player, int track, Channel& channel, Channel::CallbackStatus)
+{
+    players_[static_cast<std::size_t>(player)]->ChannelEvent(*this, track, channel);
 }
 
 SequenceSoundPlayer* Engine::StartSequence(uint32_t index)
@@ -209,14 +103,16 @@ SequenceSoundPlayer* Engine::StartSequence(uint32_t index)
     {
         return nullptr;
     }
+
     const std::span<const uint8_t> file = archive_->FileData(info.file_id);
     if (file.empty())
     {
         return nullptr;
     }
 
-    const fsar::Sequence sequence = fsar::Sequence::Parse(file);
-    players_.push_back(std::make_unique<SequenceSoundPlayer>(*this, info, sequence.data, receiver_));
+    const fsar::Sequence sequence = fsar::Sequence::Parse(file, kSarOptions);
+    const int id = static_cast<int>(players_.size());
+    players_.push_back(std::make_unique<SequenceSoundPlayer>(id, info, sequence.data, receiver_));
     pending_.push_back({players_.back().get(), 1});
 
     return players_.back().get();
@@ -224,7 +120,7 @@ SequenceSoundPlayer* Engine::StartSequence(uint32_t index)
 
 void Engine::FrameProcess()
 {
-    voices_.UpdateAllVoiceStatus();
+    voices_.UpdateAllVoiceStatus(*this);
 
     // The sound thread's commands. They start the sounds that are due.
     for (auto it = pending_.begin(); it != pending_.end();)
@@ -235,6 +131,7 @@ void Engine::FrameProcess()
             ++it;
             continue;
         }
+
         it->player->Start();
         it = pending_.erase(it);
     }
@@ -242,10 +139,10 @@ void Engine::FrameProcess()
     // The players' frames, the channels and the voices, a renderer frame each.
     for (const std::unique_ptr<SequenceSoundPlayer>& player : players_)
     {
-        player->Update(1);
+        player->Update(*this, 1);
     }
-    channels_.UpdateAllChannel(1, random_);
-    voices_.UpdateAllVoices();
+    channels_.UpdateAllChannel(*this);
+    voices_.UpdateAllVoices(*this);
 
     // HardwareManager::Update (0xc05d90) has no fades to move here. The random numbers step once a frame.
     random_.Next();
@@ -323,9 +220,11 @@ bool Engine::IsBusy() const
     return channels_.ActiveCount() > 0;
 }
 
-ArchiveModel::ArchiveModel(const fsar::SoundArchive& archive, EngineOptions options)
+ArchiveModel::ArchiveModel(const fsar::SoundArchive& archive, EngineOptions options, audio::RendererObserver* observer)
     : renderer(RendererParameterFor(options))
 {
+    renderer.SetObserver(observer);
+
     // The final mix, and sub-mix 0. Each of sub-mix 0's buses reaches the final mix's channels at 1.0.
     constexpr int kChannels = 6;
     constexpr int kBuses = 4;
@@ -345,12 +244,6 @@ ArchiveModel::ArchiveModel(const fsar::SoundArchive& archive, EngineOptions opti
     constexpr std::array<int, 2> kSinkInputs = {0, 1};
     renderer.AddDeviceSink(kSinkInputs);
 
-    final_mix.type = OutputReceiver::Type::kFinalMix;
-    final_mix.mix = audio::Renderer::kFinalMix;
-    final_mix.channel_count = kChannels;
-    final_mix.bus_count = 1;
-    final_mix.clamp_send = {true, true, true, true};
-    sub_mix.type = OutputReceiver::Type::kSubMix;
     sub_mix.mix = sub;
     sub_mix.channel_count = kChannels;
     sub_mix.bus_count = kBuses;

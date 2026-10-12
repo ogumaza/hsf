@@ -2,8 +2,6 @@
 
 #include "game/bea.h"
 
-#include <zstd.h>
-
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -13,7 +11,8 @@
 #include <utility>
 #include <vector>
 
-#include "common/bytes.h"
+#include "xsflib/bytes.h"
+#include <zstd.h>
 
 namespace hsf::game
 {
@@ -45,8 +44,8 @@ std::optional<std::string> BeaArchive::Parse(std::span<const uint8_t> data, BeaA
         return std::string("not a little-endian Bezel Engine archive");
     }
 
-    const uint32_t count = LoadLe32(&data[0x20]);
-    const uint64_t table = LoadLe64(&data[0x28]);
+    const uint32_t count = xsflib::LoadLe32(&data[0x20]);
+    const uint64_t table = xsflib::LoadLe64(&data[0x28]);
     if (!Fits(data, table, uint64_t{8} * count))
     {
         return std::string("its asset table runs past its end");
@@ -54,7 +53,7 @@ std::optional<std::string> BeaArchive::Parse(std::span<const uint8_t> data, BeaA
 
     for (uint32_t i = 0; i < count; ++i)
     {
-        const uint64_t entry = LoadLe64(&data[table + 8 * i]);
+        const uint64_t entry = xsflib::LoadLe64(&data[table + 8 * i]);
         if (!Fits(data, entry, kAssetHeader) || data[entry] != 'A' || data[entry + 1] != 'S' ||
             data[entry + 2] != 'S' || data[entry + 3] != 'T')
         {
@@ -63,18 +62,18 @@ std::optional<std::string> BeaArchive::Parse(std::span<const uint8_t> data, BeaA
 
         Asset asset;
         asset.compression = data[entry + 0x10];
-        asset.stored_size = LoadLe32(&data[entry + 0x14]);
-        asset.size = LoadLe64(&data[entry + 0x18]);
-        asset.offset = LoadLe64(&data[entry + 0x20]);
-        const uint64_t name = LoadLe64(&data[entry + 0x28]);
-        if (!Fits(data, name, 2) || !Fits(data, name + 2, LoadLe16(&data[name])) ||
+        asset.stored_size = xsflib::LoadLe32(&data[entry + 0x14]);
+        asset.size = xsflib::LoadLe64(&data[entry + 0x18]);
+        asset.offset = xsflib::LoadLe64(&data[entry + 0x20]);
+        const uint64_t name = xsflib::LoadLe64(&data[entry + 0x28]);
+        if (!Fits(data, name, 2) || !Fits(data, name + 2, xsflib::LoadLe16(&data[name])) ||
             !Fits(data, asset.offset, asset.compression == 0 ? asset.size : asset.stored_size))
         {
             return "asset " + std::to_string(i) + " runs past the archive's end";
         }
 
         const auto* text = reinterpret_cast<const char*>(&data[name + 2]);
-        asset.name.assign(text, LoadLe16(&data[name]));
+        asset.name.assign(text, xsflib::LoadLe16(&data[name]));
         out.assets_.push_back(std::move(asset));
     }
 

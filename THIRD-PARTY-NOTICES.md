@@ -4,21 +4,19 @@ HSF is under the MIT licence (`LICENSE`). HSF's dependencies have the following 
 
 | Component | Licence | Use in HSF |
 |---|---|---|
+| xsflib, Copyright (c) 2026 the xsflib authors | MIT (`externals/xsflib/LICENSE`) | In `externals/xsflib`, a submodule, compiled into every HSF program. It holds the PSF container, playback, the frames of the play and rip tools, and the rippers' length analysis. |
+| ntdlib, Copyright (c) 2026 the ntdlib authors | MIT (`externals/ntdlib/LICENSE`) | In `externals/ntdlib`, a submodule, compiled into every HSF program. It holds the sound archive readers, the model of the sound library's sequences, channels, voices, envelopes and LFOs with its tables, and the ripper's archive-mode parts. |
+| seqlib, Copyright (c) 2026 the seqlib authors | MIT (`externals/xsflib/externals/seqlib/LICENSE`) | In `externals/xsflib/externals/seqlib`, a submodule of xsflib. Only the tests use it: their checks come from it, through `xsflib::testing`. |
 | [Zstandard](https://github.com/facebook/zstd), Copyright (c) Meta Platforms, Inc. and affiliates | BSD-3-Clause | Bezel Engine's archives (.bea). The system's copy is used, or v1.5.7 is downloaded when configuring. |
 | [zlib](https://zlib.net), Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler | zlib | The PSF container. The system's copy is used, or v1.3.1 is downloaded when configuring. |
 | [libFLAC](https://xiph.org/flac/), Copyright the Xiph.Org Foundation | BSD-3-Clause | FLAC output in `hsfplay`. The system's copy is used, or 1.5.0 is downloaded when configuring. |
 | [foobar2000 SDK](https://www.foobar2000.org/SDK), Copyright Peter Pawlowski | BSD-style (the SDK's `sdk-license.txt`, and `pfc-license.txt` for its pfc library) | Only for `plugins/foobar2000`. Not included here. The SDK is supplied when building the component. |
 
-Binary distributions must include HSF's MIT notice. The Zstandard notice is required when Zstandard is linked in:
-`hsfrip` links it, and `hsfplay` and the foobar2000 component don't. The libFLAC notice is required when libFLAC is
-linked in: `hsfplay` links it, and the foobar2000 component doesn't. Shipping `LICENSE` and this file meets all three
-requirements. The licence texts are at the end of this file. The licences of zlib, the foobar2000 SDK and its pfc
-library require no notice in binaries.
-
-Much of HSF comes from CSF, the Wii U counterpart of HSF (MIT, Copyright (c) 2026 the CSF authors): the sound archive
-readers (`src/fsar`), the model of the sound library (`src/atk`, from CSF's model of `nw::snd`), the format, the player
-and the ripper (`src/hsf`, `src/rip`), the tools (`src/cli`), the foobar2000 component and the platform files. They
-were adapted for the Switch.
+Binary distributions must include the MIT notices of HSF, xsflib and ntdlib. The Zstandard notice is required when
+Zstandard is linked in: `hsfrip` links it, and `hsfplay` and the foobar2000 component don't. The libFLAC notice is
+required when libFLAC is linked in: `hsfplay` links it, and the foobar2000 component doesn't. Shipping `LICENSE` and
+this file meets all five requirements. The licence texts are at the end of this file. The licences of zlib, the
+foobar2000 SDK and its pfc library require no notice in binaries. seqlib's checks go only into tests.
 
 ## Reference material (no code taken)
 
@@ -32,12 +30,64 @@ were adapted for the Switch.
 Nothing in this repository licenses game data. Rips (`.hsflib`) contain a game's sound archive. It belongs to its
 copyright holders.
 
-`src/atk/tables.h` holds the numeric tables `nn::atk` uses: powers of two, decibel levels, envelope attack multipliers,
-pan curves, low-pass cutoffs and their filters, biquad filter coefficients and sines. `src/audio/tables.h` holds the
-audio renderer's tables: the coefficients of its sample-rate converters, and the I3DL2 reverb's delays, early
+ntdlib's `nwsnd/tables.h` holds the numeric tables that `nn::atk` uses: powers of two, decibel levels, envelope attack
+multipliers, pan curves, low-pass cutoffs and their filters, biquad filter coefficients and sines. `src/audio/tables.h`
+holds the audio renderer's tables: the coefficients of its sample-rate converters, and the I3DL2 reverb's delays, early
 reflections, powers of ten and sines. The models use the exact values to reproduce the console's output.
 
 ## Licence texts
+
+### xsflib
+
+```
+MIT License
+
+Copyright (c) 2026 the xsflib authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### ntdlib
+
+```
+MIT License
+
+Copyright (c) 2026 the ntdlib authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
 ### Zstandard
 
@@ -113,7 +163,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 Copyright notice:
 
- (C) 1995-2024 Jean-loup Gailly and Mark Adler
+ (C) 1995-2022 Jean-loup Gailly and Mark Adler
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages

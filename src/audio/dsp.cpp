@@ -4,9 +4,12 @@
 
 #include <bit>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
+
+#include "ntdlib/wave/adpcm.h"
 
 #include "audio/tables.h"
 
@@ -67,20 +70,6 @@ int32_t SaturatingSub(int32_t a, int32_t b)
     return Saturate(int64_t{a} - b);
 }
 
-int16_t Clamp16(int32_t x)
-{
-    if (x > 32767)
-    {
-        return 32767;
-    }
-    if (x < -32768)
-    {
-        return -32768;
-    }
-
-    return static_cast<int16_t>(x);
-}
-
 // A byte or a 16-bit sample of a wave buffer, or 0 beyond it. Nintendo's code reads whatever lies there; the renderer
 // has checked the range against the buffer's size before.
 uint8_t ByteAt(std::span<const uint8_t> buffer, int64_t index)
@@ -107,16 +96,6 @@ int32_t NibbleOf(int32_t sample)
     const int32_t frame = sample / 14;
     const int32_t in_frame = sample - frame * 14;
     return in_frame + frame * 16 + (in_frame != 0 ? 2 : 0);
-}
-
-// One DSP-ADPCM sample: the prediction from the last two samples, plus the nibble scaled, in Q11 with 32-bit sums.
-int32_t AdpcmSample(int32_t nibble, int32_t scale, int32_t c0, int32_t c1, int32_t yn1, int32_t yn2)
-{
-    const int32_t delta = static_cast<int32_t>(static_cast<uint32_t>(nibble) << 28) >> (17 - scale);
-    int32_t sum = WrapAdd(WrapMul(c1, yn2), WrapMul(c0, yn1));
-    sum = WrapAdd(WrapAdd(sum, delta), 0x400);
-
-    return Clamp16(sum >> 11);
 }
 
 // The sample-rate converter's filters: `taps` coefficients from a table chosen by the ratio, applied to the samples at
@@ -239,10 +218,12 @@ int32_t DecodeAdpcm(int16_t* out, const DecodeArg& arg)
             nibble += 2;
         }
 
-        // The high nibble of a byte, then the low one.
+        // The high nibble of a byte, then the low one. The renderer adds up each sample in 32 bits that wrap.
         const uint8_t pair = ByteAt(arg.buffer, byte);
         const int32_t value = (nibble & 1) == 0 ? pair >> 4 : pair & 0xF;
-        const int32_t sample = AdpcmSample(value, scale, coefs[2 * predictor], coefs[2 * predictor + 1], yn1, yn2);
+        const int32_t sample =
+            ntdlib::wave::DspAdpcmSample(value >= 8 ? value - 16 : value, scale, coefs[2 * predictor],
+                                         coefs[2 * predictor + 1], yn1, yn2, ntdlib::wave::DspAdpcmSum::kWrap);
         out[done++] = static_cast<int16_t>(sample);
         yn2 = yn1;
         yn1 = sample;
@@ -405,7 +386,9 @@ void ApplyBiquadFilter(float* out, const float* in, const std::array<int16_t, 3>
     float y2 = state.y2;
     for (int block = 0; block + 4 <= count; block += 4)
     {
-        const float* x = in + block;
+        // The block's inputs, read before its outputs are stored: `out` may be `in`.
+        float x[4];
+        std::memcpy(x, in + block, sizeof(x));
         float y[4];
         for (int j = 0; j < 4; ++j)
         {

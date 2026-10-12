@@ -5,24 +5,20 @@
 #include "hsf/player.h"
 
 #include <algorithm>
-#include <cmath>
-#include <cstddef>
 #include <cstdint>
-#include <cstdio>
-#include <exception>
-#include <map>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
-#include <string_view>
-#include <utility>
 #include <vector>
+
+#include "ntdlib/sar/set_archive.h"
+#include "xsflib/text.h"
 
 #include "atk/effect.h"
 #include "atk/engine.h"
 #include "audio/i3dl2.h"
-#include "fsar/formats.h"
+#include "hsf/sar.h"
 
 namespace hsf
 {
@@ -32,263 +28,139 @@ namespace
 // A sound's nn::atk item id is its index in the archive's sound table, with the sound type in its top byte.
 constexpr uint32_t kSoundItem = 0x01;
 
-std::string Hex(uint32_t value)
-{
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "0x%08x", static_cast<unsigned>(value));
-
-    return buf;
-}
-
-std::string Missing(const std::string& path)
-{
-    return "the set has no file " + path;
-}
-
 } // namespace
 
-class Player::Source
+struct Player::SourceTraits
 {
-public:
-    // The model playing the sound from `archive`, with the descriptor's voice count and aux effects.
-    std::optional<std::string> Start(const LoadedSet& set, const fsar::SoundArchive& archive);
+    using Set = LoadedSet;
+    using Archive = fsar::SoundArchive;
 
-    // Runs a frame of 5 ms and returns the device's output: 240 interleaved stereo pairs.
-    std::span<const int16_t> Frame();
-
-    bool Finished() const
+    // The model, and whether the last frame's output was silence.
+    struct Model
     {
-        return silent_ && !model_->engine->IsBusy();
+        Model(const Archive& archive, const atk::EngineOptions& options) : model(archive, options)
+        {
+        }
+
+        atk::ArchiveModel model;
+        bool silent = false;
+    };
+
+    // What the descriptor gives the model, and the sound.
+    struct Prepared
+    {
+        atk::EngineOptions options;
+        std::vector<AuxEffect> effects;
+        uint32_t sound = 0;
+    };
+
+    // The archive loads at the first start, and later starts reuse it.
+    static constexpr bool kKeepArchive = true;
+
+    // The player has checked the descriptor. LoadSet requires a sound. A set put together without one asks for item 0,
+    // which no sequence is.
+    static std::optional<std::string> Prepare(Set& set, Prepared& prepared)
+    {
+        const ArchiveDescriptor& d = *set.archive;
+        prepared.options.voice_count = static_cast<int>(d.voice_count);
+        prepared.effects = d.effects;
+        prepared.sound = set.sound.value_or(0);
+
+        return std::nullopt;
     }
 
-private:
-    std::unique_ptr<atk::ArchiveModel> model_;
-    bool silent_ = false; // the last frame's output was silence
-};
+    // The set's bytes move into the archive. The archive is only given out once all its group files are in it.
+    static std::optional<std::string> LoadArchive(Set& set, const Prepared&, std::optional<Archive>& archive)
+    {
+        const ArchiveDescriptor& d = *set.archive;
+        return fsar::LoadSetArchive(set, d.archive_path, d.group_paths, kSarOptions, archive);
+    }
 
-std::optional<std::string> Player::Source::Start(const LoadedSet& set, const fsar::SoundArchive& archive)
-{
-    const ArchiveDescriptor& d = *set.archive;
-    atk::EngineOptions options;
-    options.voice_count = static_cast<int>(d.voice_count);
-    model_ = std::make_unique<atk::ArchiveModel>(archive, options);
+    static std::unique_ptr<Model> MakeModel(const Prepared& prepared, const Archive& archive)
+    {
+        return std::make_unique<Model>(archive, prepared.options);
+    }
 
     // The scene's effects, in their order, before the sound starts.
-    for (const AuxEffect& effect : d.effects)
+    static std::optional<std::string> StartModel(Model& model, const Archive&, const Prepared& prepared)
     {
-        const std::vector<float>& v = effect.parameters;
-        const audio::I3dl2ReverbParameterSet parameters{v[0], v[1], v[2], v[3], v[4],  v[5],
-                                                        v[6], v[7], v[8], v[9], v[10], v[11]};
-        model_->engine->AppendEffect(static_cast<int>(effect.bus), std::make_unique<atk::I3dl2AuxEffect>(parameters));
+        for (const AuxEffect& effect : prepared.effects)
+        {
+            const std::vector<float>& v = effect.parameters;
+            const audio::I3dl2ReverbParameterSet parameters{v[0], v[1], v[2], v[3], v[4],  v[5],
+                                                            v[6], v[7], v[8], v[9], v[10], v[11]};
+            model.model.engine->AppendEffect(static_cast<int>(effect.bus),
+                                             std::make_unique<atk::I3dl2AuxEffect>(parameters));
+        }
+
+        return std::nullopt;
     }
 
-    if ((set.sound >> 24) != kSoundItem || !model_->engine->StartSequence(set.sound & 0xFFFFFF))
+    static std::optional<std::string> StartSequence(Model& model, const Set&, const Prepared& prepared)
     {
-        return "sound " + Hex(set.sound) + " isn't a sequence whose files the set holds";
+        if ((prepared.sound >> 24) != kSoundItem || !model.model.engine->StartSequence(prepared.sound & 0xFFFFFF))
+        {
+            return "sound " + xsflib::Hex(prepared.sound, 8) + " isn't a sequence whose files the set holds";
+        }
+
+        return std::nullopt;
     }
 
-    return std::nullopt;
-}
+    // A frame of 5 ms: the device's output, 240 interleaved stereo pairs. The model reports a failure by throwing.
+    static bool RunFrame(Model& model, std::vector<int16_t>& out)
+    {
+        model.model.engine->RunFrame();
+        const std::span<const int16_t> output = model.model.renderer.DeviceOutput();
+        model.silent = std::all_of(output.begin(), output.end(), [](int16_t sample) { return sample == 0; });
+        out.insert(out.end(), output.begin(), output.end());
 
-std::span<const int16_t> Player::Source::Frame()
-{
-    model_->engine->RunFrame();
-    const std::span<const int16_t> output = model_->renderer.DeviceOutput();
-    silent_ = std::all_of(output.begin(), output.end(), [](int16_t sample) { return sample == 0; });
+        return true;
+    }
 
-    return output;
-}
+    // The sound has finished once the sequence has ended and the output is silence. The effects have then died away
+    // too.
+    static bool Busy(const Model& model)
+    {
+        return !model.silent || model.model.engine->IsBusy();
+    }
+};
 
 Player::Player() = default;
 
 Player::~Player() = default;
 
-bool Player::Fail(const std::string& message)
-{
-    error_ = message;
-    state_ = State::kError;
-
-    return false;
-}
-
-bool Player::Load(const std::string& path, const FileReader& reader)
-{
-    LoadedSet set;
-    if (auto err = LoadSet(path, reader, set))
-    {
-        return Fail(*err);
-    }
-
-    return Load(std::move(set));
-}
-
-bool Player::Load(LoadedSet set)
+void Player::Unload()
 {
     source_.reset();
-    archive_.reset();
-    set_ = std::move(set);
-    state_ = State::kIdle;
-    error_.clear();
-    if (!set_.archive)
-    {
-        return Fail("no archive descriptor");
-    }
-
-    return true;
 }
 
-bool Player::Start()
-{
-    // The model's failures arrive as exceptions.
-    try
-    {
-        return StartImpl();
-    }
-    catch (const std::exception& e)
-    {
-        source_.reset();
-        return Fail(std::string("the sound couldn't start: ") + e.what());
-    }
-}
-
-bool Player::StartImpl()
+bool Player::StartSource()
 {
     output_.clear();
-    consumed_ = 0;
-    dropped_ = 0;
-    finished_frame_ = 0;
-    error_.clear();
-    if (!set_.archive)
+
+    // The source keeps the archive for restarts. Unload drops it with the set.
+    if (!source_)
     {
-        return Fail("nothing loaded");
+        source_ = std::make_unique<Source>();
     }
 
-    if (auto err = ReadArchive())
+    if (const std::optional<std::string> err = source_->Start(set_, output_))
     {
         return Fail(*err);
-    }
-
-    source_ = std::make_unique<Source>();
-    const std::optional<std::string> err = source_->Start(set_, *archive_);
-    if (err)
-    {
-        source_.reset();
-        return Fail(*err);
-    }
-
-    state_ = State::kPlaying;
-
-    return true;
-}
-
-std::optional<std::string> Player::ReadArchive()
-{
-    if (archive_)
-    {
-        return std::nullopt;
-    }
-
-    // The set's bytes move into the archive. A restart reuses the archive.
-    const ArchiveDescriptor& d = *set_.archive;
-    std::vector<uint8_t>* bytes = set_.File(d.archive_path);
-    if (!bytes)
-    {
-        return Missing(d.archive_path);
-    }
-
-    auto archive = std::make_unique<fsar::SoundArchive>(fsar::SoundArchive::Load(std::move(*bytes)));
-    for (const std::string& path : d.group_paths)
-    {
-        std::vector<uint8_t>* group = set_.File(path);
-        if (!group)
-        {
-            return Missing(path);
-        }
-
-        archive->AddGroupFile(std::move(*group));
-    }
-
-    archive_ = std::move(archive);
-
-    return std::nullopt;
-}
-
-bool Player::Step()
-{
-    try
-    {
-        const std::span<const int16_t> frame = source_->Frame();
-        output_.insert(output_.end(), frame.begin(), frame.end());
-        if (state_ == State::kPlaying && source_->Finished())
-        {
-            state_ = State::kFinished;
-            finished_frame_ = (dropped_ + output_.size()) / 2;
-        }
-    }
-    catch (const std::exception& e)
-    {
-        return Fail(std::string("the model failed: ") + e.what());
     }
 
     return true;
 }
 
-std::size_t Player::Render(int16_t* out, std::size_t frames)
+bool Player::RunStep()
 {
-    if (state_ != State::kPlaying && state_ != State::kFinished)
-    {
-        std::fill(out, out + frames * 2, int16_t{0});
-        return 0;
-    }
-
-    while ((output_.size() - consumed_) / 2 < frames)
-    {
-        if (!Step())
-        {
-            std::fill(out, out + frames * 2, int16_t{0});
-            return 0;
-        }
-    }
-
-    std::copy(output_.begin() + static_cast<std::ptrdiff_t>(consumed_),
-              output_.begin() + static_cast<std::ptrdiff_t>(consumed_ + frames * 2), out);
-    consumed_ += frames * 2;
-
-    // Drop consumed samples now and then to bound memory.
-    if (consumed_ > (1u << 20))
-    {
-        output_.erase(output_.begin(), output_.begin() + static_cast<std::ptrdiff_t>(consumed_));
-        dropped_ += consumed_;
-        consumed_ = 0;
-    }
-
-    return frames;
+    // The model reports a failure by throwing.
+    return source_->RunFrame(output_);
 }
 
-long long Player::LengthMs() const
+bool Player::Finished() const
 {
-    const auto it = set_.tags.find("length");
-    return it == set_.tags.end() ? -1 : ParseTime(it->second);
-}
-
-long long Player::FadeMs() const
-{
-    const auto it = set_.tags.find("fade");
-    return it == set_.tags.end() ? -1 : ParseTime(it->second);
-}
-
-double Player::Volume() const
-{
-    const auto it = set_.tags.find("volume");
-    if (it == set_.tags.end())
-    {
-        return 1.0;
-    }
-
-    // Text after the number, as in "0.5dB", is ignored. So is a value that isn't a finite number, such as 1e999: it
-    // would turn every sample into nonsense.
-    const std::optional<DecimalNumber> volume = ReadDecimal(it->second);
-    return volume && std::isfinite(volume->value) ? volume->value : 1.0;
+    return !source_->Busy();
 }
 
 } // namespace hsf

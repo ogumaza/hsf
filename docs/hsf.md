@@ -7,9 +7,9 @@ the console's audio renderer (`nn::audio`'s renderer), with the effects the game
 Switch games play sounds from NintendoWare sound archives (`.bfsar`, FSAR): sequences, wave sounds and streams. HSF
 plays sequences. Streams are recorded audio. Other tools already play them.
 
-Unlike 3SF and WSF rips, HSF rips contain no program for a sound processor. The Switch mixes sound in its audio
-renderer. The renderer runs in the system, outside the game's files. Every HSF player reproduces the renderer's work in
-code: the voices' decoding, sample-rate conversion, filters, volumes and mixes, and the aux effects.
+HSF rips contain no program for a sound processor. The Switch mixes sound in its audio renderer. The renderer runs in
+the system, outside the game's files. Every HSF player reproduces the renderer's work in code: the voices' decoding,
+sample-rate conversion, filters, volumes and mixes, and the aux effects.
 
 ## Files
 
@@ -130,10 +130,10 @@ A version 1 player provides:
   That matches a game that starts the sound before a frame.
 - **Output.** 16-bit stereo at 48,000 Hz.
 
-HSF's implementation (`src/atk`, `src/audio`) was written from a study of the code of WarioWare: Get It Together!, and
-of the build of the renderer for the CPU that the game's `sdk` module holds. The game links `nn::atk` from SDK 10.4.1.
-Other games may use other versions of the library, or another number of voices. Rips of them are close but not
-guaranteed exact.
+HSF's implementation (`src/atk` on ntdlib's model of the sequence player, and `src/audio`) follows a study of the code
+of WarioWare: Get It Together!, and of the build of the renderer for the CPU that the game's `sdk` module holds. The
+game links `nn::atk` from SDK 10.4.1. Other games may use other versions of the library, or another number of voices.
+Rips of them are close but not guaranteed exact.
 
 Version 1 plays sequence sounds only. A sound's files come from the archive, or from the group files that the descriptor
 names. The ripper skips sequences whose files aren't there. The output starts with the first frame. The sound has
@@ -188,19 +188,21 @@ sequence's effects count as sound. Either way, the length is at most 600 seconds
 A sequence loops when its main track jumps back to a command that the track has already played, outside a subroutine.
 Inside a subroutine, such a jump counts only when the jump is unconditional and one of two things holds: the track holds
 a note that sounds until the game stops the note, or the track has run no conditional command since the command that the
-jump goes to. A sequence also loops when its main track reaches the end of a loop that repeats for ever. Only a pass
-that changes the sound counts. A pass changes the sound when it plays a note, changes a setting of its track or of the
-sequence, or opens a track. A tie or a monophonic note that continues a note at the same key and velocity changes
-nothing. A pass that only waits, polls a variable or counts is idle. The main track is the sequence's first track. Once
-that track has ended, or while it makes idle passes, the first track still playing becomes the main track if this track
-played a note on the way round. Each track before the new main track must have ended, be idle or wait for ever, or come
-after the first track and play no notes in its passes. A pass of a later track that plays no note counts too if two
-things hold: the track holds a note that sounds until the game stops the note, on a looping wave at its sustain level,
-and every other track still playing is idle or waits for ever. A track waits for ever when it waits a negative number of
-ticks, waits out a held note, or waits for a note that never ends: one with no length on a looping wave. When the loop
-moves to another track, or to another loop of the same track, the count starts again. Loops that go round before the
-first sound don't count: a track that waits or sets values over and over while a note fades in, or before another track
-starts, isn't the sound's loop. A loop that went round without a sound ends the sequence at its last sound instead.
+jump goes to. A sequence also loops when its main track reaches the end of a loop that repeats for ever. A loop that
+repeats a set number of times can outlast the limit. If a sequence reaches the limit inside such loops, they count as
+loops that repeat for ever. Only a pass that changes the sound counts. A pass changes the sound when it plays a note,
+changes a setting of its track or of the sequence, or opens a track. A tie or a monophonic note that continues a note at
+the same key and velocity changes nothing. A pass that only waits, polls a variable or counts is idle. The main track is
+the sequence's first track. Once that track has ended, or while it makes idle passes, the first track still playing
+becomes the main track if this track played a note on the way round. Each track before the new main track must have
+ended, be idle or wait for ever, or come after the first track and play no notes in its passes. A pass of a later track
+that plays no note counts too if two things hold: the track holds a note that sounds until the game stops the note, on a
+looping wave at its sustain level, and every other track still playing is idle or waits for ever. A track waits for ever
+when it waits a negative number of ticks, waits out a held note, or waits for a note that never ends: one with no length
+on a looping wave. When the loop moves to another track, or to another loop of the same track, the count starts again.
+Loops that go round before the first sound don't count: a track that waits or sets values over and over while a note
+fades in, or before another track starts, isn't the sound's loop. A loop that went round without a sound ends the
+sequence at its last sound instead.
 
 A sequence can reach a state where each track waits for its notes to end, waits out a held note (one of 9,600 ticks or
 more), waits for ever, or only makes still passes with no note whose length will run out. A still pass is idle and draws

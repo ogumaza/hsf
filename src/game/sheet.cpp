@@ -12,7 +12,7 @@
 #include <utility>
 #include <vector>
 
-#include "common/bytes.h"
+#include "xsflib/bytes.h"
 
 namespace hsf::game
 {
@@ -42,15 +42,15 @@ std::optional<std::string> Sheet::Parse(std::vector<uint8_t> data, Sheet& out)
     out = Sheet{};
     const std::size_t size = data.size();
     if (size < 0x40 || data[0] != 0x7F || data[1] != 'E' || data[2] != 'L' || data[3] != 'F' || data[4] != 2 ||
-        data[5] != 1 || LoadLe16(&data[0x12]) != kAarch64)
+        data[5] != 1 || xsflib::LoadLe16(&data[0x12]) != kAarch64)
     {
         return std::string("not a little-endian 64-bit AArch64 ELF object");
     }
 
     // The sections.
-    const uint64_t table = LoadLe64(&data[0x28]);
-    const uint16_t entry = LoadLe16(&data[0x3A]);
-    const uint16_t count = LoadLe16(&data[0x3C]);
+    const uint64_t table = xsflib::LoadLe64(&data[0x28]);
+    const uint16_t entry = xsflib::LoadLe16(&data[0x3A]);
+    const uint16_t count = xsflib::LoadLe16(&data[0x3C]);
     if (entry < 0x40 || !Fits(size, table, uint64_t{entry} * count))
     {
         return std::string("its section headers run past its end");
@@ -68,7 +68,8 @@ std::optional<std::string> Sheet::Parse(std::vector<uint8_t> data, Sheet& out)
     for (uint16_t i = 0; i < count; ++i)
     {
         const uint8_t* h = &data[table + uint64_t{entry} * i];
-        Header header{LoadLe32(h + 4), LoadLe64(h + 0x18), LoadLe64(h + 0x20), LoadLe32(h + 0x28), LoadLe32(h + 0x2C)};
+        Header header{xsflib::LoadLe32(h + 4), xsflib::LoadLe64(h + 0x18), xsflib::LoadLe64(h + 0x20),
+                      xsflib::LoadLe32(h + 0x28), xsflib::LoadLe32(h + 0x2C)};
         const bool has_bytes = header.type != 8; // SHT_NOBITS has none
         if (has_bytes && !Fits(size, header.offset, header.size))
         {
@@ -91,9 +92,9 @@ std::optional<std::string> Sheet::Parse(std::vector<uint8_t> data, Sheet& out)
         const Header& strings = headers[h.link];
         for (uint64_t at = h.offset; at + 24 <= h.offset + h.size; at += 24)
         {
-            const uint32_t name = LoadLe32(&data[at]);
-            const uint16_t section = LoadLe16(&data[at + 6]);
-            const uint64_t value = LoadLe64(&data[at + 8]);
+            const uint32_t name = xsflib::LoadLe32(&data[at]);
+            const uint16_t section = xsflib::LoadLe16(&data[at + 6]);
+            const uint64_t value = xsflib::LoadLe64(&data[at + 8]);
             symbol_targets.emplace_back(section, value);
             if (name == 0 || name >= strings.size)
             {
@@ -104,7 +105,7 @@ std::optional<std::string> Sheet::Parse(std::vector<uint8_t> data, Sheet& out)
             const std::size_t length = std::string(text, static_cast<std::size_t>(strings.size - name)).find('\0');
             if (length != std::string::npos)
             {
-                out.symbols_[std::string(text, length)] = {section, value, LoadLe64(&data[at + 16])};
+                out.symbols_[std::string(text, length)] = {section, value, xsflib::LoadLe64(&data[at + 16])};
             }
         }
     }
@@ -117,7 +118,7 @@ std::optional<std::string> Sheet::Parse(std::vector<uint8_t> data, Sheet& out)
 
         for (uint64_t at = h.offset; at + 24 <= h.offset + h.size; at += 24)
         {
-            const uint64_t info = LoadLe64(&data[at + 8]);
+            const uint64_t info = xsflib::LoadLe64(&data[at + 8]);
             const uint64_t symbol = info >> 32;
             if ((info & 0xFFFFFFFF) != kAbsolute64 || symbol >= symbol_targets.size())
             {
@@ -125,8 +126,8 @@ std::optional<std::string> Sheet::Parse(std::vector<uint8_t> data, Sheet& out)
             }
 
             const auto [section, value] = symbol_targets[symbol];
-            const auto addend = static_cast<uint64_t>(static_cast<int64_t>(LoadLe64(&data[at + 16])));
-            out.pointers_[{static_cast<uint16_t>(h.info), LoadLe64(&data[at])}] = {section, value + addend};
+            const auto addend = static_cast<uint64_t>(static_cast<int64_t>(xsflib::LoadLe64(&data[at + 16])));
+            out.pointers_[{static_cast<uint16_t>(h.info), xsflib::LoadLe64(&data[at])}] = {section, value + addend};
         }
     }
 
@@ -189,12 +190,12 @@ std::map<std::string, I3dl2Preset> ReadI3dl2Presets(const Sheet& sheet)
         return presets;
     }
 
-    const uint32_t count = LoadLe32(count_bytes.data());
+    const uint32_t count = xsflib::LoadLe32(count_bytes.data());
     for (uint32_t i = 0; i < count && (i + 1) * kRecordSize <= records.size(); ++i)
     {
         const std::size_t base = i * kRecordSize;
         const std::optional<std::string> name = sheet.StringAt("s_SoundEffectList", base);
-        if (!name || LoadLe32(&records[base + 8]) != kI3dl2Type)
+        if (!name || xsflib::LoadLe32(&records[base + 8]) != kI3dl2Type)
         {
             continue;
         }
@@ -202,7 +203,7 @@ std::map<std::string, I3dl2Preset> ReadI3dl2Presets(const Sheet& sheet)
         I3dl2Preset p;
         for (std::size_t k = 0; k < p.size(); ++k)
         {
-            p[k] = std::bit_cast<float>(LoadLe32(&records[base + kI3dl2Parameters + 4 * k]));
+            p[k] = std::bit_cast<float>(xsflib::LoadLe32(&records[base + kI3dl2Parameters + 4 * k]));
         }
         p[2] = p[2] / 1000.0f;
         p[3] = p[3] / 100.0f;

@@ -10,11 +10,14 @@
 
 #include <array>
 #include <cstdint>
-#include <map>
+#include <functional>
 #include <memory>
 #include <optional>
+#include <set>
 #include <utility>
 #include <vector>
+
+#include "ntdlib/nwsnd/archive_files.h"
 
 #include "atk/channel.h"
 #include "atk/effect.h"
@@ -23,9 +26,10 @@
 #include "atk/sequence.h"
 #include "atk/util.h"
 #include "atk/voice.h"
+#include "atk/voice_renderer.h"
 #include "audio/i3dl2.h"
 #include "audio/renderer.h"
-#include "fsar/formats.h"
+#include "hsf/sar.h"
 
 namespace hsf::atk
 {
@@ -86,9 +90,25 @@ public:
         return channels_;
     }
 
+    const ChannelManager& Channels() const
+    {
+        return channels_;
+    }
+
     MultiVoiceManager& Voices()
     {
         return voices_;
+    }
+
+    const MultiVoiceManager& Voices() const
+    {
+        return voices_;
+    }
+
+    // The MultiVoices' voices on the audio renderer.
+    VoiceRenderer& Renderer()
+    {
+        return voice_renderer_;
     }
 
     LowLevelVoiceAllocator& LowLevelVoices()
@@ -100,6 +120,38 @@ public:
     // velocity, its wave, and a channel that starts it. Returns nullptr if the slot, the program, the region or the
     // wave isn't there, or no channel is free.
     Channel* NoteOn(const std::vector<uint32_t>& banks, int slot, const NoteOnInfo& info);
+
+    // Passes a channel's callback on to its owner: track `track` of the player at `player` among the engine's players.
+    void ChannelEvent(int player, int track, Channel& channel, Channel::CallbackStatus status);
+
+    // The length analysis's hook for the sequence's loops. While it's set, the players report their loops to it (see
+    // ntdlib's SequenceSoundPlayer).
+    void SetLoopHook(std::function<void(int track, uint32_t target)> hook)
+    {
+        on_loop_ = std::move(hook);
+    }
+
+    bool FollowsLoops() const
+    {
+        return static_cast<bool>(on_loop_);
+    }
+
+    void OnLoop(const SequenceSoundPlayer&, int track, uint32_t target)
+    {
+        on_loop_(track, target);
+    }
+
+    // The counted loops that the length analysis takes as endless, each a track and its loop's body (see ntdlib's
+    // LoopsForEver).
+    void SetEndlessLoops(std::set<std::pair<int, uint32_t>> loops)
+    {
+        endless_loops_ = std::move(loops);
+    }
+
+    bool LoopsForEver(const SequenceSoundPlayer&, int track, uint32_t address) const
+    {
+        return endless_loops_.contains({track, address});
+    }
 
 private:
     struct PendingStart
@@ -122,15 +174,12 @@ private:
     // (HardwareManager's update of the effects, 0xc05f30, for the receiver's sub-mix, 0xc2d3b0).
     void UpdateEffects();
 
-    const fsar::Bank* GetBank(uint32_t bank_item);
-    const fsar::WaveArchive* GetWaveArchive(uint32_t wave_archive_item);
-    std::optional<WaveInfo> GetWave(uint32_t wave_archive_item, uint32_t index);
-
     audio::Renderer* renderer_;
     const fsar::SoundArchive* archive_;
     const OutputReceiver* receiver_;
     EngineOptions options_;
     LowLevelVoiceAllocator allocator_;
+    VoiceRenderer voice_renderer_;
     MultiVoiceManager voices_;
     ChannelManager channels_;
     Random random_;
@@ -142,9 +191,13 @@ private:
     std::vector<PendingStart> pending_;
     std::array<std::vector<AttachedEffect>, 4> effects_; // by bus, the main bus first
 
-    std::map<uint32_t, std::unique_ptr<const fsar::Bank>> banks_;
-    std::map<uint32_t, std::unique_ptr<const fsar::WaveArchive>> wave_archives_;
-    std::map<std::pair<uint32_t, uint32_t>, std::optional<WaveInfo>> waves_;
+    // The banks, wave archives and waves that notes play. Each wave reads as WaveFileReader::ReadWaveInfo (0xc0b410)
+    // reads it.
+    using Files = ntdlib::nwsnd::ArchiveFiles<SequencePolicy>;
+    Files files_;
+
+    std::function<void(int track, uint32_t target)> on_loop_;
+    std::set<std::pair<int, uint32_t>> endless_loops_;
 };
 
 // Archive mode's whole stack for one sound archive: the renderer, set up as nn::atk sets it up by default, and the
@@ -157,10 +210,11 @@ struct ArchiveModel
     static constexpr int32_t kSampleRate = 48000;
     static constexpr int32_t kFrameSamples = 240;
 
-    explicit ArchiveModel(const fsar::SoundArchive& archive, EngineOptions options = {});
+    // `observer`, if any, sees every call made on the renderer, from the first (audio::Renderer::SetObserver).
+    explicit ArchiveModel(const fsar::SoundArchive& archive, EngineOptions options = {},
+                          audio::RendererObserver* observer = nullptr);
 
     audio::Renderer renderer;
-    OutputReceiver final_mix;
     OutputReceiver sub_mix;
     std::unique_ptr<Engine> engine;
 };

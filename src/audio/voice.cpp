@@ -103,15 +103,11 @@ void DecodeFromWaveBuffers(const DecodeFromWaveBuffersArgs& args)
     {
         const int32_t count = remaining < batch ? remaining : batch;
         const int32_t batch_end = WrapAdd(WrapMul(count, ratio), fraction);
-        int16_t* input = scratch.data();
-        if (!args.skip_src)
+        for (int k = 0; k < history; ++k)
         {
-            for (int k = 0; k < history; ++k)
-            {
-                scratch[static_cast<std::size_t>(k)] = state.history[static_cast<std::size_t>(k)];
-            }
-            input += history;
+            scratch[static_cast<std::size_t>(k)] = state.history[static_cast<std::size_t>(k)];
         }
+        int16_t* input = scratch.data() + history;
 
         // Decode the samples the batch requires, buffer after buffer.
         const int32_t need = batch_end >> 15;
@@ -151,6 +147,7 @@ void DecodeFromWaveBuffers(const DecodeFromWaveBuffersArgs& args)
                     {
                         continue;
                     }
+
                     break;
                 }
             }
@@ -169,6 +166,7 @@ void DecodeFromWaveBuffers(const DecodeFromWaveBuffersArgs& args)
                     starved = true;
                     break;
                 }
+
                 if (args.reset_played_at_loop)
                 {
                     played = 0;
@@ -186,24 +184,14 @@ void DecodeFromWaveBuffers(const DecodeFromWaveBuffersArgs& args)
         }
 
         // Convert the batch, with zeros for what the buffers didn't give, and keep the history for the next one.
-        if (args.skip_src)
+        for (int32_t i = decoded; i < need; ++i)
         {
-            for (int32_t i = 0; i < decoded; ++i)
-            {
-                out[i] = scratch[static_cast<std::size_t>(i)];
-            }
+            input[i] = 0;
         }
-        else
+        Resample(out, scratch.data(), ratio, fraction, count, args.quality, need != count || args.pitch != 0x8000);
+        for (int k = 0; k < history; ++k)
         {
-            for (int32_t i = decoded; i < need; ++i)
-            {
-                input[i] = 0;
-            }
-            Resample(out, scratch.data(), ratio, fraction, count, args.quality, need != count || args.pitch != 0x8000);
-            for (int k = 0; k < history; ++k)
-            {
-                state.history[static_cast<std::size_t>(k)] = scratch[static_cast<std::size_t>(need + k)];
-            }
+            state.history[static_cast<std::size_t>(k)] = scratch[static_cast<std::size_t>(need + k)];
         }
 
         remaining -= count;
@@ -211,6 +199,7 @@ void DecodeFromWaveBuffers(const DecodeFromWaveBuffersArgs& args)
         {
             break;
         }
+
         out += count;
     }
 
