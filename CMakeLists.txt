@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.20)
 # Shared version for the tools (HSF_VERSION_ARGS below). For a release, update it here and add notes in
 # docs/release-notes/.
-project(hsf VERSION 1.0.1 LANGUAGES C CXX)
+project(hsf VERSION 1.1.0 LANGUAGES C CXX)
 
 # xsflib: a library for players and rippers of the PSF family, as a submodule. Its XsflibProject.cmake sets what a
 # project built on it starts with: C++20, a release build by default, the static C runtime, the options that keep the
@@ -86,7 +86,7 @@ target_link_libraries(hsf_format PUBLIC hsf_common xsflib::psf)
 target_compile_options(hsf_format PRIVATE ${HSF_WARNINGS})
 
 # The player: a set's sound on the model. Playback with lengths, fades and seeking, and rendering ahead on a worker
-# thread for the foobar2000 component, come from xsflib::player.
+# thread for the foobar2000 component and the XMPlay plugin, come from xsflib::player.
 add_library(hsf_player STATIC
     src/hsf/player.cpp
     src/hsf/player.h
@@ -133,6 +133,12 @@ if (FOOBAR2000_SDK_DIR)
         message(FATAL_ERROR "the foobar2000 component requires clang-cl or MSVC on Windows, or macOS")
     endif()
     add_subdirectory(plugins/foobar2000)
+endif()
+
+# XMPlay plugin (32-bit Windows with clang-cl): cmake -A Win32 -T ClangCL -DXMPLAY_SDK_DIR=<unpacked SDK> ...
+set(XMPLAY_SDK_DIR "" CACHE PATH "XMPlay plugin SDK (builds the xmp-hsf plugin when set)")
+if (XMPLAY_SDK_DIR)
+    add_subdirectory(plugins/xmplay)
 endif()
 
 enable_testing()

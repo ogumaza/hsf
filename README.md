@@ -8,7 +8,7 @@ console's audio renderer. The renderer mixes the sound outside the game, in the 
 arithmetic as the console. It also runs the effects that a game puts on the sound library's aux buses, such as an I3DL2
 reverb. `docs/hsf.md` specifies the format.
 
-HSF comes with a ripper (`hsfrip`), a command-line renderer (`hsfplay`) and a foobar2000 component.
+HSF comes with a ripper (`hsfrip`), a command-line renderer (`hsfplay`), a foobar2000 component and an XMPlay plugin.
 
 ## Tools
 
@@ -17,6 +17,7 @@ HSF comes with a ripper (`hsfrip`), a command-line renderer (`hsfplay`) and a fo
 | `hsfrip [options] <input>...` | Rips each input into an `.hsflib` and a `.minihsf` for each sequence. Each `.minihsf` is tagged with the sequence's length and fade. The rip goes in a folder next to the input, with the input's name and `_hsf` added. `-o` names another folder. An input is a Switch game's files or a sound archive (`.bfsar`). The game's files are a folder (its RomFS, once it's extracted) or a Bezel Engine archive (`.bea`). Each of a game's sound archives gets a folder of its own. `--list` lists a game's sound archives and what each holds, `--only REGEX` rips the sounds whose labels match, `--bgm` rips the music, and `--help` shows the rest. Sequences that make no sound (such as placeholders, and sequences that only set values for the game) are listed and skipped. |
 | `hsfplay [options] <file>...` | Renders each `.minihsf` at 48,000 Hz to a WAV file next to it. The render lasts for the tagged length and fade. `-o FILE` writes FILE instead. The file's extension selects WAV or FLAC. `--length` and `--fade` override the tags. `--info` shows a file's tags and the files it loads. |
 | `foo_input_hsf` | The foobar2000 component, for foobar2000 on Windows and macOS. The component plays `.minihsf` and `.hsf` files, and shows and edits their tags. Rendering ahead during playback makes seeking quick. `plugins/foobar2000/README.md` describes how to build it. |
+| `xmp-hsf` | The XMPlay plugin, a 32-bit DLL for XMPlay on Windows. The plugin plays `.minihsf` and `.hsf` files, and shows their tags. Rendering ahead during playback makes seeking quick. `plugins/xmplay/README.md` describes how to build it. |
 
 `hsfrip` reads a game's files once they're extracted from the game: its RomFS folder, or the archives and sound archives
 in it. Games on Bezel Engine keep nearly all their files, sound archives included, in `.bea` archives. `hsfrip` reads
@@ -35,8 +36,11 @@ archives. Then `hsfplay romfs_hsf/*/*.minihsf` renders every sequence in it. `--
 
 ### Downloads
 
-The Releases page has `hsfrip` and `hsfplay` for 64-bit Windows, and the foobar2000 component for 64-bit and 32-bit
-foobar2000 on Windows. On macOS, build HSF from source (see "Building").
+The Releases page has `hsfrip` and `hsfplay` for 64-bit Windows, the foobar2000 component for 64-bit and 32-bit
+foobar2000 on Windows, and the XMPlay plugin. On macOS, build HSF from source (see "Building").
+
+To install the XMPlay plugin, unzip `xmp-hsf-X.Y.Z.zip` and put `xmp-hsf.dll` in XMPlay's folder, or in a folder
+inside it. Then restart XMPlay.
 
 ### Drag and drop
 
@@ -63,8 +67,8 @@ are downloaded and built along with HSF when they aren't installed.
 - **macOS on Apple Silicon:** the Xcode command line tools (`xcode-select --install`) and CMake (`brew install cmake`).
   `brew install zstd flac` saves building Zstandard and libFLAC.
 
-Linux, Intel Macs, MSVC and 32-bit Windows aren't supported. The one exception is the 32-bit foobar2000 component. Build
-it with clang-cl, configured with `-A Win32 -T ClangCL`.
+Linux, Intel Macs, MSVC and 32-bit Windows aren't supported. The exceptions are the 32-bit foobar2000 component and the
+XMPlay plugin. Build them with clang-cl, configured with `-A Win32 -T ClangCL`.
 
 ```sh
 cmake -S . -B build
@@ -99,7 +103,7 @@ src/game/     a Switch game's files: folders, and Bezel Engine's archives and da
 src/hsf/      the HSF format and the player
 src/rip/      the ripper: sets and the length analysis
 src/cli/      hsfrip and hsfplay
-plugins/      the foobar2000 component
+plugins/      the foobar2000 component and the XMPlay plugin
 tests/        ctest suites
 externals/    xsflib, the code that the PSF players share, and ntdlib, for Nintendo's formats (submodules)
 ```

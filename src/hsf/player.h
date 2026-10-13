@@ -2,7 +2,7 @@
 
 // HSF player core: loads an .hsflib and .minihsf set and produces its audio, with HSF's model of the SDK's sound
 // library (nn::atk) on its model of the console's audio renderer. Portable C++ with no platform audio or UI. The CLI
-// renderer and the foobar2000 component use it.
+// renderer, the foobar2000 component and the XMPlay plugin use it.
 
 #pragma once
 

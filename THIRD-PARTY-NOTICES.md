@@ -11,12 +11,14 @@ HSF is under the MIT licence (`LICENSE`). HSF's dependencies have the following 
 | [zlib](https://zlib.net), Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler | zlib | The PSF container. The system's copy is used, or v1.3.1 is downloaded when configuring. |
 | [libFLAC](https://xiph.org/flac/), Copyright the Xiph.Org Foundation | BSD-3-Clause | FLAC output in `hsfplay`. The system's copy is used, or 1.5.0 is downloaded when configuring. |
 | [foobar2000 SDK](https://www.foobar2000.org/SDK), Copyright Peter Pawlowski | BSD-style (the SDK's `sdk-license.txt`, and `pfc-license.txt` for its pfc library) | Only for `plugins/foobar2000`. Not included here. The SDK is supplied when building the component. |
+| [XMPlay plugin SDK](https://www.un4seen.com/xmplay.html), from Un4seen Developments | None stated | Only for `plugins/xmplay`. Not included here. The SDK is supplied when building the plugin. CI downloads it from un4seen.com. The plugin uses only the SDK's declarations of XMPlay's interface. |
 
 Binary distributions must include the MIT notices of HSF, xsflib and ntdlib. The Zstandard notice is required when
-Zstandard is linked in: `hsfrip` links it, and `hsfplay` and the foobar2000 component don't. The libFLAC notice is
-required when libFLAC is linked in: `hsfplay` links it, and the foobar2000 component doesn't. Shipping `LICENSE` and
-this file meets all five requirements. The licence texts are at the end of this file. The licences of zlib, the
-foobar2000 SDK and its pfc library require no notice in binaries. seqlib's checks go only into tests.
+Zstandard is linked in: `hsfrip` links it, and `hsfplay`, the foobar2000 component and the XMPlay plugin don't. The
+libFLAC notice is required when libFLAC is linked in: `hsfplay` links it, and the foobar2000 component and the XMPlay
+plugin don't. Shipping `LICENSE` and this file meets all five requirements. The licence texts are at the end of this
+file. The licences of zlib, the foobar2000 SDK and its pfc library require no notice in binaries. seqlib's checks go
+only into tests. No code from the XMPlay plugin SDK goes into the XMPlay plugin.
 
 ## Reference material (no code taken)
 
