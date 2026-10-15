@@ -4,11 +4,10 @@
 // (xsflib/foobar2000/input.h). The template's comment says what the component does. This file gives HSF's traits: its
 // player, names, extensions, GUIDs and limits.
 //
-// The player core (src/hsf) plays the sound with HSF's model of the SDK's sound library, through HSF's model of the
-// console's audio renderer.
+// The player core (src/hsf) plays the sound with ntdlib's model of the SDK's sound library, through ntdlib's model of
+// the console's audio renderer.
 //
-// Build: see plugins/foobar2000/README.md (clang-cl or MSVC on Windows, or Apple Clang on macOS, with the foobar2000
-// SDK).
+// Build: see plugins/foobar2000/README.md (clang-cl on Windows, or Apple Clang on macOS, with the foobar2000 SDK).
 
 #include <array>
 #include <cstdint>
@@ -42,7 +41,7 @@ struct Traits
     static constexpr std::array<const char*, 2> kExtensions = {"hsf", "minihsf"};
     static constexpr uint8_t kPsfVersion = hsf::kPsfVersionHsf;
     static constexpr t_filesize kMaxFileSize = t_filesize{1} << 30; // largest file read into memory
-    static constexpr const char* kVariablesTag = nullptr;
+    static constexpr std::array<const char*, 0> kKeptTags = {};
 
     // {B098EC3B-4AA0-48F8-8AFC-47F4A5B857EE}
     static constexpr GUID kInputGuid = {0xb098ec3b, 0x4aa0, 0x48f8, {0x8a, 0xfc, 0x47, 0xf4, 0xa5, 0xb8, 0x57, 0xee}};

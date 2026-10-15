@@ -23,9 +23,9 @@ only into tests. No code from the XMPlay plugin SDK goes into the XMPlay plugin.
 ## Reference material (no code taken)
 
 - [yuzu](https://github.com/yuzu-emu/yuzu) (GPL-3.0) and [Ryujinx](https://github.com/Ryujinx/Ryujinx) (MIT) are
-  references for how the Switch's audio renderer behaves. No code is taken from them. HSF's model of the renderer was
-  written from a description of their behaviour by someone who hasn't read their source for it, and from a study of the
-  renderer's build for the CPU that games' `sdk` modules hold.
+  references for how the Switch's audio renderer behaves. No code is taken from them. The model of the renderer, now in
+  ntdlib's `nx` module, was written from a description of their behaviour by someone who hasn't read their source for
+  it, and from a study of the renderer's build for the CPU that games' `sdk` modules hold.
 
 ## Game data
 
@@ -33,9 +33,10 @@ Nothing in this repository licenses game data. Rips (`.hsflib`) contain a game's
 copyright holders.
 
 ntdlib's `nwsnd/tables.h` holds the numeric tables that `nn::atk` uses: powers of two, decibel levels, envelope attack
-multipliers, pan curves, low-pass cutoffs and their filters, biquad filter coefficients and sines. `src/audio/tables.h`
-holds the audio renderer's tables: the coefficients of its sample-rate converters, and the I3DL2 reverb's delays, early
-reflections, powers of ten and sines. The models use the exact values to reproduce the console's output.
+multipliers, pan curves, low-pass cutoffs and their filters, biquad filter coefficients and sines. ntdlib's
+`src/nx/audio/tables.h` holds the audio renderer's tables: the coefficients of its sample-rate converters, and the I3DL2
+reverb's delays, early reflections, powers of ten and sines. The models use the exact values to reproduce the console's
+output.
 
 ## Licence texts
 

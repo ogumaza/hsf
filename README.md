@@ -80,9 +80,7 @@ ctest --test-dir build -C Release
 --preset release` and `ctest --preset release`). The presets require CMake 3.23 or later. They don't select clang-cl.
 On Windows, use the commands above.
 
-The model tests (`tests/atk_test.cpp` and `tests/audio_test.cpp`) check the models of the sound library and the
-renderer against their formulas on made-up input. The engine test (`tests/atk_engine_test.cpp`) plays notes from small
-archives through the sound library's model, with and without a reverb on an aux bus.
+The models of the sound library and the renderer are in ntdlib's `nx` module, with their tests.
 
 The format test (`tests/format_test.cpp`) checks the descriptor and the loading of libraries. The player test
 (`tests/player_test.cpp`) plays sets made from a small archive and checks lengths, fades, seeks, volume, group files and
@@ -95,17 +93,14 @@ that holds the archive unpacked. The test also checks that the readers refuse da
 
 ```
 docs/         the format's specification (hsf.md)
-src/atk/      the parts of the model of the Switch's sound library, nn::atk, that ntdlib doesn't hold: the Switch's
-              policy, the voices on the renderer, the engine and the aux effects
-src/audio/    the model of the Switch's audio renderer: voices, mixes, aux effects and sinks, the frames it renders,
-              and the I3DL2 reverb that games run on aux effects
 src/game/     a Switch game's files: folders, and Bezel Engine's archives and data sheets
 src/hsf/      the HSF format and the player
 src/rip/      the ripper: sets and the length analysis
 src/cli/      hsfrip and hsfplay
 plugins/      the foobar2000 component and the XMPlay plugin
 tests/        ctest suites
-externals/    xsflib, the code that the PSF players share, and ntdlib, for Nintendo's formats (submodules)
+externals/    xsflib, the code that the PSF players share, and ntdlib, for Nintendo's formats and the models of the
+              Switch's sound library and audio renderer (submodules)
 ```
 
 ## Licence

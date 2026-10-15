@@ -3,8 +3,8 @@
 // xmp-hsf: XMPlay input plugin for HSF (.hsf and .minihsf), from xsflib's plugin template (xsflib/xmplay/input.h). The
 // template's comment says what the plugin does. This file gives HSF's traits: its player, names, extensions and limits.
 //
-// The player core (src/hsf) plays the sound with HSF's model of the SDK's sound library, through HSF's model of the
-// console's audio renderer.
+// The player core (src/hsf) plays the sound with ntdlib's model of the SDK's sound library, through ntdlib's model of
+// the console's audio renderer.
 //
 // Build: see plugins/xmplay/README.md (clang-cl for 32-bit Windows, with the XMPlay plugin SDK).
 

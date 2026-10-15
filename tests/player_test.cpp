@@ -2,9 +2,9 @@
 
 // Tests the player and its playback (src/hsf/player.* and xsflib's Playback), on sets made from a small archive. The
 // output must be the model's output. A tagged length and fade must be kept. A set without a length must end half a
-// second after its sound. A seek must land where a straight render does. The volume tag must apply. A group file
-// outside the archive must be found. A reverb on an aux bus must play as the model plays it. A set that can't play must
-// report why.
+// second after its sound. A seek must land where a straight render does, from a snapshot of the model too. The volume
+// tag must apply. A group file outside the archive must be found. A reverb on an aux bus must play as the model plays
+// it. A set that can't play must report why.
 
 #include "hsf/player.h"
 
@@ -18,14 +18,15 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/nx/atk/effect.h"
+#include "ntdlib/nx/atk/engine.h"
+#include "ntdlib/nx/audio/i3dl2.h"
 #include "ntdlib/testing/sar_files.h"
 #include "xsflib/testing/check.h"
 #include "xsflib/testing/sets.h"
 
-#include "atk/effect.h"
-#include "atk/engine.h"
-#include "audio/i3dl2.h"
 #include "hsf/format.h"
+#include "hsf/nx.h"
 #include "hsf/sar.h"
 
 using namespace ntdlib::testing;
@@ -144,6 +145,40 @@ std::vector<int16_t> RenderAll(const std::string& path, std::size_t block = 1000
     return xsflib::testing::RenderAll<hsf::Playback>(path, kReader, block);
 }
 
+// Checks seeks from snapshots in a playback of the set at `path` that takes a snapshot every `interval` frames. The
+// playback first renders the set to its end. That render has to give `straight`, the set's whole output without
+// snapshots. The snapshots then lie inside the sound, and inside the model's frames. Each seek to one of `frames`, in
+// turn, starts from a snapshot after the start. A restart would drop the snapshots. Every one of them therefore has to
+// stay. After each seek, the position is the frame, and the next 1,000 frames are those of `straight`.
+void CheckSnapshotSeeks(const std::string& path, const std::vector<int16_t>& straight, uint64_t interval,
+                        const std::vector<uint64_t>& frames)
+{
+    constexpr std::size_t kBlock = 1000;
+    hsf::PlaybackOptions options;
+    options.snapshot_interval = interval;
+    hsf::Playback playback;
+    std::vector<int16_t> buffer(2 * kBlock);
+    std::vector<int16_t> played;
+    bool started = playback.Open(path, kReader, options) && playback.Start();
+    for (std::size_t n = 0; started && (n = playback.Render(buffer.data(), kBlock)) > 0;)
+    {
+        played.insert(played.end(), buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(2 * n));
+    }
+    const std::size_t snapshots = playback.SnapshotCount();
+    Check(played == straight && snapshots > 1, path + ": a render that takes snapshots plays the same");
+
+    bool landed = started;
+    for (const uint64_t frame : frames)
+    {
+        const uint64_t from = playback.SeekStart(frame);
+        landed = landed && from > 0 && from <= frame && playback.Seek(frame) && playback.Position() == frame &&
+                 playback.SnapshotCount() >= snapshots && playback.Render(buffer.data(), kBlock) == kBlock &&
+                 straight.size() >= 2 * (frame + kBlock) &&
+                 std::equal(buffer.begin(), buffer.end(), straight.begin() + static_cast<std::ptrdiff_t>(2 * frame));
+    }
+    Check(landed, path + ": seeks from snapshots land where a straight render does");
+}
+
 // The model's output for `sound` (`frames` frames), with `reverb` on aux bus A when given, and the frame in which the
 // model went idle with a silent output (0 if it never did).
 std::vector<int16_t> ModelOutput(const std::vector<uint8_t>& archive_bytes, uint32_t sound, int frames, int& idle,
@@ -195,6 +230,9 @@ int main()
     // A seek forward and a seek back land where the straight render does.
     CheckSeeks<hsf::Playback>("sets/tagged.minihsf", kReader, tagged, {30000, 10000});
 
+    // So do seeks back and forward from snapshots taken every 2,000 frames, in the middle of the notes.
+    CheckSnapshotSeeks("sets/tagged.minihsf", tagged, 2000, {65000, 30123, 47999, 2345, 70500});
+
     // The volume tag scales every sample.
     CheckVolume(RenderAll(WriteMini("quiet", library, kNote, {{"volume", "0.5"}})), untagged, 0.5);
 
@@ -228,10 +266,17 @@ int main()
         int wet_idle = 0;
         ModelOutput(plain.archive, kSent, 2000, dry_idle);
         const std::vector<int16_t> wet = ModelOutput(plain.archive, kSent, 2000, wet_idle, &kReverb);
-        const std::vector<int16_t> played = RenderAll(WriteMini("reverb", reverb_library, kSent, {}));
+        const std::string reverb_mini = WriteMini("reverb", reverb_library, kSent, {});
+        const std::vector<int16_t> played = RenderAll(reverb_mini);
         Check(wet_idle > dry_idle + 20 && played.size() == 2 * (static_cast<std::size_t>(wet_idle) * kFrame + 24000) &&
                   std::equal(played.begin(), played.end() - 2 * 24000, wet.begin()),
               "a set with a reverb plays the model's output, and its tail");
+
+        // A seek from a snapshot in the reverb's tail lands where the straight render does: a snapshot holds the
+        // reverb's state.
+        const auto dry_end = static_cast<uint64_t>(dry_idle) * kFrame;
+        const auto wet_end = static_cast<uint64_t>(wet_idle) * kFrame;
+        CheckSnapshotSeeks(reverb_mini, played, 2000, {wet_end - 1500, dry_end + 777, (dry_end + wet_end) / 2, 4321});
     }
 
     // Sets that can't play: a group file the set doesn't hold, a sound the archive doesn't have, an item that isn't a

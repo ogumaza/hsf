@@ -13,12 +13,13 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/nx/atk/effect.h"
+#include "ntdlib/nx/atk/engine.h"
+#include "ntdlib/nx/atk/low_level_voice.h"
+#include "ntdlib/nx/audio/i3dl2.h"
 #include "xsflib/rip/length.h"
 
-#include "atk/effect.h"
-#include "atk/engine.h"
-#include "atk/low_level_voice.h"
-#include "audio/i3dl2.h"
+#include "hsf/nx.h"
 #include "hsf/sar.h"
 
 namespace hsf::rip
@@ -42,8 +43,8 @@ xsflib::rip::LengthRules HsfLengthRules()
     return rules;
 }
 
-// HSF's model for the length analysis (xsflib::rip::MeasureLength): the engine and the renderer of an ArchiveModel, and
-// the sound's player. A frame's output is what the renderer rendered in it.
+// ntdlib's model for the length analysis (xsflib::rip::MeasureLength): the engine and the renderer of an ArchiveModel,
+// and the sound's player. A frame's output is what the renderer rendered in it.
 class LengthModel
 {
 public:

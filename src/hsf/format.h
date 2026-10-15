@@ -45,8 +45,8 @@ struct AuxEffect
     std::vector<float> parameters;
 };
 
-// The reserved area of a set: the sound archive is played by HSF's model of the SDK's sound library (nn::atk) and of
-// the console's audio renderer, with the effects a scene of the game puts on the aux buses (docs/hsf.md, "Archive
+// The reserved area of a set: the sound archive is played by ntdlib's model of the SDK's sound library (nn::atk) and
+// of the console's audio renderer, with the effects a scene of the game puts on the aux buses (docs/hsf.md, "Archive
 // descriptor").
 struct ArchiveDescriptor
 {

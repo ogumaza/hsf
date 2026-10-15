@@ -23,10 +23,11 @@ a folder inside it, and restart XMPlay.
 - During playback, the plugin renders ahead on a separate thread as fast as the CPU allows. It buffers up to 10 minutes
   and 10 seconds of audio (about 112 MiB). That's enough for the longest track that `hsfrip`'s length analysis
   produces. Seeking within the buffer is instant. Seeking further ahead waits for rendering to reach the requested
-  position. Rendering ahead keeps one CPU core busy until it reaches the end of the track or the buffer limit. Seeking
-  back before the buffered audio renders from the start of the track. Audio falls out of the buffer only in a longer
-  track or in endless playback. With rendering ahead turned off, seeking back renders from the start of the track.
-  Seeking ahead then renders up to the target.
+  position. Rendering ahead keeps one CPU core busy until it reaches the end of the track or the buffer limit. Audio
+  falls out of the buffer only in a longer track or in endless playback. Such tracks also save the player's state every
+  2 seconds. Seeking back before the buffered audio restores the latest state before the target and renders from there.
+  At most 128 states are kept. The intervals between them grow as the track continues. With rendering ahead turned off,
+  every track saves states. Seeking ahead then renders up to the target.
 - Output is 16-bit stereo at 48,000 Hz. That's the rate of the Switch's audio renderer. The output isn't resampled.
 - When a track starts, the plugin loads the track's `.hsflib`. A `.hsflib` holds a whole sound archive. The tracks of a
   game with a large archive therefore take longer to start and use more memory.

@@ -130,7 +130,7 @@ A version 1 player provides:
   That matches a game that starts the sound before a frame.
 - **Output.** 16-bit stereo at 48,000 Hz.
 
-HSF's implementation (`src/atk` on ntdlib's model of the sequence player, and `src/audio`) follows a study of the code
+HSF's implementation (ntdlib's `nx` module, on ntdlib's model of the sequence player) follows a study of the code
 of WarioWare: Get It Together!, and of the build of the renderer for the CPU that the game's `sdk` module holds. The
 game links `nn::atk` from SDK 10.4.1. Other games may use other versions of the library, or another number of voices.
 Rips of them are close but not guaranteed exact.

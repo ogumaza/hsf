@@ -12,12 +12,13 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/nx/atk/effect.h"
+#include "ntdlib/nx/atk/engine.h"
+#include "ntdlib/nx/audio/i3dl2.h"
 #include "ntdlib/sar/set_archive.h"
 #include "xsflib/text.h"
 
-#include "atk/effect.h"
-#include "atk/engine.h"
-#include "audio/i3dl2.h"
+#include "hsf/nx.h"
 #include "hsf/sar.h"
 
 namespace hsf
@@ -53,6 +54,10 @@ struct Player::SourceTraits
         std::vector<AuxEffect> effects;
         uint32_t sound = 0;
     };
+
+    // The model between frames: ntdlib's snapshot of the renderer and the engine. The snapshot leaves out whether the
+    // last frame was silent. The player reads that flag only after a step, and each step's frame sets it.
+    using Snapshot = atk::ArchiveModel::Snapshot;
 
     // The archive loads at the first start, and later starts reuse it.
     static constexpr bool kKeepArchive = true;
@@ -123,6 +128,23 @@ struct Player::SourceTraits
     {
         return !model.silent || model.model.engine->IsBusy();
     }
+
+    // ntdlib's snapshot shares nothing with an earlier one. `previous` goes unused.
+    static Snapshot Save(const Model& model, const Snapshot*)
+    {
+        return model.model.Save();
+    }
+
+    // ntdlib's Restore throws for a snapshot of another model, and then changes nothing.
+    static void Restore(Model& model, const Snapshot& snapshot)
+    {
+        model.model.Restore(snapshot);
+    }
+};
+
+struct Player::SourceSnapshot
+{
+    std::shared_ptr<SourceTraits::Snapshot> model;
 };
 
 Player::Player() = default;
@@ -161,6 +183,27 @@ bool Player::RunStep()
 bool Player::Finished() const
 {
     return !source_->Busy();
+}
+
+std::shared_ptr<const Player::SourceSnapshot> Player::SaveSource(const SourceSnapshot*)
+{
+    // A start that failed before the model existed leaves nothing to save.
+    if (!source_ || source_->GetModel() == nullptr)
+    {
+        return nullptr;
+    }
+
+    return std::make_shared<const SourceSnapshot>(SourceSnapshot{source_->Save(nullptr)});
+}
+
+bool Player::CanRestore(const SourceSnapshot* source) const
+{
+    return source != nullptr && source->model != nullptr && source_ && source_->GetModel() != nullptr;
+}
+
+void Player::RestoreSource(const SourceSnapshot& source)
+{
+    source_->Restore(*source.model);
 }
 
 } // namespace hsf

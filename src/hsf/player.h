@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-// HSF player core: loads an .hsflib and .minihsf set and produces its audio, with HSF's model of the SDK's sound
+// HSF player core: loads an .hsflib and .minihsf set and produces its audio, with ntdlib's model of the SDK's sound
 // library (nn::atk) on its model of the console's audio renderer. Portable C++ with no platform audio or UI. The CLI
 // renderer, the foobar2000 component and the XMPlay plugin use it.
 
@@ -26,10 +26,16 @@ namespace hsf
 // effects on the aux buses. It can be called again to restart from the beginning. The first Start moves the bytes of
 // the sound archive and the group files out of the set and into the source's archive. A large archive is then held
 // once. The sound has finished once the sequence has ended, no channel sounds and a frame's output was silent. The
-// effects have then died away too. FinishedFrame gives the frame count at the end of that frame.
+// effects have then died away too. FinishedFrame gives the frame count at the end of that frame. The player takes
+// snapshots of the model. xsflib's Playback seeks with them.
 class Player : public xsflib::player::PlayerBase<Player, LoadedSet>
 {
 public:
+    // The source's part of a snapshot: the model's state between frames. A snapshot can only be restored to the player
+    // that took it, before its next Start, with the audio that the player had rendered but not returned yet.
+    struct SourceSnapshot;
+    using Snapshot = xsflib::player::Snapshot<SourceSnapshot>;
+
     // The rate players report: 48,000 Hz.
     static constexpr int kSampleRate = kPlayerSampleRate;
 
@@ -42,7 +48,7 @@ public:
 private:
     friend class xsflib::player::PlayerBase<Player, LoadedSet>;
 
-    // Archive mode's steps on HSF's model (xsflib::player::ArchiveSource).
+    // Archive mode's steps on ntdlib's model (xsflib::player::ArchiveSource).
     struct SourceTraits;
     using Source = xsflib::player::ArchiveSource<SourceTraits>;
 
@@ -71,6 +77,10 @@ private:
     {
         return output_;
     }
+
+    std::shared_ptr<const SourceSnapshot> SaveSource(const SourceSnapshot* previous);
+    bool CanRestore(const SourceSnapshot* source) const;
+    void RestoreSource(const SourceSnapshot& source);
 
     std::unique_ptr<Source> source_; // the model, and the archive that it keeps for restarts
     std::vector<int16_t> output_;    // samples produced and not dropped yet

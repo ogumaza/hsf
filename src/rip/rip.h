@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-// HSF ripper: builds an .hsflib for one of a game's sound archives and one .minihsf per sequence, played by HSF's model
-// of the SDK's sound library and the console's audio renderer, and works out how long each sequence plays.
+// HSF ripper: builds an .hsflib for one of a game's sound archives and one .minihsf per sequence, played by ntdlib's
+// model of the SDK's sound library and the console's audio renderer, and works out how long each sequence plays.
 
 #pragma once
 
@@ -11,11 +11,12 @@
 #include <span>
 #include <vector>
 
+#include "ntdlib/nx/atk/engine.h"
 #include "ntdlib/rip/archive.h"
 #include "xsflib/rip/file_names.h"
 
-#include "atk/engine.h"
 #include "hsf/format.h"
+#include "hsf/nx.h"
 #include "hsf/sar.h"
 
 namespace hsf::rip
@@ -42,8 +43,8 @@ using FileNames = xsflib::rip::FileNames;
 // A sequence's length and fade in milliseconds, and whether it never makes a sound (xsflib::rip).
 using Timing = ntdlib::rip::Timing;
 
-// Works out how long sequences play by running them on HSF's model of nn::atk and the audio renderer (src/atk and
-// src/audio), with the effects a rip puts on the aux buses. Analyze can be called from several threads at once.
+// Works out how long sequences play by running them on ntdlib's model of nn::atk and the audio renderer (ntdlib::nx),
+// with the effects a rip puts on the aux buses. Analyze can be called from several threads at once.
 class LengthAnalyzer
 {
 public:

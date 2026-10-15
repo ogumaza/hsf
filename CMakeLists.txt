@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.20)
 # Shared version for the tools (HSF_VERSION_ARGS below). For a release, update it here and add notes in
 # docs/release-notes/.
-project(hsf VERSION 1.1.0 LANGUAGES C CXX)
+project(hsf VERSION 1.1.1 LANGUAGES C CXX)
 
 # xsflib: a library for players and rippers of the PSF family, as a submodule. Its XsflibProject.cmake sets what a
 # project built on it starts with: C++20, a release build by default, the static C runtime, the options that keep the
@@ -28,42 +28,6 @@ xsflib_add_libraries(xsflib ntdlib)
 add_library(hsf_common INTERFACE)
 target_include_directories(hsf_common INTERFACE src)
 target_link_libraries(hsf_common INTERFACE xsflib::common)
-
-# The model of the Switch's audio renderer. nn::atk's voices play through it.
-add_library(hsf_audio STATIC
-    src/audio/dsp.cpp
-    src/audio/dsp.h
-    src/audio/i3dl2.cpp
-    src/audio/i3dl2.h
-    src/audio/renderer.cpp
-    src/audio/renderer.h
-    src/audio/tables.h
-    src/audio/voice.cpp
-    src/audio/voice.h
-)
-target_link_libraries(hsf_audio PUBLIC hsf_common PRIVATE ntdlib::common ntdlib::wave)
-target_compile_options(hsf_audio PRIVATE ${HSF_WARNINGS})
-
-# Archive mode's model of the Switch's sound library, nn::atk, on the model of the renderer.
-add_library(hsf_atk STATIC
-    src/atk/channel.h
-    src/atk/effect.cpp
-    src/atk/effect.h
-    src/atk/engine.cpp
-    src/atk/engine.h
-    src/atk/envelope.h
-    src/atk/hardware.h
-    src/atk/low_level_voice.cpp
-    src/atk/low_level_voice.h
-    src/atk/sequence.cpp
-    src/atk/sequence.h
-    src/atk/util.h
-    src/atk/voice.h
-    src/atk/voice_renderer.cpp
-    src/atk/voice_renderer.h
-)
-target_link_libraries(hsf_atk PUBLIC hsf_audio ntdlib::nwsnd ntdlib::nwsnd_archive ntdlib::sar)
-target_compile_options(hsf_atk PRIVATE ${HSF_WARNINGS})
 
 # Switch games' files: folders, and Bezel Engine's archives (.bea) and data sheets.
 add_library(hsf_game STATIC
@@ -91,14 +55,14 @@ add_library(hsf_player STATIC
     src/hsf/player.cpp
     src/hsf/player.h
 )
-target_link_libraries(hsf_player PUBLIC hsf_format hsf_atk xsflib::player)
+target_link_libraries(hsf_player PUBLIC hsf_format ntdlib::nx xsflib::player)
 target_compile_options(hsf_player PRIVATE ${HSF_WARNINGS})
 
 add_library(hsf_rip STATIC
     src/rip/rip.cpp
     src/rip/rip.h
 )
-target_link_libraries(hsf_rip PUBLIC hsf_format hsf_atk xsflib::rip ntdlib::rip_archive)
+target_link_libraries(hsf_rip PUBLIC hsf_format ntdlib::nx xsflib::rip ntdlib::rip_archive)
 target_compile_options(hsf_rip PRIVATE ${HSF_WARNINGS})
 
 # The version of each program, as HSF_VERSION, and on Windows the version resource that Explorer shows in the file's
@@ -126,11 +90,11 @@ foreach (tool hsfrip hsfplay)
     xsflib_add_droplet(${tool} VERSION ${hsf_VERSION})
 endforeach()
 
-# foobar2000 component (Windows with clang-cl or MSVC, or macOS): cmake -DFOOBAR2000_SDK_DIR=<unpacked SDK> ...
+# foobar2000 component (Windows with clang-cl, or macOS): cmake -DFOOBAR2000_SDK_DIR=<unpacked SDK> ...
 set(FOOBAR2000_SDK_DIR "" CACHE PATH "foobar2000 SDK (builds the foo_input_hsf component when set)")
 if (FOOBAR2000_SDK_DIR)
     if (NOT MSVC AND NOT APPLE)
-        message(FATAL_ERROR "the foobar2000 component requires clang-cl or MSVC on Windows, or macOS")
+        message(FATAL_ERROR "the foobar2000 component requires clang-cl on Windows, or macOS")
     endif()
     add_subdirectory(plugins/foobar2000)
 endif()
@@ -144,9 +108,6 @@ endif()
 enable_testing()
 
 # The unit tests: hsf_<name>_test from tests/<name>_test.cpp, registered as hsf_<name>.
-xsflib_add_project_test(hsf atk hsf_atk)
-xsflib_add_project_test(hsf atk_engine hsf_atk)
-xsflib_add_project_test(hsf audio hsf_audio)
 xsflib_add_project_test(hsf format hsf_format)
 xsflib_add_project_test(hsf game hsf_game xsflib::zstd)
 xsflib_add_project_test(hsf player hsf_player)
