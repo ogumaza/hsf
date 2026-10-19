@@ -32,7 +32,7 @@ bool Fits(std::span<const uint8_t> data, uint64_t offset, uint64_t size)
 
 bool BeaArchive::Is(std::span<const uint8_t> data)
 {
-    return data.size() >= 0x30 && data[0] == 'S' && data[1] == 'C' && data[2] == 'N' && data[3] == 'E' &&
+    return data.size() >= kHeaderSize && data[0] == 'S' && data[1] == 'C' && data[2] == 'N' && data[3] == 'E' &&
            data[0xC] == 0xFF && data[0xD] == 0xFE;
 }
 
@@ -67,7 +67,7 @@ std::optional<std::string> BeaArchive::Parse(std::span<const uint8_t> data, BeaA
         asset.offset = xsflib::LoadLe64(&data[entry + 0x20]);
         const uint64_t name = xsflib::LoadLe64(&data[entry + 0x28]);
         if (!Fits(data, name, 2) || !Fits(data, name + 2, xsflib::LoadLe16(&data[name])) ||
-            !Fits(data, asset.offset, asset.compression == 0 ? asset.size : asset.stored_size))
+            !Fits(data, asset.offset, asset.compression == Asset::kStored ? asset.size : asset.stored_size))
         {
             return "asset " + std::to_string(i) + " runs past the archive's end";
         }
@@ -80,15 +80,15 @@ std::optional<std::string> BeaArchive::Parse(std::span<const uint8_t> data, BeaA
     return std::nullopt;
 }
 
-bool BeaArchive::Read(std::span<const uint8_t> data, const Asset& asset, std::vector<uint8_t>& out) const
+bool BeaArchive::Read(std::span<const uint8_t> data, const Asset& asset, std::vector<uint8_t>& out)
 {
-    if (asset.compression == 0)
+    if (asset.compression == Asset::kStored)
     {
         const auto first = data.begin() + static_cast<std::ptrdiff_t>(asset.offset);
         out.assign(first, first + static_cast<std::ptrdiff_t>(asset.size));
         return true;
     }
-    if (asset.compression != 2 || asset.size > (uint64_t{1} << 34))
+    if (asset.compression != Asset::kZstandard || asset.size > (uint64_t{1} << 34))
     {
         return false;
     }
@@ -100,16 +100,16 @@ bool BeaArchive::Read(std::span<const uint8_t> data, const Asset& asset, std::ve
 }
 
 bool BeaArchive::ReadHead(std::span<const uint8_t> data, const Asset& asset, std::size_t count,
-                          std::vector<uint8_t>& out) const
+                          std::vector<uint8_t>& out)
 {
     count = static_cast<std::size_t>(std::min<uint64_t>(count, asset.size));
-    if (asset.compression == 0)
+    if (asset.compression == Asset::kStored)
     {
         const auto first = data.begin() + static_cast<std::ptrdiff_t>(asset.offset);
         out.assign(first, first + static_cast<std::ptrdiff_t>(count));
         return true;
     }
-    if (asset.compression != 2)
+    if (asset.compression != Asset::kZstandard)
     {
         return false;
     }

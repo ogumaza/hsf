@@ -204,6 +204,11 @@ Loops that go round before the first sound don't count: a track that waits or se
 fades in, or before another track starts, isn't the sound's loop. A loop that went round without a sound ends the
 sequence at its last sound instead.
 
+The fade of a looping sequence also waits for the other tracks. It starts once every other track still playing has made
+two passes that change the sound, is idle, or waits for ever. Each time another track opens a track again, the track
+makes such a pass. The first open isn't one. The fade therefore doesn't wait for the tracks that a looping track opens
+again in each of its loops.
+
 A sequence can reach a state where each track waits for its notes to end, waits out a held note (one of 9,600 ticks or
 more), waits for ever, or only makes still passes with no note whose length will run out. A still pass is idle and draws
 no random number. It also leaves the variables that tracks read with the values that the pass before left. A variable

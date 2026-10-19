@@ -31,6 +31,16 @@ public:
     std::optional<std::string> StringAt(const std::string& name, std::size_t offset) const;
 
 private:
+    // The fields of a section header that the reader uses.
+    struct Header
+    {
+        uint32_t type = 0;
+        uint64_t offset = 0;
+        uint64_t size = 0;
+        uint32_t link = 0;
+        uint32_t info = 0;
+    };
+
     struct Section
     {
         uint64_t offset = 0;
@@ -44,12 +54,23 @@ private:
         uint64_t size = 0;
     };
 
-    // A pointer's target: a section and an offset in it.
+    // A place in a section: a symbol's value, or a pointer's target.
     struct Target
     {
         uint16_t section = 0;
         uint64_t offset = 0;
     };
+
+    // Reads the section headers and each section's place in the file. Returns an error message if they run past the
+    // end.
+    std::optional<std::string> ReadSections(const std::vector<uint8_t>& data, std::vector<Header>& headers);
+
+    // Reads the symbols of the symbol tables, and gives each symbol's place by its index.
+    std::vector<Target> ReadSymbols(const std::vector<uint8_t>& data, const std::vector<Header>& headers);
+
+    // Reads the pointers that the relocations fill in, from the places of the symbols they name.
+    void ReadPointers(const std::vector<uint8_t>& data, const std::vector<Header>& headers,
+                      const std::vector<Target>& symbols);
 
     std::vector<uint8_t> data_;
     std::vector<Section> sections_;

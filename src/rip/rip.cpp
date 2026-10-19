@@ -11,14 +11,13 @@
 #include <set>
 #include <span>
 #include <utility>
-#include <vector>
 
-#include "ntdlib/nx/atk/effect.h"
+#include "ntdlib/nwsnd/sequence.h"
 #include "ntdlib/nx/atk/engine.h"
 #include "ntdlib/nx/atk/low_level_voice.h"
-#include "ntdlib/nx/audio/i3dl2.h"
 #include "xsflib/rip/length.h"
 
+#include "hsf/model.h"
 #include "hsf/nx.h"
 #include "hsf/sar.h"
 
@@ -26,6 +25,8 @@ namespace hsf::rip
 {
 namespace
 {
+
+using ntdlib::nwsnd::kTrackCount;
 
 // A frame of the audio renderer and nn::atk.
 constexpr double kFrameMs = 5.0;
@@ -44,7 +45,10 @@ xsflib::rip::LengthRules HsfLengthRules()
 }
 
 // ntdlib's model for the length analysis (xsflib::rip::MeasureLength): the engine and the renderer of an ArchiveModel,
-// and the sound's player. A frame's output is what the renderer rendered in it.
+// and the sound's player. A frame's output is what the renderer rendered in it. The model also counts each track's
+// passes. A looping sequence's fade then waits for the tracks that loop at other lengths than the main track
+// (OthersLooped). A track that another track opens again makes a pass each time. The fade therefore doesn't wait for
+// the tracks that a looping track opens again in each of its loops.
 class LengthModel
 {
 public:
@@ -130,10 +134,50 @@ public:
         return engine_.Channels().ActiveCount();
     }
 
+    // Sets the hooks for the analysis's loops, for every track's passes and for each open of a track. Only the passes
+    // that changed the sound count. An open of a track that a track opened before is such a pass. An open clears the
+    // track's wait, and the track starts its part again at once. The first open isn't a pass.
     template <typename Hook>
     void OnLoop(Hook hook)
     {
         engine_.SetLoopHook(std::move(hook));
+        const auto count_pass = [this](int track, uint32_t)
+        {
+            const auto* looping = player_.Track(track);
+            if (looping && !looping->IsIdle())
+            {
+                ++passes_[static_cast<std::size_t>(track)];
+            }
+        };
+        engine_.SetTrackLoopHook(count_pass);
+        const auto count_open = [this](int, int opened, uint32_t)
+        {
+            const auto index = static_cast<std::size_t>(opened);
+            if (opened_[index])
+            {
+                ++passes_[index];
+            }
+
+            opened_[index] = true;
+        };
+        engine_.SetOpenTrackHook(count_open);
+    }
+
+    // Whether every open track other than `track` has made kLengthLoops passes that changed the sound. A track whose
+    // last pass changed nothing, or that waits for ever, doesn't hold the fade back.
+    bool OthersLooped(int track) const
+    {
+        for (int i = 0; i < kTrackCount; ++i)
+        {
+            const auto* other = player_.Track(i);
+            if (i != track && other && other->IsOpen() && !other->IsIdle() && !other->WaitsForEver(engine_) &&
+                passes_[static_cast<std::size_t>(i)] < xsflib::rip::kLengthLoops)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
 private:
@@ -142,16 +186,15 @@ private:
     atk::SequenceSoundPlayer& player_;
     std::span<const int16_t> output_;
     uint64_t frames_ = 0;
+    std::array<int, kTrackCount> passes_{};  // each track's passes that changed the sound
+    std::array<bool, kTrackCount> opened_{}; // whether another track has opened each track
 };
-
-// A sequence player's tracks.
-constexpr int kTracks = 16;
 
 // The counted loops that the player's open tracks are in, each a track and its loop's body.
 std::set<std::pair<int, uint32_t>> CountedLoops(const atk::SequenceSoundPlayer& player)
 {
     std::set<std::pair<int, uint32_t>> loops;
-    for (int i = 0; i < kTracks; ++i)
+    for (int i = 0; i < kTrackCount; ++i)
     {
         const auto* track = player.Track(i);
         if (!track || !track->IsOpen())
@@ -171,21 +214,15 @@ std::set<std::pair<int, uint32_t>> CountedLoops(const atk::SequenceSoundPlayer& 
     return loops;
 }
 
-// Measures a sequence on the model, with `effects` on the aux buses (xsflib::rip::MeasureLength). The counted loops in
+// Measures a sequence on the model, set up for `settings` (xsflib::rip::MeasureLength). The counted loops in
 // `endless_loops` loop for ever.
-std::optional<Timing> MeasureSequence(const fsar::SoundArchive& archive, const atk::EngineOptions& options,
-                                      const std::vector<AuxEffect>& effects, uint32_t sound_index,
+std::optional<Timing> MeasureSequence(const fsar::SoundArchive& archive, const ArchiveDescriptor& settings,
+                                      uint32_t sound_index,
                                       const std::set<std::pair<int, uint32_t>>& endless_loops = {})
 {
-    auto model = std::make_unique<atk::ArchiveModel>(archive, options);
+    auto model = std::make_unique<atk::ArchiveModel>(archive, EngineOptionsFor(settings));
     atk::Engine& engine = *model->engine;
-    for (const AuxEffect& effect : effects)
-    {
-        const std::vector<float>& v = effect.parameters;
-        const audio::I3dl2ReverbParameterSet parameters{v[0], v[1], v[2], v[3], v[4],  v[5],
-                                                        v[6], v[7], v[8], v[9], v[10], v[11]};
-        engine.AppendEffect(static_cast<int>(effect.bus), std::make_unique<atk::I3dl2AuxEffect>(parameters));
-    }
+    AppendEffects(engine, settings.effects);
     engine.SetEndlessLoops(endless_loops);
     atk::SequenceSoundPlayer* player = engine.StartSequence(sound_index);
     if (!player)
@@ -205,7 +242,7 @@ std::optional<Timing> MeasureSequence(const fsar::SoundArchive& archive, const a
         const std::set<std::pair<int, uint32_t>> running = CountedLoops(*player);
         if (!running.empty())
         {
-            return MeasureSequence(archive, options, effects, sound_index, running);
+            return MeasureSequence(archive, settings, sound_index, running);
         }
     }
 
@@ -224,12 +261,11 @@ bool IsWiiUArchive(std::span<const uint8_t> bytes)
 struct LengthAnalyzer::Impl
 {
     fsar::SoundArchive archive;
-    atk::EngineOptions options;
-    std::vector<AuxEffect> effects;
+    ArchiveDescriptor settings;
 };
 
-LengthAnalyzer::LengthAnalyzer(fsar::SoundArchive archive, atk::EngineOptions options, std::vector<AuxEffect> effects)
-    : impl_(new Impl{std::move(archive), options, std::move(effects)})
+LengthAnalyzer::LengthAnalyzer(fsar::SoundArchive archive, ArchiveDescriptor settings)
+    : impl_(new Impl{std::move(archive), std::move(settings)})
 {
 }
 
@@ -237,8 +273,11 @@ LengthAnalyzer::~LengthAnalyzer() = default;
 
 std::optional<Timing> LengthAnalyzer::Analyze(uint32_t sound_index) const
 {
-    return xsflib::rip::TryMeasure(
-        [this, sound_index] { return MeasureSequence(impl_->archive, impl_->options, impl_->effects, sound_index); });
+    const auto measure = [this, sound_index]
+    {
+        return MeasureSequence(impl_->archive, impl_->settings, sound_index);
+    };
+    return xsflib::rip::TryMeasure(measure);
 }
 
 } // namespace hsf::rip

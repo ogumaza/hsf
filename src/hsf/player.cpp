@@ -12,24 +12,16 @@
 #include <string>
 #include <vector>
 
-#include "ntdlib/nx/atk/effect.h"
 #include "ntdlib/nx/atk/engine.h"
-#include "ntdlib/nx/audio/i3dl2.h"
 #include "ntdlib/sar/set_archive.h"
 #include "xsflib/text.h"
 
+#include "hsf/model.h"
 #include "hsf/nx.h"
 #include "hsf/sar.h"
 
 namespace hsf
 {
-namespace
-{
-
-// A sound's nn::atk item id is its index in the archive's sound table, with the sound type in its top byte.
-constexpr uint32_t kSoundItem = 0x01;
-
-} // namespace
 
 struct Player::SourceTraits
 {
@@ -64,10 +56,10 @@ struct Player::SourceTraits
 
     // The player has checked the descriptor. LoadSet requires a sound. A set put together without one asks for item 0,
     // which no sequence is.
-    static std::optional<std::string> Prepare(Set& set, Prepared& prepared)
+    static std::optional<std::string> Prepare(const Set& set, Prepared& prepared)
     {
         const ArchiveDescriptor& d = *set.archive;
-        prepared.options.voice_count = static_cast<int>(d.voice_count);
+        prepared.options = EngineOptionsFor(d);
         prepared.effects = d.effects;
         prepared.sound = set.sound.value_or(0);
 
@@ -89,21 +81,16 @@ struct Player::SourceTraits
     // The scene's effects, in their order, before the sound starts.
     static std::optional<std::string> StartModel(Model& model, const Archive&, const Prepared& prepared)
     {
-        for (const AuxEffect& effect : prepared.effects)
-        {
-            const std::vector<float>& v = effect.parameters;
-            const audio::I3dl2ReverbParameterSet parameters{v[0], v[1], v[2], v[3], v[4],  v[5],
-                                                            v[6], v[7], v[8], v[9], v[10], v[11]};
-            model.model.engine->AppendEffect(static_cast<int>(effect.bus),
-                                             std::make_unique<atk::I3dl2AuxEffect>(parameters));
-        }
+        AppendEffects(*model.model.engine, prepared.effects);
 
         return std::nullopt;
     }
 
+    // A sound's nn::atk item ID is its index in the archive's sound table, with the sound type in its top byte.
     static std::optional<std::string> StartSequence(Model& model, const Set&, const Prepared& prepared)
     {
-        if ((prepared.sound >> 24) != kSoundItem || !model.model.engine->StartSequence(prepared.sound & 0xFFFFFF))
+        if (fsar::ItemType(prepared.sound) != fsar::kSoundItem ||
+            !model.model.engine->StartSequence(fsar::ItemNumber(prepared.sound)))
         {
             return "sound " + xsflib::Hex(prepared.sound, 8) + " isn't a sequence whose files the set holds";
         }

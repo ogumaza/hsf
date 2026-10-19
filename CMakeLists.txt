@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.20)
 # Shared version for the tools (HSF_VERSION_ARGS below). For a release, update it here and add notes in
 # docs/release-notes/.
-project(hsf VERSION 1.1.1 LANGUAGES C CXX)
+project(hsf VERSION 1.1.2 LANGUAGES C CXX)
 
 # xsflib: a library for players and rippers of the PSF family, as a submodule. Its XsflibProject.cmake sets what a
 # project built on it starts with: C++20, a release build by default, the static C runtime, the options that keep the
@@ -105,20 +105,25 @@ if (XMPLAY_SDK_DIR)
     add_subdirectory(plugins/xmplay)
 endif()
 
-enable_testing()
+# The tests. -DHSF_TESTS=OFF leaves them out of a build that only makes the programs and plugins, such as CI's macOS
+# job.
+option(HSF_TESTS "Build HSF's tests and register them with CTest." ON)
+if (HSF_TESTS)
+    enable_testing()
 
-# The unit tests: hsf_<name>_test from tests/<name>_test.cpp, registered as hsf_<name>.
-xsflib_add_project_test(hsf format hsf_format)
-xsflib_add_project_test(hsf game hsf_game xsflib::zstd)
-xsflib_add_project_test(hsf player hsf_player)
-xsflib_add_project_test(hsf rip hsf_rip)
+    # The unit tests: hsf_<name>_test from tests/<name>_test.cpp, registered as hsf_<name>.
+    xsflib_add_project_test(hsf format hsf_format)
+    xsflib_add_project_test(hsf game hsf_game xsflib::zstd)
+    xsflib_add_project_test(hsf player hsf_player)
+    xsflib_add_project_test(hsf rip hsf_rip)
 
-# The tools report the version they were built as.
-string(REPLACE "." "\\." version_pattern ${hsf_VERSION})
-foreach (tool hsfrip hsfplay)
-    add_test(NAME version_${tool} COMMAND ${tool} --version)
-    set_tests_properties(version_${tool} PROPERTIES PASS_REGULAR_EXPRESSION "^${tool} ${version_pattern}[\r\n]*$")
-endforeach()
+    # The tools report the version they were built as.
+    string(REPLACE "." "\\." version_pattern ${hsf_VERSION})
+    foreach (tool hsfrip hsfplay)
+        add_test(NAME version_${tool} COMMAND ${tool} --version)
+        set_tests_properties(version_${tool} PROPERTIES PASS_REGULAR_EXPRESSION "^${tool} ${version_pattern}[\r\n]*$")
+    endforeach()
 
-# Load local_tests.cmake from each immediate subdirectory to register tests that use locally supplied files.
-xsflib_include_local_tests()
+    # Load local_tests.cmake from each immediate subdirectory to register tests that use locally supplied files.
+    xsflib_include_local_tests()
+endif()

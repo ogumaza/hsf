@@ -13,6 +13,6 @@ namespace hsf
 namespace fsar = ntdlib::sar;
 
 // How HSF reads sound archives and the files in them.
-inline const fsar::Options kSarOptions{fsar::Flavor::kNx, {}, false, fsar::Rules::kStopAtFirstProblem};
+inline constexpr fsar::Options kSarOptions{fsar::Flavor::kNx, {}, false, fsar::Rules::kStopAtFirstProblem};
 
 } // namespace hsf

@@ -26,6 +26,7 @@
 #include "xsflib/testing/sets.h"
 
 #include "hsf/format.h"
+#include "hsf/model.h"
 #include "hsf/nx.h"
 #include "hsf/sar.h"
 
@@ -98,7 +99,7 @@ TestArchive MakeArchive(bool grouped)
                   {grouped ? std::vector<uint8_t>{} : waves, "", grouped}};
     if (grouped)
     {
-        spec.groups = {{"GROUP_WAVES", 0xFFFFFFFF}};
+        spec.groups = {{"GROUP_WAVES", hsf::fsar::kExternalGroupFile}};
     }
 
     return {sar_files::Archive(false, spec), grouped ? sar_files::Group(false, {{2, waves}}) : std::vector<uint8_t>{}};
@@ -190,7 +191,7 @@ std::vector<int16_t> ModelOutput(const std::vector<uint8_t>& archive_bytes, uint
     {
         model.engine->AppendEffect(0, std::make_unique<hsf::atk::I3dl2AuxEffect>(*reverb));
     }
-    model.engine->StartSequence(sound & 0xFFFFFF);
+    model.engine->StartSequence(hsf::fsar::ItemNumber(sound));
     std::vector<int16_t> out;
     idle = 0;
     for (int frame = 1; frame <= frames; ++frame)
@@ -208,30 +209,33 @@ std::vector<int16_t> ModelOutput(const std::vector<uint8_t>& archive_bytes, uint
     return out;
 }
 
-} // namespace
-
-int main()
+// A set with a tagged length and fade, and seeks in it: straight, and from snapshots of the model.
+void TestTagged(const TestArchive& plain, const std::string& library)
 {
-    const TestArchive plain = MakeArchive(false);
-    const std::string library = WriteLibrary("plain", plain, {});
     int idle = 0;
     const std::vector<int16_t> loop = ModelOutput(plain.archive, kLoop, 600, idle);
-    const std::vector<int16_t> note = ModelOutput(plain.archive, kNote, 400, idle);
 
     // A tagged length and fade: 1 s, then a fade of half a second, rendered in blocks that don't divide a frame.
-    const std::vector<int16_t> tagged =
-        RenderAll(WriteMini("tagged", library, kLoop, {{"length", "0:01"}, {"fade", "0.5"}}), 1001);
+    const std::string tagged_mini = WriteMini("tagged", library, kLoop, {{"length", "0:01"}, {"fade", "0.5"}});
+    const std::vector<int16_t> tagged = RenderAll(tagged_mini, 1001);
     CheckLengthAndFade(tagged, loop, 48000, 24000);
+
+    // A seek forward and a seek back land where the straight render does.
+    CheckSeeks<hsf::Playback>(tagged_mini, kReader, tagged, {30000, 10000});
+
+    // So do seeks back and forward from snapshots taken every 2,000 frames, in the middle of the notes.
+    CheckSnapshotSeeks(tagged_mini, tagged, 2000, {65000, 30123, 47999, 2345, 70500});
+}
+
+// A set without a length, the same set with a volume tag, and one whose waves are in a group file.
+void TestUntagged(const TestArchive& plain, const std::string& library)
+{
+    int idle = 0;
+    const std::vector<int16_t> note = ModelOutput(plain.archive, kNote, 400, idle);
 
     // Without a length, the sound ends half a second after the model goes idle and its output falls silent.
     const std::vector<int16_t> untagged = RenderAll(WriteMini("untagged", library, kNote, {}));
     CheckEnd(untagged, note, static_cast<std::size_t>(idle) * kFrame, 24000);
-
-    // A seek forward and a seek back land where the straight render does.
-    CheckSeeks<hsf::Playback>("sets/tagged.minihsf", kReader, tagged, {30000, 10000});
-
-    // So do seeks back and forward from snapshots taken every 2,000 frames, in the middle of the notes.
-    CheckSnapshotSeeks("sets/tagged.minihsf", tagged, 2000, {65000, 30123, 47999, 2345, 70500});
 
     // The volume tag scales every sample.
     CheckVolume(RenderAll(WriteMini("quiet", library, kNote, {{"volume", "0.5"}})), untagged, 0.5);
@@ -241,61 +245,72 @@ int main()
     const std::string grouped_library = WriteLibrary("grouped", grouped, {});
     Check(RenderAll(WriteMini("grouped", grouped_library, kNote, {})) == untagged,
           "a set whose waves are in a group file plays the same");
+}
 
-    // A reverb on aux bus A plays as the model plays it, and its tail runs on after the note before the sound ends.
-    {
-        const hsf::audio::I3dl2ReverbParameterSet kReverb{-1000.0f, -1000.0f, 2.0f,  0.8f, -700.0f, 0.005f,
-                                                          -500.0f,  0.04f,    50.0f, 3.0f, 6000.0f, 0.25f};
-        hsf::ArchiveDescriptor descriptor;
-        hsf::AuxEffect effect;
-        effect.parameters = {kReverb.room_gain,
-                             kReverb.room_hf_gain,
-                             kReverb.late_reverb_decay_time,
-                             kReverb.late_reverb_hf_decay_ratio,
-                             kReverb.reflections_gain,
-                             kReverb.reflections_delay,
-                             kReverb.reverb_gain,
-                             kReverb.late_reverb_delay,
-                             kReverb.late_reverb_diffusion,
-                             kReverb.late_reverb_density,
-                             kReverb.hf_reference,
-                             kReverb.dry_gain};
-        descriptor.effects = {effect};
-        const std::string reverb_library = WriteLibrary("reverb", plain, descriptor);
-        int dry_idle = 0;
-        int wet_idle = 0;
-        ModelOutput(plain.archive, kSent, 2000, dry_idle);
-        const std::vector<int16_t> wet = ModelOutput(plain.archive, kSent, 2000, wet_idle, &kReverb);
-        const std::string reverb_mini = WriteMini("reverb", reverb_library, kSent, {});
-        const std::vector<int16_t> played = RenderAll(reverb_mini);
-        Check(wet_idle > dry_idle + 20 && played.size() == 2 * (static_cast<std::size_t>(wet_idle) * kFrame + 24000) &&
-                  std::equal(played.begin(), played.end() - 2 * 24000, wet.begin()),
-              "a set with a reverb plays the model's output, and its tail");
+// A reverb on aux bus A plays as the model plays it, and its tail runs on after the note before the sound ends.
+void TestReverb(const TestArchive& plain)
+{
+    const hsf::audio::I3dl2ReverbParameterSet kReverb{-1000.0f, -1000.0f, 2.0f,  0.8f, -700.0f, 0.005f,
+                                                      -500.0f,  0.04f,    50.0f, 3.0f, 6000.0f, 0.25f};
+    hsf::ArchiveDescriptor descriptor;
+    hsf::AuxEffect effect;
+    effect.parameters = hsf::I3dl2Values(kReverb);
+    descriptor.effects = {effect};
+    const std::string reverb_library = WriteLibrary("reverb", plain, descriptor);
 
-        // A seek from a snapshot in the reverb's tail lands where the straight render does: a snapshot holds the
-        // reverb's state.
-        const auto dry_end = static_cast<uint64_t>(dry_idle) * kFrame;
-        const auto wet_end = static_cast<uint64_t>(wet_idle) * kFrame;
-        CheckSnapshotSeeks(reverb_mini, played, 2000, {wet_end - 1500, dry_end + 777, (dry_end + wet_end) / 2, 4321});
-    }
+    int dry_idle = 0;
+    int wet_idle = 0;
+    ModelOutput(plain.archive, kSent, 2000, dry_idle);
+    const std::vector<int16_t> wet = ModelOutput(plain.archive, kSent, 2000, wet_idle, &kReverb);
 
-    // Sets that can't play: a group file the set doesn't hold, a sound the archive doesn't have, an item that isn't a
-    // sound, and a descriptor's voice count beyond the most a player has.
+    const std::string reverb_mini = WriteMini("reverb", reverb_library, kSent, {});
+    const std::vector<int16_t> played = RenderAll(reverb_mini);
+    Check(wet_idle > dry_idle + 20 && played.size() == 2 * (static_cast<std::size_t>(wet_idle) * kFrame + 24000) &&
+              std::equal(played.begin(), played.end() - 2 * 24000, wet.begin()),
+          "a set with a reverb plays the model's output, and its tail");
+
+    // A seek from a snapshot in the reverb's tail lands where the straight render does: a snapshot holds the reverb's
+    // state.
+    const auto dry_end = static_cast<uint64_t>(dry_idle) * kFrame;
+    const auto wet_end = static_cast<uint64_t>(wet_idle) * kFrame;
+    CheckSnapshotSeeks(reverb_mini, played, 2000, {wet_end - 1500, dry_end + 777, (dry_end + wet_end) / 2, 4321});
+}
+
+// Sets that can't play: a group file the set doesn't hold, a sound the archive doesn't have, an item that isn't a
+// sound, and a descriptor's voice count beyond the most a player has.
+void TestRefusals(const TestArchive& plain, const std::string& library)
+{
+    const TestArchive grouped = MakeArchive(true);
     hsf::ArchiveDescriptor missing_group;
     missing_group.archive_path = "content/sound/test.bfsar";
     missing_group.group_paths = {"content/sound/GROUP_ELSEWHERE.bfgrp"};
     hsf::ProgramBuilder b;
     b.AddFile(missing_group.archive_path, grouped.archive);
     files["sets/missing.hsflib"] = hsf::WritePsf(hsf::kPsfVersionHsf, missing_group.Serialize(), b.Data(), {});
+
     hsf::ArchiveDescriptor many;
     many.voice_count = 97;
     const std::string many_library = WriteLibrary("many", plain, many);
+
     const std::map<std::string, std::string> refusals = {
         {WriteMini("missing", "sets/missing.hsflib", kNote, {}), "the set has no file content/sound/GROUP_ELSEWHERE"},
         {WriteMini("absent", library, 0x01000005, {}), "isn't a sequence"},
         {WriteMini("bank", library, 0x05000000, {}), "isn't a sequence"},
         {WriteMini("many", many_library, kNote, {}), "voice count is 97"}};
     CheckRefusals<hsf::Playback>(refusals, kReader);
+}
+
+} // namespace
+
+int main()
+{
+    const TestArchive plain = MakeArchive(false);
+    const std::string library = WriteLibrary("plain", plain, {});
+
+    TestTagged(plain, library);
+    TestUntagged(plain, library);
+    TestReverb(plain);
+    TestRefusals(plain, library);
 
     return xsflib::testing::Summary("player");
 }

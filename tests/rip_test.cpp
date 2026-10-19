@@ -8,7 +8,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <optional>
 #include <string>
 #include <vector>
@@ -93,7 +92,8 @@ int main()
 {
     const hsf::rip::LengthAnalyzer analyzer(
         hsf::fsar::SoundArchive::Load(length_cases::Archive(false), hsf::kSarOptions));
-    length_cases::CheckCases([&analyzer](uint32_t index) { return analyzer.Analyze(index); });
+    // HSF's analysis waits for the loops of the tracks other than the main track (its model's OthersLooped).
+    length_cases::CheckCases([&analyzer](uint32_t index) { return analyzer.Analyze(index); }, true);
 
     // In HSF, SEQ_END ends at the same frame as SEQ_REST_LOOP and SEQ_LONG_REST. A different rule ends each one. A
     // model whose output runs a frame behind its engine can end SEQ_END sooner.
@@ -112,11 +112,5 @@ int main()
     Check(!hsf::rip::IsWiiUArchive(length_cases::Archive(false)), "a little-endian archive isn't the Wii U's");
     Check(!hsf::rip::IsWiiUArchive(std::vector<uint8_t>{'F', 'S', 'A', 'R'}), "four bytes aren't an archive");
 
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
-        return 1;
-    }
-
-    return 0;
+    return Summary("rip");
 }

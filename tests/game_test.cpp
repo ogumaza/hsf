@@ -15,14 +15,13 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <filesystem>
-#include <fstream>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "xsflib/bytes.h"
+#include "xsflib/files.h"
 #include "xsflib/testing/check.h"
 #include <zstd.h>
 
@@ -223,12 +222,11 @@ std::vector<uint8_t> EffectSheet(const std::vector<EffectSpec>& effects)
     return out;
 }
 
+// Writes `data` to the file at `path` after making the folders that hold it.
 void WriteFile(const fs::path& path, const std::vector<uint8_t>& data)
 {
     fs::create_directories(path.parent_path());
-    std::ofstream f(path, std::ios::binary);
-    f.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
-    XSFLIB_CHECK(f.good());
+    XSFLIB_CHECK(!xsflib::WriteFile(path, data));
 }
 
 // What the game's files hold, by their paths in the game.
@@ -370,7 +368,7 @@ void TestDamagedArchives()
 
     // The first bytes of a compressed asset, without the rest.
     std::vector<uint8_t> head;
-    XSFLIB_CHECK(bea.ReadHead(good, bea.Assets()[1], 4, head) && head == Bytes("FSAR"));
+    XSFLIB_CHECK(BeaArchive::ReadHead(good, bea.Assets()[1], 4, head) && head == Bytes("FSAR"));
 
     // A big-endian byte order mark, a table past the end, an asset without its ASST header, an asset whose data runs
     // past the end, and an unknown compression.
@@ -390,7 +388,7 @@ void TestDamagedArchives()
     damaged = good;
     damaged[xsflib::LoadLe64(&good[0x38]) + 0x10] = 1;
     std::vector<uint8_t> data;
-    XSFLIB_CHECK(!BeaArchive::Parse(damaged, bea) && !bea.Read(damaged, bea.Assets()[1], data));
+    XSFLIB_CHECK(!BeaArchive::Parse(damaged, bea) && !BeaArchive::Read(damaged, bea.Assets()[1], data));
 }
 
 void TestDamagedSheets()
@@ -466,13 +464,6 @@ int main()
     TestEncrypted(dir / "encrypted");
 
     fs::remove_all(dir);
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
-        return 1;
-    }
 
-    std::fprintf(stderr, "game test passed\n");
-
-    return 0;
+    return Summary("game");
 }

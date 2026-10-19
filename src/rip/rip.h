@@ -9,14 +9,11 @@
 #include <memory>
 #include <optional>
 #include <span>
-#include <vector>
 
-#include "ntdlib/nx/atk/engine.h"
 #include "ntdlib/rip/archive.h"
 #include "xsflib/rip/file_names.h"
 
 #include "hsf/format.h"
-#include "hsf/nx.h"
 #include "hsf/sar.h"
 
 namespace hsf::rip
@@ -44,14 +41,14 @@ using FileNames = xsflib::rip::FileNames;
 using Timing = ntdlib::rip::Timing;
 
 // Works out how long sequences play by running them on ntdlib's model of nn::atk and the audio renderer (ntdlib::nx),
-// with the effects a rip puts on the aux buses. Analyze can be called from several threads at once.
+// set up as the player sets it up for a rip's descriptor (hsf/model.h). Analyze can be called from several threads at
+// once.
 class LengthAnalyzer
 {
 public:
-    // `archive` is the sound archive, with the group files that it requires added. The model plays it with `options`,
-    // and `effects` on the aux buses.
-    explicit LengthAnalyzer(fsar::SoundArchive archive, atk::EngineOptions options = {},
-                            std::vector<AuxEffect> effects = {});
+    // `archive` is the sound archive, with the group files that it requires added. The model plays it with the voice
+    // count and the effects of `settings`, the descriptor that the rip gets.
+    explicit LengthAnalyzer(fsar::SoundArchive archive, ArchiveDescriptor settings = {});
     ~LengthAnalyzer();
 
     // A looping sequence gets two loops and a 10 s fade. Any other sequence runs to its end, or to where it falls

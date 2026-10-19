@@ -40,12 +40,12 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "ntdlib/rip/archive.h"
 #include "ntdlib/rip/archive_mode.h"
-#include "xsflib/ascii.h"
 #include "xsflib/cli/rip.h"
 #include "xsflib/rip/tool.h"
 
@@ -66,9 +66,8 @@ using xsflib::rip::InputPath;
 // The effect a Bezel Engine game's scenes put on aux bus A unless one names another.
 constexpr char kDefaultReverb[] = "I3DL2_Default";
 
-// What follows the error for another console's sound archive: a sound archive of the 3DS, the Wii or the Wii U (see
-// rip::IsWiiUArchive).
-constexpr char kSwitchArchives[] = "HSF rips the Switch's sound archives (little-endian FSAR, .bfsar)";
+// The most voices a set can have. It's also nn::atk's voice count when the game doesn't change it.
+constexpr int kMaxVoices = static_cast<int>(hsf::ArchiveDescriptor::kDefaultVoices);
 
 constexpr char kUsage[] =
     "usage: hsfrip [options] <input> [<input> ...]\n"
@@ -122,15 +121,13 @@ struct ArchiveToRip
 void AnalyzeLengths(std::vector<Job>& jobs, hsf::fsar::SoundArchive archive, const hsf::ArchiveDescriptor& settings,
                     unsigned threads)
 {
-    hsf::atk::EngineOptions options;
-    options.voice_count = static_cast<int>(settings.voice_count);
-    const hsf::rip::LengthAnalyzer analyzer(std::move(archive), options, settings.effects);
-    xsflib::cli::AnalyzeLengths(jobs, threads,
-                                [&analyzer](Job& job)
-                                {
-                                    job.timing = analyzer.Analyze(job.index);
-                                    return true;
-                                });
+    const hsf::rip::LengthAnalyzer analyzer(std::move(archive), settings);
+    const auto analyze = [&analyzer](Job& job)
+    {
+        job.timing = analyzer.Analyze(job.index);
+        return true;
+    };
+    xsflib::cli::AnalyzeLengths(jobs, threads, analyze);
 }
 
 // hsfrip's archive mode (ntdlib::rip::ArchiveRipTool).
@@ -152,35 +149,79 @@ const ntdlib::rip::ArchiveRipTool<hsf::rip::RipFormat, ArchiveToRip>& ArchiveToo
     return kTool;
 }
 
+// What another console's sound archive is, from the file's first bytes `head`: "a 3DS sound archive", "a Wii sound
+// archive" or "a Wii U sound archive (big-endian FSAR)" (see rip::IsWiiUArchive). Nothing for a Switch sound archive
+// or any other file.
+std::optional<std::string> ForeignArchive(std::span<const uint8_t> head)
+{
+    const std::string_view text(reinterpret_cast<const char*>(head.data()), head.size());
+    if (text.starts_with("CSAR"))
+    {
+        return "a 3DS sound archive";
+    }
+    if (text.starts_with("RSAR"))
+    {
+        return "a Wii sound archive";
+    }
+    if (hsf::rip::IsWiiUArchive(head))
+    {
+        return "a Wii U sound archive (big-endian FSAR)";
+    }
+
+    return std::nullopt;
+}
+
+// Reports the error when the file at `path` is another console's sound archive. `head` holds the file's first bytes.
+// Returns whether the file is one.
+bool RefuseForeignArchive(const std::string& path, std::span<const uint8_t> head)
+{
+    const std::optional<std::string> foreign = ForeignArchive(head);
+    if (foreign)
+    {
+        std::fprintf(stderr, "error: %s is %s; HSF rips the Switch's sound archives (little-endian FSAR, .bfsar)\n",
+                     path.c_str(), foreign->c_str());
+    }
+
+    return foreign.has_value();
+}
+
 // What a sound archive holds (such as "FSAR 2.2.0, 2911 sequences, 28 wave sounds, 220 streams"), or why it can't be
 // read or ripped.
 std::string DescribeArchive(std::vector<uint8_t> bytes)
 {
-    if (hsf::rip::IsWiiUArchive(bytes))
+    if (const std::optional<std::string> foreign = ForeignArchive(bytes))
     {
-        return "a Wii U sound archive (big-endian FSAR). HSF doesn't rip those";
+        return *foreign + ". HSF doesn't rip those";
     }
 
     return ntdlib::rip::DescribeArchive(std::move(bytes), hsf::kSarOptions);
 }
 
-// Whether the voice count comes from the game's boot.lua: --voices isn't given, and boot.lua gives a count from 1 to
-// 96.
-bool VoicesFromBoot(const hsf::game::GameFiles& game, const Options& o)
-{
-    return o.voices == 0 && game.voice_count && *game.voice_count >= 1 && *game.voice_count <= 96;
-}
-
-// The settings every sound archive of a game is ripped with: the voice count, and the reverb a Bezel Engine game puts
-// on aux bus A.
-hsf::ArchiveDescriptor GameSettings(const hsf::game::GameFiles& game, const Options& o)
+// The settings that the options give every sound archive: the voice count of --voices, or else nn::atk's default.
+hsf::ArchiveDescriptor OptionSettings(const Options& o)
 {
     hsf::ArchiveDescriptor settings;
     if (o.voices > 0)
     {
         settings.voice_count = static_cast<uint32_t>(o.voices);
     }
-    else if (VoicesFromBoot(game, o))
+
+    return settings;
+}
+
+// Whether the voice count comes from the game's boot.lua: --voices isn't given, and boot.lua gives a count from 1 to
+// 96.
+bool VoicesFromBoot(const hsf::game::GameFiles& game, const Options& o)
+{
+    return o.voices == 0 && game.voice_count && *game.voice_count >= 1 && *game.voice_count <= kMaxVoices;
+}
+
+// The settings every sound archive of a game is ripped with: the options' settings, the voice count of the game's
+// boot.lua when --voices isn't given, and the reverb a Bezel Engine game puts on aux bus A.
+hsf::ArchiveDescriptor GameSettings(const hsf::game::GameFiles& game, const Options& o)
+{
+    hsf::ArchiveDescriptor settings = OptionSettings(o);
+    if (VoicesFromBoot(game, o))
     {
         settings.voice_count = static_cast<uint32_t>(*game.voice_count);
     }
@@ -198,16 +239,15 @@ hsf::ArchiveDescriptor GameSettings(const hsf::game::GameFiles& game, const Opti
     return settings;
 }
 
-// The group file `name` anywhere among a game's files, found by its file name in any case, or nothing. MSVC 19.51
-// failed with an internal compiler error (C1001) on a lambda in RipGame that did this with std::filesystem::path.
+// The group file `name` anywhere among a game's files, or nothing. A file holds the group when the file's name is the
+// group's file name in any case (ntdlib::rip::IsGroupFileName).
 std::optional<FileChunk> FindGameGroup(const hsf::game::GameFiles& game, const std::string& name)
 {
-    const std::string file = xsflib::AsciiLower(name + ".bfgrp");
     for (const std::string& path : game.files)
     {
         const std::size_t slash = path.rfind('/');
         const std::string file_name = slash == std::string::npos ? path : path.substr(slash + 1);
-        if (xsflib::AsciiLower(file_name) != file)
+        if (!ntdlib::rip::IsGroupFileName(file_name, name))
         {
             continue;
         }
@@ -221,6 +261,18 @@ std::optional<FileChunk> FindGameGroup(const hsf::game::GameFiles& game, const s
     }
 
     return std::nullopt;
+}
+
+// Prints --list for a game: its sound archives, what each one holds, and the settings that a rip gives them.
+void ListGame(const std::string& input, const hsf::game::GameFiles& game, const hsf::ArchiveDescriptor& settings,
+              const Options& o)
+{
+    const std::vector<std::string>& archives = game.sound_archives;
+    std::printf("%s: %zu files, %zu sound archive%s\n", input.c_str(), game.files.size(), archives.size(),
+                archives.size() == 1 ? "" : "s");
+    ntdlib::rip::ListArchives(archives, game.read_file, DescribeArchive);
+    std::printf("voices: %u%s; reverb on aux bus A: %s\n", settings.voice_count,
+                VoicesFromBoot(game, o) ? " (boot.lua)" : "", settings.effects.empty() ? "none" : kDefaultReverb);
 }
 
 // Rips a game's sound archives (or the one --archive names). Each archive's folder takes its registry of file names
@@ -239,18 +291,7 @@ int RipGame(const std::string& input, const fs::path& out_dir, const Options& o,
     const hsf::ArchiveDescriptor settings = GameSettings(game, o);
     if (o.list)
     {
-        std::printf("%s: %zu files, %zu sound archive%s\n", input.c_str(), game.files.size(), archives.size(),
-                    archives.size() == 1 ? "" : "s");
-        for (const std::string& path : archives)
-        {
-            std::vector<uint8_t> bytes;
-            const bool read = game.read_file(path, bytes);
-            const size_t size = bytes.size();
-            const std::string held = read ? DescribeArchive(std::move(bytes)) : "can't be read";
-            std::printf("  %s: %zu bytes, %s\n", path.c_str(), size, held.c_str());
-        }
-        std::printf("voices: %u%s; reverb on aux bus A: %s\n", settings.voice_count,
-                    VoicesFromBoot(game, o) ? " (boot.lua)" : "", settings.effects.empty() ? "none" : kDefaultReverb);
+        ListGame(input, game, settings, o);
         return 0;
     }
 
@@ -276,17 +317,11 @@ int RipGame(const std::string& input, const fs::path& out_dir, const Options& o,
 
     const std::string game_name = o.game_name.empty() ? game.name : o.game_name;
 
-    // A Wii U sound archive among the game's files isn't ripped.
+    // Another console's sound archive among the game's files isn't ripped. The game's sound archives are all FSAR
+    // files. So only a Wii U archive can be one.
     const auto switch_archive = [](const std::string& path, const std::vector<uint8_t>& bytes)
     {
-        if (hsf::rip::IsWiiUArchive(bytes))
-        {
-            std::fprintf(stderr, "error: %s is a Wii U sound archive (big-endian FSAR); %s\n", path.c_str(),
-                         kSwitchArchives);
-            return false;
-        }
-
-        return true;
+        return !RefuseForeignArchive(path, bytes);
     };
 
     ArchiveToRip common;
@@ -301,10 +336,7 @@ int RipGame(const std::string& input, const fs::path& out_dir, const Options& o,
 int RipLooseArchive(const std::string& input, const fs::path& out_dir, const Options& o, hsf::rip::FileNames& names)
 {
     ArchiveToRip rip;
-    if (o.voices > 0)
-    {
-        rip.settings.voice_count = static_cast<uint32_t>(o.voices);
-    }
+    rip.settings = OptionSettings(o);
 
     return ntdlib::rip::RipLooseArchive(ArchiveTool(), input, out_dir, o, names, std::move(rip), DescribeArchive);
 }
@@ -324,9 +356,9 @@ int ParseOption(const std::string& a, const std::function<std::string()>& next, 
         const std::string v = next();
         char* end = nullptr;
         const long n = std::strtol(v.c_str(), &end, 10);
-        if (v.empty() || *end || n < 1 || n > 96)
+        if (v.empty() || *end || n < 1 || n > kMaxVoices)
         {
-            std::fprintf(stderr, "error: --voices takes a number from 1 to 96, not '%s'\n", v.c_str());
+            std::fprintf(stderr, "error: --voices takes a number from 1 to %d, not '%s'\n", kMaxVoices, v.c_str());
             return 2;
         }
 
@@ -341,16 +373,8 @@ int ParseOption(const std::string& a, const std::function<std::string()>& next, 
 int RipInput(const std::string& input, const Options& o, xsflib::cli::FileNameRegistries& registries)
 {
     const std::string head = xsflib::rip::ReadHead(input);
-    if (head.starts_with("CSAR") || head.starts_with("RSAR"))
+    if (RefuseForeignArchive(input, std::span(reinterpret_cast<const uint8_t*>(head.data()), head.size())))
     {
-        std::fprintf(stderr, "error: %s is a %s sound archive; %s\n", input.c_str(),
-                     head.starts_with("CSAR") ? "3DS" : "Wii", kSwitchArchives);
-        return 1;
-    }
-    if (hsf::rip::IsWiiUArchive(std::span(reinterpret_cast<const uint8_t*>(head.data()), head.size())))
-    {
-        std::fprintf(stderr, "error: %s is a Wii U sound archive (big-endian FSAR); %s\n", input.c_str(),
-                     kSwitchArchives);
         return 1;
     }
     if (const auto kind = hsf::game::EncryptedKind(InputPath(input)))

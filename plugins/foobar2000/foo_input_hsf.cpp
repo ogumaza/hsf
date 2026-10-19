@@ -41,7 +41,9 @@ struct Traits
     static constexpr std::array<const char*, 2> kExtensions = {"hsf", "minihsf"};
     static constexpr uint8_t kPsfVersion = hsf::kPsfVersionHsf;
     static constexpr t_filesize kMaxFileSize = t_filesize{1} << 30; // largest file read into memory
-    static constexpr std::array<const char*, 0> kKeptTags = {};
+
+    // HSF has no tags that set how a file plays.
+    static constexpr std::array<const char*, 0> kPlaybackTags = {};
 
     // {B098EC3B-4AA0-48F8-8AFC-47F4A5B857EE}
     static constexpr GUID kInputGuid = {0xb098ec3b, 0x4aa0, 0x48f8, {0x8a, 0xfc, 0x47, 0xf4, 0xa5, 0xb8, 0x57, 0xee}};
