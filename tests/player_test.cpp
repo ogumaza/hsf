@@ -54,27 +54,6 @@ struct TestArchive
 
 TestArchive MakeArchive(bool grouped)
 {
-    std::vector<uint8_t> samples(2 * 32000);
-    for (std::size_t i = 0; i < samples.size(); i += 2)
-    {
-        samples[i + 1] = 0x10; // 0x1000, little-endian
-    }
-    sar_files::WaveSpec wave;
-    wave.encoding = 1;
-    wave.loop_end = 32000;
-    wave.channels = {samples};
-
-    sar_files::Region region;
-    region.original_key = 60;
-    region.adshr = {127, 127, 127, 0, 127};
-    sar_files::VelocityTable velocities;
-    velocities.entries = {{0, region}};
-    sar_files::KeyTable keys;
-    keys.entries = {{0, velocities}};
-    sar_files::BankSpec bank;
-    bank.waves = {{0x05000000, 0}};
-    bank.instruments = {keys};
-
     // Timebase 48 and tempo 120, with the Switch's little-endian arguments: the note at offset 5 lasts 250 ms. The
     // third sound sends it only to aux bus A (a main send of 0 and a send to A of 127).
     const std::vector<uint8_t> kBytecode = {0xB0, 48,   0xE1, 120,  0x00, 60,   127,  24,   0xFF, 0xB0, 48,   0xE1,
@@ -93,9 +72,10 @@ TestArchive MakeArchive(bool grouped)
     spec.banks = {{"BANK", 1}};
     spec.wave_archives = {{"WARC", 2}};
     spec.players = {{"PLAYER", 2}};
-    const std::vector<uint8_t> waves = sar_files::WaveArchive(false, {sar_files::Wave(false, wave)});
+    const std::vector<uint8_t> waves =
+        sar_files::WaveArchive(false, {sar_files::Wave(false, sar_files::ConstantWave(false))});
     spec.files = {{sar_files::Sequence(false, kBytecode, {{"Start", 0}}), "", false},
-                  {sar_files::Bank(false, bank), "", false},
+                  {sar_files::Bank(false, sar_files::OneRegionBank()), "", false},
                   {grouped ? std::vector<uint8_t>{} : waves, "", grouped}};
     if (grouped)
     {
@@ -158,16 +138,17 @@ void CheckSnapshotSeeks(const std::string& path, const std::vector<int16_t>& str
     hsf::PlaybackOptions options;
     options.snapshot_interval = interval;
     hsf::Playback playback;
-    std::vector<int16_t> buffer(2 * kBlock);
     std::vector<int16_t> played;
-    bool started = playback.Open(path, kReader, options) && playback.Start();
-    for (std::size_t n = 0; started && (n = playback.Render(buffer.data(), kBlock)) > 0;)
+    const bool started = playback.Open(path, kReader, options) && playback.Start();
+    if (started)
     {
-        played.insert(played.end(), buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(2 * n));
+        played = RenderFrames([&playback](int16_t* out, std::size_t frames) { return playback.Render(out, frames); },
+                              SIZE_MAX, kBlock);
     }
     const std::size_t snapshots = playback.SnapshotCount();
     Check(played == straight && snapshots > 1, path + ": a render that takes snapshots plays the same");
 
+    std::vector<int16_t> buffer(2 * kBlock);
     bool landed = started;
     for (const uint64_t frame : frames)
     {

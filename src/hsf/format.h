@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "xsflib/psf/program.h"
 #include "xsflib/psf/psf.h"
 #include "xsflib/psf/set.h"
 #include "xsflib/psf/streaming.h"
@@ -45,8 +46,8 @@ struct AuxEffect
     std::vector<float> parameters;
 };
 
-// The reserved area of a set: the sound archive is played by ntdlib's model of the SDK's sound library (nn::atk) and
-// of the console's audio renderer, with the effects a scene of the game puts on the aux buses (docs/hsf.md, "Archive
+// The reserved area of a set: the sound archive is played by ntdlib's model of the SDK's sound library (nn::atk) and of
+// the console's audio renderer, with the effects a scene of the game puts on the aux buses (docs/hsf.md, "Archive
 // descriptor").
 struct ArchiveDescriptor
 {
@@ -73,9 +74,9 @@ struct ArchiveDescriptor
     std::vector<std::string> group_paths; // FILE chunks holding group files (.bfgrp) the game keeps outside it
 };
 
-// The program's chunks in the streaming formats' layout (xsflib/psf/streaming.h): FILE chunks, each a file of the
-// game by its path in the game's files, and the SND chunk, the nn::atk item id of the sound to play (docs/hsf.md,
-// "Program: chunks"). The builder compresses the program as it writes it.
+// The program's chunks in the streaming formats' layout (xsflib/psf/streaming.h): FILE chunks, each a file of the game
+// by its path in the game's files, and the SND chunk, the nn::atk item id of the sound to play (docs/hsf.md, "Program:
+// chunks"). The builder compresses the program as it writes it.
 using xsflib::psf::FileChunk;
 using ProgramBuilder = xsflib::psf::StreamingProgramBuilder;
 
@@ -84,6 +85,7 @@ struct SetFormat
 {
     using ProcessDescriptor = void;
     using ArchiveDescriptor = hsf::ArchiveDescriptor;
+
     static constexpr uint8_t kPsfVersion = kPsfVersionHsf;
     static constexpr const char* kFile = "an HSF file";
     static constexpr bool kStreaming = true;

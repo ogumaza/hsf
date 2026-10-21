@@ -15,8 +15,10 @@
 #include "ntdlib/nwsnd/sequence.h"
 #include "ntdlib/nx/atk/engine.h"
 #include "ntdlib/nx/atk/low_level_voice.h"
+#include "ntdlib/nx/atk/sequence.h"
 #include "xsflib/rip/length.h"
 
+#include "hsf/format.h"
 #include "hsf/model.h"
 #include "hsf/nx.h"
 #include "hsf/sar.h"

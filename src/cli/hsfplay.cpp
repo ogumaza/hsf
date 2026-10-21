@@ -22,8 +22,6 @@
 #include "hsf/format.h"
 #include "hsf/player.h"
 
-using namespace hsf;
-
 namespace
 {
 
@@ -34,9 +32,9 @@ constexpr char kDescription[] =
     "files load them. You can also drop files on the program.\n";
 
 // What the set holds, for the summary line of --info.
-std::string DescribeSet(Playback& playback)
+std::string DescribeSet(hsf::Playback& playback)
 {
-    const LoadedSet& set = playback.GetPlayer().GetLoadedSet();
+    const hsf::LoadedSet& set = playback.GetPlayer().GetLoadedSet();
     char text[96];
     std::snprintf(text, sizeof(text), "%zu files, %zu aux effects, sound 0x%08x", set.files.size(),
                   set.archive ? set.archive->effects.size() : 0, static_cast<unsigned>(set.sound.value_or(0)));
@@ -48,7 +46,7 @@ std::string DescribeSet(Playback& playback)
 
 int main(int argc, char** argv)
 {
-    xsflib::cli::PlayTool<Player> tool;
+    xsflib::cli::PlayTool<hsf::Player> tool;
     tool.name = "hsfplay";
     tool.version = HSF_VERSION;
     tool.description = kDescription;

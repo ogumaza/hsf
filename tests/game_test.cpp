@@ -3,16 +3,15 @@
 // Tests the readers of a Switch game's files (src/game). The test builds a Bezel Engine archive with stored and
 // compressed assets, a data sheet with a sound effect list, and a boot.lua, and puts them in a folder with a loose
 // sound archive. It checks what LoadGame finds in the folder and in the archive alone: the files, the sound archives,
-// the voice count and the I3DL2 reverbs, and that each file reads back as it was written. The test also loads a
-// title's folder whose archive was unpacked. That folder holds three boot.lua files at two depths. Damaged archives
-// and sheets must be refused, and the encrypted forms a game comes in must be recognised.
+// the voice count and the I3DL2 reverbs, and that each file reads back as it was written. The test also loads a title's
+// folder whose archive was unpacked. That folder holds three boot.lua files at two depths. Damaged archives and sheets
+// must be refused, and the encrypted forms a game comes in must be recognised.
 //
 // usage: game_test
 
 #include "game/game.h"
 
 #include <bit>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -23,6 +22,7 @@
 #include "xsflib/bytes.h"
 #include "xsflib/files.h"
 #include "xsflib/testing/check.h"
+#include "xsflib/testing/temp_folder.h"
 #include <zstd.h>
 
 #include "game/bea.h"
@@ -450,11 +450,8 @@ void TestEncrypted(const fs::path& dir)
 
 int main()
 {
-    // A new folder for each run. Two runs at once then don't remove each other's files.
-    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-    const fs::path dir = fs::temp_directory_path() / ("hsf_game_test_" + std::to_string(stamp));
-    fs::remove_all(dir);
-    fs::create_directories(dir);
+    const xsflib::testing::TempFolder temp("hsf_game_test");
+    const fs::path& dir = temp.Path();
 
     TestFolder(dir / "folder");
     TestUnpackedFolder(dir / "unpacked");
@@ -462,8 +459,6 @@ int main()
     TestDamagedArchives();
     TestDamagedSheets();
     TestEncrypted(dir / "encrypted");
-
-    fs::remove_all(dir);
 
     return Summary("game");
 }

@@ -30,12 +30,6 @@ struct Traits
     using Player = hsf::Player;
     using Set = hsf::LoadedSet;
 
-    static std::optional<std::string> LoadSet(const std::string& path, const xsflib::psf::FileReader& reader, Set& out,
-                                              std::string_view separators)
-    {
-        return hsf::LoadSet(path, reader, out, separators);
-    }
-
     static constexpr const char* kName = "HSF";
     static constexpr const char* kDecoderName = "HSF decoder";
     static constexpr std::array<const char*, 2> kExtensions = {"hsf", "minihsf"};
@@ -47,6 +41,7 @@ struct Traits
 
     // {B098EC3B-4AA0-48F8-8AFC-47F4A5B857EE}
     static constexpr GUID kInputGuid = {0xb098ec3b, 0x4aa0, 0x48f8, {0x8a, 0xfc, 0x47, 0xf4, 0xa5, 0xb8, 0x57, 0xee}};
+
     // Advanced preferences entries, under Decoding > HSF decoder.
     static constexpr GUID kBranchGuid = {0x0cbafc7b, 0x9e8e, 0x469a, {0x82, 0xfa, 0x89, 0x99, 0xbc, 0x0a, 0xf8, 0x4b}};
     static constexpr GUID kLengthGuid = {0xddc4c1d5, 0xa9b2, 0x41c9, {0x8e, 0xf7, 0xea, 0x77, 0x02, 0xdf, 0x7a, 0x4f}};
@@ -54,6 +49,12 @@ struct Traits
     static constexpr GUID kEndlessGuid = {0x06179ada, 0x4d8b, 0x4652, {0xb9, 0x83, 0x23, 0xc4, 0x67, 0x82, 0xf3, 0xa7}};
     static constexpr GUID kRenderAheadGuid = {
         0x63821a5f, 0x89e7, 0x4535, {0xb6, 0xdc, 0xad, 0x3a, 0x31, 0x12, 0x0e, 0xad}};
+
+    static std::optional<std::string> LoadSet(const std::string& path, const xsflib::psf::FileReader& reader, Set& out,
+                                              std::string_view separators)
+    {
+        return hsf::LoadSet(path, reader, out, separators);
+    }
 };
 
 xsflib::foobar2000::Settings<Traits> g_settings;

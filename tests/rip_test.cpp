@@ -46,34 +46,12 @@ std::vector<uint8_t> CountedLoopArchive()
     length_cases::Code code(false);
     code.LoopStart(64).Note(60, 127, 24).Wait(936).LoopEnd().End();
 
-    std::vector<uint8_t> samples(2 * 32000);
-    for (std::size_t i = 0; i < samples.size(); i += 2)
-    {
-        samples[i + 1] = 0x10;
-    }
-    sar_files::WaveSpec wave;
-    wave.encoding = 1;
-    wave.loop_end = 32000;
-    wave.channels = {samples};
-
-    sar_files::Region region;
-    region.wave = 0;
-    region.original_key = 60;
-    region.adshr = {127, 127, 127, 0, 127};
-    sar_files::VelocityTable velocities;
-    velocities.entries = {{0, region}};
-    sar_files::KeyTable keys;
-    keys.entries = {{0, velocities}};
-    sar_files::BankSpec bank;
-    bank.waves = {{0x05000000, 0}};
-    bank.instruments = {keys};
-
     sar_files::ArchiveSpec spec;
     spec.banks = {{"BANK", 0}};
     spec.wave_archives = {{"WARC", 1}};
     spec.players = {{"PLAYER", 1}};
-    spec.files = {{sar_files::Bank(false, bank), "", false},
-                  {sar_files::WaveArchive(false, {sar_files::Wave(false, wave)}), "", false},
+    spec.files = {{sar_files::Bank(false, sar_files::OneRegionBank()), "", false},
+                  {sar_files::WaveArchive(false, {sar_files::Wave(false, sar_files::ConstantWave(false))}), "", false},
                   {sar_files::Sequence(false, code.Bytes(), {{"Start", 0}}), "", false}};
     sar_files::SoundSpec sound;
     sound.name = "SEQ_COUNTED_LOOP";
@@ -92,6 +70,7 @@ int main()
 {
     const hsf::rip::LengthAnalyzer analyzer(
         hsf::fsar::SoundArchive::Load(length_cases::Archive(false), hsf::kSarOptions));
+
     // HSF's analysis waits for the loops of the tracks other than the main track (its model's OthersLooped).
     length_cases::CheckCases([&analyzer](uint32_t index) { return analyzer.Analyze(index); }, true);
 

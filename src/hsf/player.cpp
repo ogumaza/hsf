@@ -16,6 +16,7 @@
 #include "ntdlib/sar/set_archive.h"
 #include "xsflib/text.h"
 
+#include "hsf/format.h"
 #include "hsf/model.h"
 #include "hsf/nx.h"
 #include "hsf/sar.h"

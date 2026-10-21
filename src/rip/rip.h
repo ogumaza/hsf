@@ -30,6 +30,7 @@ struct RipFormat
     using ProgramBuilder = hsf::ProgramBuilder;
     using ArchiveDescriptor = hsf::ArchiveDescriptor;
     using FileChunk = hsf::FileChunk;
+
     static constexpr uint8_t kPsfVersion = kPsfVersionHsf;
 };
 

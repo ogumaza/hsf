@@ -15,6 +15,7 @@
 
 #include "xsflib/bytes.h"
 #include "xsflib/psf/descriptor.h"
+#include "xsflib/psf/psf.h"
 
 namespace hsf
 {

@@ -40,10 +40,9 @@ public:
     static constexpr int kSampleRate = kPlayerSampleRate;
 
     Player();
-    ~Player();
-
     Player(const Player&) = delete;
     Player& operator=(const Player&) = delete;
+    ~Player();
 
 private:
     friend class xsflib::player::PlayerBase<Player, LoadedSet>;

@@ -150,8 +150,8 @@ const ntdlib::rip::ArchiveRipTool<hsf::rip::RipFormat, ArchiveToRip>& ArchiveToo
 }
 
 // What another console's sound archive is, from the file's first bytes `head`: "a 3DS sound archive", "a Wii sound
-// archive" or "a Wii U sound archive (big-endian FSAR)" (see rip::IsWiiUArchive). Nothing for a Switch sound archive
-// or any other file.
+// archive" or "a Wii U sound archive (big-endian FSAR)" (see rip::IsWiiUArchive). Nothing for a Switch sound archive or
+// any other file.
 std::optional<std::string> ForeignArchive(std::span<const uint8_t> head)
 {
     const std::string_view text(reinterpret_cast<const char*>(head.data()), head.size());
