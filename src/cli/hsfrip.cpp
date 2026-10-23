@@ -130,7 +130,7 @@ void AnalyzeLengths(std::vector<Job>& jobs, hsf::fsar::SoundArchive archive, con
     xsflib::cli::AnalyzeLengths(jobs, threads, analyze);
 }
 
-// hsfrip's archive mode (ntdlib::rip::ArchiveRipTool).
+// hsfrip's archive mode (ntdlib::rip::ArchiveRipTool). A library holds only the files that its sequences play.
 const ntdlib::rip::ArchiveRipTool<hsf::rip::RipFormat, ArchiveToRip>& ArchiveTool()
 {
     static const auto kTool = []
@@ -142,6 +142,10 @@ const ntdlib::rip::ArchiveRipTool<hsf::rip::RipFormat, ArchiveToRip>& ArchiveToo
         t.mini_extension = ".minihsf";
         t.sar_options = hsf::kSarOptions;
         t.analyze_lengths = AnalyzeLengths;
+        t.keeps_sequence_data = [](const ArchiveToRip&)
+        {
+            return true;
+        };
 
         return t;
     }();

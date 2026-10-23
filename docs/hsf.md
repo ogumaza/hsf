@@ -223,6 +223,15 @@ In `FILE` chunks, the `.hsflib` holds the sound archive and any group files that
 also holds the archive descriptor. Each `.minihsf` selects one sequence with a `SND ` chunk. Sequences whose data isn't
 all there are listed and skipped. Wave sounds aren't ripped.
 
+The archive in the `.hsflib` holds only the files that the ripped sequences play: each sequence's file, the files of its
+banks, and the wave archives that those banks name. A group's file, in the archive or beside it, stays only when the
+model reads a copy of one of them from it. The archive's header, `STRG` block and `INFO` block keep their bytes, apart
+from the sizes and the places of the files. The `FILE` block holds the kept files in the archive's order. Each starts at
+a multiple of 64 bytes from the archive's start. NintendoWare's tools lay out a `FILE` block the same way. A dropped
+file has no place in the file table. The ripper reads each kept file back from the new archive and checks that it's the
+same. When the cut fails, the ripper prints a warning. The `.hsflib` then holds the whole archive. Rips made with
+earlier versions hold the whole archive.
+
 Tags written by `hsfrip`: `title` and `hsf_sound` (the sound's label), `game`, `length` and `fade`, `hsfby`, `utf8=1`,
 and optionally `artist`, `year` and `copyright`.
 
