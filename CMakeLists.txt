@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.20)
 # Shared version for the tools (HSF_VERSION_ARGS below). For a release, update it here and add notes in
 # docs/release-notes/.
-project(hsf VERSION 1.1.4 LANGUAGES C CXX)
+project(hsf VERSION 1.2.0 LANGUAGES C CXX)
 
 # xsflib: a library for players and rippers of the PSF family, as a submodule. Its XsflibProject.cmake sets what a
 # project built on it starts with: C++20, a release build by default, the static C runtime, the options that keep the
@@ -55,14 +55,40 @@ add_library(hsf_player STATIC
     src/hsf/player.cpp
     src/hsf/player.h
 )
-target_link_libraries(hsf_player PUBLIC hsf_format ntdlib::nx xsflib::player)
+target_link_libraries(hsf_player PUBLIC hsf_format hsf_jaudio ntdlib::nx xsflib::player)
 target_compile_options(hsf_player PRIVATE ${HSF_WARNINGS})
 
+# The model of JAudio's Switch ports: Hagi's emulation of JAudio's DSP program, and the sound library above it.
+add_library(hsf_jaudio STATIC
+    src/jaudio/calc.cpp
+    src/jaudio/calc.h
+    src/jaudio/channel.cpp
+    src/jaudio/channel.h
+    src/jaudio/dsp.cpp
+    src/jaudio/dsp.h
+    src/jaudio/engine.cpp
+    src/jaudio/engine.h
+    src/jaudio/iir_table.h
+    src/jaudio/instruments.cpp
+    src/jaudio/instruments.h
+    src/jaudio/oscillator.cpp
+    src/jaudio/oscillator.h
+    src/jaudio/output.cpp
+    src/jaudio/output.h
+    src/jaudio/tables.h
+    src/jaudio/track.cpp
+    src/jaudio/track.h
+)
+target_link_libraries(hsf_jaudio PUBLIC hsf_common ntdlib::jaudio)
+target_compile_options(hsf_jaudio PRIVATE ${HSF_WARNINGS})
+
 add_library(hsf_rip STATIC
+    src/rip/jaudio_rip.cpp
+    src/rip/jaudio_rip.h
     src/rip/rip.cpp
     src/rip/rip.h
 )
-target_link_libraries(hsf_rip PUBLIC hsf_format ntdlib::nx xsflib::rip ntdlib::rip_archive)
+target_link_libraries(hsf_rip PUBLIC hsf_format hsf_jaudio ntdlib::nx xsflib::rip ntdlib::rip_archive)
 target_compile_options(hsf_rip PRIVATE ${HSF_WARNINGS})
 
 # The version of each program, as HSF_VERSION, and on Windows the version resource that Explorer shows in the file's

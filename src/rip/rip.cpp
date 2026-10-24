@@ -11,6 +11,7 @@
 #include <set>
 #include <span>
 #include <utility>
+#include <vector>
 
 #include "ntdlib/nwsnd/sequence.h"
 #include "ntdlib/nx/atk/engine.h"
@@ -19,9 +20,12 @@
 #include "xsflib/rip/length.h"
 
 #include "hsf/format.h"
+#include "hsf/jaudio.h"
 #include "hsf/model.h"
 #include "hsf/nx.h"
 #include "hsf/sar.h"
+#include "jaudio/engine.h"
+#include "jaudio/output.h"
 
 namespace hsf::rip
 {
@@ -251,6 +255,163 @@ std::optional<Timing> MeasureSequence(const fsar::SoundArchive& archive, const A
     return timing;
 }
 
+// The length analysis's rules for the model of JAudio: frames of one sub-frame, 2.5 ms, and the limits of
+// HsfLengthRules in them. A note that a sub-frame's commands start sounds two sub-frames on: the next sub-frame writes
+// its channel's block, and the one after renders it.
+xsflib::rip::LengthRules JaudioLengthRules()
+{
+    xsflib::rip::LengthRules rules;
+    rules.frame_ms = 2.5;
+    rules.max_frames = 240000;
+    rules.silent_frames = 72000;
+    rules.idle_frames = 20;
+    rules.loop_offset = 2;
+    rules.sound_offset = 2;
+    rules.steady_offset = 2;
+
+    return rules;
+}
+
+// The model of JAudio for the length analysis (xsflib::rip::MeasureLength). A frame's output is what AudioOut plays of
+// the sub-frame. The FX lines ring on until their delays are empty. The voices are the DSP channels. A sequence is
+// settled while the sound holds its notes and each track without an open child track waits for its notes to end (the
+// engine's Held and Waiting). A sequence is never stuck.
+//
+// A loop is a jump back of the main track, outside a subroutine. The main track is the first track, in the order of
+// the sequence's tree, that has started a note and whose last pass started one. A track that plays only an intro
+// therefore leaves the count to the tracks that play in every pass. If no track's last pass started a note, the main
+// track is the first track that has started a note. Neither choice takes a track that waits for ever (the engine's
+// WaitsForEver). A pass that started no note counts only while the sound holds its notes (the engine's Held). A sound
+// effect that holds a note until the game stops it makes such passes.
+class JaudioLengthModel
+{
+public:
+    explicit JaudioLengthModel(jaudio::Engine& engine) : engine_(engine)
+    {
+    }
+
+    bool RunFrame()
+    {
+        engine_.RunSubframe();
+        output_.clear();
+        out_.Push(engine_.Output(), output_);
+        ++frames_;
+
+        return true;
+    }
+
+    uint64_t Frames() const
+    {
+        return frames_;
+    }
+
+    bool Sounded() const
+    {
+        return xsflib::rip::Audible(output_);
+    }
+
+    bool Ringing() const
+    {
+        return std::any_of(output_.begin(), output_.end(), [](int16_t sample) { return sample != 0; }) ||
+               engine_.FxRinging();
+    }
+
+    std::size_t VoiceCount()
+    {
+        return jaudio::Voices::kDspChannels;
+    }
+
+    xsflib::rip::VoicePlace Voice(std::size_t index)
+    {
+        const jaudio::Engine::WavePlace place = engine_.DspChannelPlace(static_cast<uint32_t>(index));
+        return {place.playing, place.loops, place.position};
+    }
+
+    bool Active() const
+    {
+        return engine_.Playing();
+    }
+
+    bool Settled() const
+    {
+        return engine_.Held() && engine_.Waiting();
+    }
+
+    bool Stuck() const
+    {
+        return false;
+    }
+
+    bool Moving() const
+    {
+        return engine_.Moving();
+    }
+
+    uint64_t ChangedAt() const
+    {
+        return 0;
+    }
+
+    bool Busy() const
+    {
+        return engine_.Busy();
+    }
+
+    bool ChannelsChanging() const
+    {
+        return !engine_.Held();
+    }
+
+    int ActiveChannels() const
+    {
+        return engine_.ActiveChannels();
+    }
+
+    template <typename Hook>
+    void OnLoop(Hook hook)
+    {
+        engine_.SetLoopHook(
+            [this, hook](uint32_t track, uint32_t target, bool played)
+            {
+                if (track == MainTrack() && (played || engine_.Held()))
+                {
+                    hook(static_cast<int>(track), target);
+                }
+            });
+    }
+
+private:
+    // A track that waits for ever doesn't count.
+    uint32_t MainTrack() const
+    {
+        uint32_t first = jaudio::Track::kNone;
+        for (const uint32_t track : engine_.TreeOrder())
+        {
+            if (!engine_.PlayedNotes(track) || engine_.WaitsForEver(track))
+            {
+                continue;
+            }
+
+            if (!engine_.QuietPass(track))
+            {
+                return track;
+            }
+
+            if (first == jaudio::Track::kNone)
+            {
+                first = track;
+            }
+        }
+
+        return first;
+    }
+
+    jaudio::Engine& engine_;
+    jaudio::AudioOut out_;
+    std::vector<int16_t> output_;
+    uint64_t frames_ = 0;
+};
+
 } // namespace
 
 bool IsWiiUArchive(std::span<const uint8_t> bytes)
@@ -280,6 +441,33 @@ std::optional<Timing> LengthAnalyzer::Analyze(uint32_t sound_index) const
         return MeasureSequence(impl_->archive, impl_->settings, sound_index);
     };
     return xsflib::rip::TryMeasure(measure);
+}
+
+JaudioLengthAnalyzer::JaudioLengthAnalyzer(const jaudio::SoundFiles& files, ArchiveDescriptor settings)
+    : files_(files), settings_(std::move(settings))
+{
+}
+
+JaudioTiming JaudioLengthAnalyzer::Analyze(uint32_t sound) const
+{
+    JaudioTiming result;
+    const auto measure = [this, sound, &result]() -> std::optional<Timing>
+    {
+        jaudio::Engine engine(files_, JaudioEngineSettings(settings_.jaudio));
+        if (engine.Start(sound, TrackStatesFor(settings_.jaudio, sound)))
+        {
+            return std::nullopt;
+        }
+
+        JaudioLengthModel model(engine);
+        const std::optional<Timing> timing = xsflib::rip::MeasureLength(model, JaudioLengthRules());
+        result.missing_bank_notes = engine.MissingBankNotes();
+
+        return timing;
+    };
+    result.timing = xsflib::rip::TryMeasure(measure);
+
+    return result;
 }
 
 } // namespace hsf::rip

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 
 // HSF ripper: builds an .hsflib for one of a game's sound archives and one .minihsf per sequence, played by ntdlib's
-// model of the SDK's sound library and the console's audio renderer, and works out how long each sequence plays.
+// model of the SDK's sound library and the console's audio renderer, and works out how long each sequence plays. For a
+// game that plays its sound with JAudio, the same on the model of JAudio.
 
 #pragma once
 
@@ -15,6 +16,7 @@
 
 #include "hsf/format.h"
 #include "hsf/sar.h"
+#include "jaudio/engine.h"
 
 namespace hsf::rip
 {
@@ -62,6 +64,30 @@ private:
     struct Impl;
 
     std::unique_ptr<Impl> impl_;
+};
+
+// What the length analysis finds of a JAudio sound: its timing, and the notes that it plays on banks that the files
+// don't load. The game stops at the first such note. Such a sound's data isn't all there.
+struct JaudioTiming
+{
+    std::optional<Timing> timing;
+    uint32_t missing_bank_notes = 0;
+};
+
+// Works out how long JAudio sounds play, on the model of JAudio set up as the player sets it up for a version 2
+// descriptor (hsf/jaudio.h). Analyze can be called from several threads at once.
+class JaudioLengthAnalyzer
+{
+public:
+    // `files` must outlive the analyzer.
+    JaudioLengthAnalyzer(const jaudio::SoundFiles& files, ArchiveDescriptor settings);
+
+    // As LengthAnalyzer::Analyze does, for the sound with ID `sound`. The timing is empty when the sound can't start.
+    JaudioTiming Analyze(uint32_t sound) const;
+
+private:
+    const jaudio::SoundFiles& files_;
+    ArchiveDescriptor settings_;
 };
 
 } // namespace hsf::rip

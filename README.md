@@ -1,12 +1,16 @@
 # hsf
 
 HSF is a PSF-family music rip format for Nintendo Switch sequenced audio: the music that Switch games play from
-NintendoWare sound archives (`.bfsar`).
+NintendoWare sound archives (`.bfsar`), and the sequenced sound of the Super Mario Galaxy games' Switch releases.
 
 A rip holds a game's sound archive. HSF's player plays it with a model of the SDK's sound library (`nn::atk`) and of the
 console's audio renderer. The renderer mixes the sound outside the game, in the system. The model does the same
 arithmetic as the console. It also runs the effects that a game puts on the sound library's aux buses, such as an I3DL2
 reverb. `docs/hsf.md` specifies the format.
+
+The Super Mario Galaxy games play their sound with JAudio2, the sound library of Nintendo's GameCube and Wii games. Their
+Switch releases run it natively, with an emulation of its DSP program. A rip of one of them holds the game's JAudio
+files, and the player plays them on a model of JAudio2 and of the emulation. These rips are version 2 of the format.
 
 HSF comes with a ripper (`hsfrip`), a command-line renderer (`hsfplay`), a foobar2000 component and an XMPlay plugin.
 
@@ -29,6 +33,27 @@ Some games keep groups of their sounds in group files (`.bfgrp`) outside the sou
 group files by name. `hsfrip` looks for them by those names among the game's files. For a sound archive given on its
 own, `hsfrip` looks in the archive's folder and the folders below it. Sequences whose banks or waves are in a group file
 that isn't found are skipped.
+
+For Super Mario Galaxy and Super Mario Galaxy 2, give `hsfrip` the game's RomFS folder. `hsfrip` finds the game's
+JAudio files in its `AudioRes` folder. It rips each sound that plays a sequence, the music and the sound effects, into
+one folder. `--bgm` rips the music. The levels, the effects and the states that each piece of music gives its tracks as
+it starts come from the game's code. HSF holds them for the two games and recognises each game by its files. For
+another JAudio game, `hsfrip` warns and takes JAudio2's defaults. Some things differ from the game:
+
+- The games play much of their music as streams: audio files that HSF doesn't play. `hsfrip` leaves the streams out.
+  Some pieces of music are layers that play beside a stream. The rip of such a piece holds the layer alone. A layer
+  that starts silent is skipped.
+- The game changes some settings as it goes on: the levels of a scene, the effects of some of Super Mario Galaxy 2's
+  stages, and the tracks that a piece of music plays. A rip has the settings that the game sets up as it starts and
+  as each piece starts.
+- Sounds that play notes on banks that the game doesn't load are listed and skipped.
+- The games turn their output down on the console. Super Mario Galaxy plays at 0.355 of full scale on a TV, and at
+  0.71 on the console's speaker, on headphones and on a USB device. Super Mario Galaxy 2 plays at 0.376 and 0.752. The
+  console applies these levels after the game's mix. A rip plays the mix at full scale. It plays about 9 dB louder
+  than the game on a TV, and 3 dB louder than on the console's speaker.
+
+HSF's earlier players refuse version 2 rips with a message. In a version 2 rip, a seek back past the audio that the
+foobar2000 component or the XMPlay plugin keeps plays the track again from its start.
 
 Both tools accept several inputs and continue if one fails. A path that doesn't exist stops the command before it writes
 any files. For example, `hsfrip romfs` writes `romfs_hsf/`. That folder holds a folder for each of the game's sound
@@ -95,7 +120,8 @@ that holds the archive unpacked. The test also checks that the readers refuse da
 docs/         the format's specification (hsf.md)
 src/game/     a Switch game's files: folders, and Bezel Engine's archives and data sheets
 src/hsf/      the HSF format and the player
-src/rip/      the ripper: sets and the length analysis
+src/jaudio/   the model of JAudio2 and of the emulation of its DSP program (version 2)
+src/rip/      the ripper: sets, the JAudio games and the length analysis
 src/cli/      hsfrip and hsfplay
 plugins/      the foobar2000 component and the XMPlay plugin
 tests/        ctest suites
