@@ -3,6 +3,8 @@
 #include "jaudio/dsp.h"
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstdint>
 
 namespace hsf::jaudio
@@ -64,6 +66,27 @@ void Fir8(const uint16_t* coefficients, int16_t* samples)
 
         samples[i] = static_cast<int16_t>(static_cast<uint16_t>(RoundQ15(sum / 2)));
     }
+}
+
+// An oscillator that reads a table of 64 samples. The phase's top 6 bits are the index, and its low 10 bits the
+// fraction. The fraction takes 16 bits as the samples go. Returns the phase after the 80 samples.
+uint32_t ReadOscillatorTable(const int16_t* table, uint32_t phase, uint32_t pitch, int16_t* out)
+{
+    uint32_t fraction = (phase << 6) & 0xffff;
+    uint32_t index = phase >> 10;
+    for (int i = 0; i < Dsp::kSubframeSamples; i++)
+    {
+        out[i] = table[index];
+        fraction += pitch << 5;
+        index += fraction >> 16;
+        fraction &= 0xffff;
+        if (index >= Dsp::kOscillatorTableSize)
+        {
+            index -= Dsp::kOscillatorTableSize;
+        }
+    }
+
+    return fraction >> 6 | index << 10;
 }
 
 // Adds a channel's 80 samples to a bus at a volume that moves towards a target over the first 64 samples, in 32
@@ -197,10 +220,25 @@ void Dsp::StartFrame(uint16_t subframes, uint16_t level, uint32_t left, uint32_t
     // The FX lines' settings that the CPU side left.
     for (std::size_t line = 0; line < fx_lines_.size(); line++)
     {
-        const uint32_t address = (fx_settings_ & 0x3fffffc) + static_cast<uint32_t>(line * DspFxLine::kBytes);
-        for (std::size_t i = 0; i < fx_lines_[line].words.size(); i++)
+        auto& words = fx_lines_[line].words;
+        if (fx_layout_ == FxLayout::kJaudio2)
         {
-            fx_lines_[line].words[i] = memory_.Native16(address + static_cast<uint32_t>(2 * i));
+            const uint32_t address = (fx_settings_ & 0x3fffffc) + static_cast<uint32_t>(line * DspFxLine::kBytes);
+            for (std::size_t i = 0; i < words.size(); i++)
+            {
+                words[i] = memory_.Native16(address + static_cast<uint32_t>(2 * i));
+            }
+            continue;
+        }
+
+        // JAudio1's 16 words go to their places in JAudio2's layout: the flags and the length to words 0 and 1, the
+        // buffer to 4 and 5, the sends to 8 to 11 and the filter to 12 to 19.
+        constexpr std::array<std::size_t, 16> kPlaces = {0, 1, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19};
+        const uint32_t address = (fx_settings_ & 0x3fffffc) + static_cast<uint32_t>(line * 0x20);
+        words = {};
+        for (std::size_t i = 0; i < kPlaces.size(); i++)
+        {
+            words[kPlaces[i]] = memory_.Native16(address + static_cast<uint32_t>(2 * i));
         }
     }
 }
@@ -260,6 +298,44 @@ void Dsp::StartSubframe()
     }
 
     StartFxLines();
+    UpdateOscillatorTables();
+}
+
+void Dsp::UpdateOscillatorTables()
+{
+    // Table 3, a pair of samples at a time from the start. Each sample of the pair takes its old value and a product
+    // of two others. The first takes the sample 2 before it and the old value of the one before it. The second takes
+    // the new value of the one before it and the old value of the first. The table wraps around.
+    int16_t* noise = tables_.resample.data() + kOscillatorTables + 2 * kOscillatorTableSize;
+    int32_t before = noise[kOscillatorTableSize - 1];
+    int64_t second = 0;
+    for (std::size_t j = 0; j < kOscillatorTableSize; j += 2)
+    {
+        const int32_t first = noise[(j + kOscillatorTableSize - 2) % kOscillatorTableSize];
+        const int16_t old = noise[j];
+        const uint32_t product = static_cast<uint32_t>(first * before) - (static_cast<uint32_t>(old) << 16);
+        noise[j] = static_cast<int16_t>(product >> 16);
+        before = noise[j + 1];
+        second = int64_t{noise[(j + kOscillatorTableSize - 1) % kOscillatorTableSize]} * old + (int64_t{before} << 16);
+        noise[j + 1] = static_cast<int16_t>(static_cast<uint64_t>(second) >> 15);
+    }
+
+    // Table 4, a ramp on from its last sample. The step's size is 0x2000 plus 9 bits of a product: bits 16 to 24 of
+    // the last sample plus 0x10000 times the sample before it, rounded half to even at bit 16. The step is negative
+    // when the DSP's accumulator holds more than 0. The accumulator holds table 3's last product doubled, and the
+    // ramp's last sample in its bits 16 to 31.
+    int16_t* ramp = tables_.resample.data() + kOscillatorTables + 3 * kOscillatorTableSize;
+    const auto end = static_cast<uint16_t>(ramp[kOscillatorTableSize - 1]);
+    const int64_t product = (int64_t{ramp[kOscillatorTableSize - 1]} + 0x10000) * ramp[kOscillatorTableSize - 2];
+    const auto low = static_cast<uint32_t>(product);
+    const uint32_t round = (product & 0x17fff) != 0 ? (low << 1) & 0x10000 : 0;
+    const uint32_t size = 0x2000 | (((round + (low & 0x1ff0000)) >> 16) & 0x1ff);
+    const uint64_t accumulator = (static_cast<uint64_t>(second) << 1 & 0xffffffff0000ffffull) | uint64_t{end} << 16;
+    const uint32_t step = static_cast<int64_t>(accumulator) > 0 ? 0u - size : size;
+    for (std::size_t i = 0; i < kOscillatorTableSize; i++)
+    {
+        ramp[i] = static_cast<int16_t>(static_cast<uint16_t>(end + static_cast<uint32_t>(i + 1) * step));
+    }
 }
 
 void Dsp::ReadFxLine(const DspFxLine& line, uint16_t position, Bus& bus)
@@ -516,16 +592,26 @@ void Dsp::DecodeAfc(DspChannelBlock& block, std::span<int16_t> destination, int 
     block.SetU16(DspChannelBlock::kAdpcmHistory1, static_cast<uint16_t>(history1));
 }
 
-void Dsp::FetchPcm16(DspChannelBlock& block, int16_t* destination)
+void Dsp::FetchPcm(DspChannelBlock& block, int16_t* destination, uint32_t bytes)
 {
     const uint32_t needed = static_cast<uint32_t>(
         (uint64_t{block.U16(DspChannelBlock::kPitch)} * 80 + block.U16(DspChannelBlock::kFraction)) >> 12);
 
-    // Reads `count` big-endian samples from the read address on.
+    // Reads `count` samples from the read address on: big-endian ones of 16 bits, or bytes in the high half of a
+    // sample (0x175a04 and 0x2001f0 in the main of Pikmin's Switch release).
     const auto read = [&](int16_t* out, uint32_t count)
     {
         const uint32_t address = block.U32(DspChannelBlock::kReadAddress);
         const uint32_t line = (varam_ + (address & 0xffffffe0)) & 0x7fffffc;
+        if (bytes == 1)
+        {
+            for (uint32_t i = 0; i < count; i++)
+            {
+                out[i] = static_cast<int16_t>(memory_.Byte(line + (address & 0x1f) + i) << 8);
+            }
+            return;
+        }
+
         const uint32_t offset = (address >> 1) & 0xf;
         for (uint32_t i = 0; i < count; i++)
         {
@@ -555,7 +641,7 @@ void Dsp::FetchPcm16(DspChannelBlock& block, int16_t* destination)
         const uint32_t loop_start = block.U32(DspChannelBlock::kLoopStart);
         block.SetU32(DspChannelBlock::kPcmPosition, loop_start);
         block.SetU32(DspChannelBlock::kRemaining, block.U32(DspChannelBlock::kLoopEnd) - loop_start);
-        block.SetU32(DspChannelBlock::kReadAddress, block.U32(DspChannelBlock::kWaveAddress) + loop_start * 2);
+        block.SetU32(DspChannelBlock::kReadAddress, block.U32(DspChannelBlock::kWaveAddress) + loop_start * bytes);
     }
 
     // The wave's end, or its loop's, within the sub-frame. `wanted` counts the samples still to read. `step` is what
@@ -584,7 +670,7 @@ void Dsp::FetchPcm16(DspChannelBlock& block, int16_t* destination)
         block.SetU32(DspChannelBlock::kPcmPosition, loop_start);
         remaining = block.U32(DspChannelBlock::kLoopEnd) - loop_start;
         block.SetU32(DspChannelBlock::kRemaining, remaining);
-        block.SetU32(DspChannelBlock::kReadAddress, block.U32(DspChannelBlock::kWaveAddress) + loop_start * 2);
+        block.SetU32(DspChannelBlock::kReadAddress, block.U32(DspChannelBlock::kWaveAddress) + loop_start * bytes);
         if (remaining > step)
         {
             break;
@@ -598,7 +684,7 @@ void Dsp::FetchPcm16(DspChannelBlock& block, int16_t* destination)
     {
         block.SetU16(DspChannelBlock::kLoopPending, 1);
     }
-    block.SetU32(DspChannelBlock::kReadAddress, block.U32(DspChannelBlock::kReadAddress) + step * 2);
+    block.SetU32(DspChannelBlock::kReadAddress, block.U32(DspChannelBlock::kReadAddress) + step * bytes);
 }
 
 void Dsp::Resample(DspChannelBlock& block, int16_t* source, int16_t* out)
@@ -1007,6 +1093,83 @@ void Dsp::AutoMix(DspChannelBlock& block, const int16_t* samples)
     }
 }
 
+bool Dsp::Oscillate(DspChannelBlock& block, int16_t* out) const
+{
+    // A square wave and a pulse go between these levels.
+    constexpr int16_t kHigh = 0x4000;
+
+    const uint32_t pitch = block.U16(DspChannelBlock::kPitch);
+    uint32_t phase = block.U16(DspChannelBlock::kFraction);
+    const auto table = [this](std::size_t number)
+    {
+        return tables_.resample.data() + kOscillatorTables + number * kOscillatorTableSize;
+    };
+    switch (block.U16(DspChannelBlock::kFormat))
+    {
+    case 0:
+        {
+            // A square wave, high while the phase's top bit is set.
+            uint32_t doubled = phase << 1;
+            for (int i = 0; i < kSubframeSamples; i++)
+            {
+                out[i] = (doubled & 0x10000) != 0 ? kHigh : static_cast<int16_t>(-kHigh);
+                doubled += pitch;
+            }
+            phase = doubled >> 1;
+            break;
+        }
+
+    case 1:
+        // A sawtooth: each sample is the phase.
+        for (int i = 0; i < kSubframeSamples; i++)
+        {
+            out[i] = static_cast<int16_t>(static_cast<uint16_t>(phase));
+            phase += pitch >> 1;
+        }
+        break;
+
+    case 3:
+        {
+            // A pulse, high while the phase's top 2 bits are set.
+            uint32_t quadrupled = phase << 2;
+            for (int i = 0; i < kSubframeSamples; i++)
+            {
+                out[i] = (quadrupled & 0x30000) == 0x30000 ? kHigh : static_cast<int16_t>(-kHigh);
+                quadrupled += pitch << 1;
+            }
+            phase = quadrupled >> 2;
+            break;
+        }
+
+    case 6:
+        // The pitch itself. The phase stays.
+        std::fill_n(out, kSubframeSamples, static_cast<int16_t>(pitch));
+        break;
+
+    case 7:
+        phase = ReadOscillatorTable(table(0), phase, pitch, out); // the sine
+        break;
+
+    case 4:
+        phase = ReadOscillatorTable(table(1), phase, pitch, out); // the triangle
+        break;
+
+    case 11:
+        phase = ReadOscillatorTable(table(2), phase, pitch, out);
+        break;
+
+    case 12:
+        phase = ReadOscillatorTable(table(3), phase, pitch, out);
+        break;
+
+    default:
+        return false;
+    }
+
+    block.SetU16(DspChannelBlock::kFraction, phase);
+    return true;
+}
+
 void Dsp::ProcessChannel(uint16_t index)
 {
     const uint32_t address = (channel_blocks_ + index * static_cast<uint32_t>(DspChannelBlock::kBytes)) & 0x3fffffc;
@@ -1040,19 +1203,34 @@ void Dsp::ProcessChannel(uint16_t index)
                 return;
             }
             ProcessAfc(block, source);
+            Resample(block, source.data(), output);
             break;
+
         case 16:
             if ((flags_ & kFlagDirectFetch) == 0)
             {
                 return;
             }
-            FetchPcm16(block, source.data() + 4);
+            FetchPcm(block, source.data() + 4, 2);
+            Resample(block, source.data(), output);
             break;
+
+        case 8:
+            if ((flags_ & kFlagDirectFetch) == 0)
+            {
+                return;
+            }
+            FetchPcm(block, source.data() + 4, 1);
+            Resample(block, source.data(), output);
+            break;
+
         default:
-            // PCM8 and the oscillators aren't modelled. No game this model plays uses them.
-            return;
+            if (!Oscillate(block, output))
+            {
+                return;
+            }
+            break;
         }
-        Resample(block, source.data(), output);
     }
 
     if (block.U16(DspChannelBlock::kDist) != 0)

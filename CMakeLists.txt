@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.20)
 # Shared version for the tools (HSF_VERSION_ARGS below). For a release, update it here and add notes in
 # docs/release-notes/.
-project(hsf VERSION 1.2.0 LANGUAGES C CXX)
+project(hsf VERSION 1.3.0 LANGUAGES C CXX)
 
 # xsflib: a library for players and rippers of the PSF family, as a submodule. Its XsflibProject.cmake sets what a
 # project built on it starts with: C++20, a release build by default, the static C runtime, the options that keep the
@@ -55,7 +55,7 @@ add_library(hsf_player STATIC
     src/hsf/player.cpp
     src/hsf/player.h
 )
-target_link_libraries(hsf_player PUBLIC hsf_format hsf_jaudio ntdlib::nx xsflib::player)
+target_link_libraries(hsf_player PUBLIC hsf_format hsf_jaudio hsf_jaudio1 hsf_jac ntdlib::nx xsflib::player)
 target_compile_options(hsf_player PRIVATE ${HSF_WARNINGS})
 
 # The model of JAudio's Switch ports: Hagi's emulation of JAudio's DSP program, and the sound library above it.
@@ -82,13 +82,61 @@ add_library(hsf_jaudio STATIC
 target_link_libraries(hsf_jaudio PUBLIC hsf_common ntdlib::jaudio)
 target_compile_options(hsf_jaudio PRIVATE ${HSF_WARNINGS})
 
+# The model of the older sound library (JAudio1) that Pikmin 2's Switch port builds on the same DSP program: its
+# arithmetic, oscillators, banks, channels and sequences, the conductor of the cave music, and the engine that plays
+# the game's music and effects on them.
+add_library(hsf_jaudio1 STATIC
+    src/jaudio1/calc.cpp
+    src/jaudio1/calc.h
+    src/jaudio1/channel.cpp
+    src/jaudio1/channel.h
+    src/jaudio1/conductor.cpp
+    src/jaudio1/conductor.h
+    src/jaudio1/engine.cpp
+    src/jaudio1/engine.h
+    src/jaudio1/iir_table.h
+    src/jaudio1/instruments.cpp
+    src/jaudio1/instruments.h
+    src/jaudio1/oscillator.cpp
+    src/jaudio1/oscillator.h
+    src/jaudio1/track.cpp
+    src/jaudio1/track.h
+)
+target_link_libraries(hsf_jaudio1 PUBLIC hsf_jaudio)
+target_compile_options(hsf_jaudio1 PRIVATE ${HSF_WARNINGS})
+
+# The model of the C JAudio (the Jac) of Pikmin's Switch port, on the same DSP program: its arithmetic, oscillators,
+# banks with their wave scenes in ARAM, channels and sequences, and the game's code that plays its sounds.
+add_library(hsf_jac STATIC
+    src/jac/bank.cpp
+    src/jac/bank.h
+    src/jac/calc.cpp
+    src/jac/calc.h
+    src/jac/channel.cpp
+    src/jac/channel.h
+    src/jac/engine.cpp
+    src/jac/engine.h
+    src/jac/oscillator.cpp
+    src/jac/oscillator.h
+    src/jac/track.cpp
+    src/jac/track.h
+)
+target_link_libraries(hsf_jac PUBLIC hsf_jaudio ntdlib::jaudio)
+target_compile_options(hsf_jac PRIVATE ${HSF_WARNINGS})
+
 add_library(hsf_rip STATIC
+    src/rip/jac_rip.cpp
+    src/rip/jac_rip.h
+    src/rip/jac_tables.cpp
+    src/rip/jac_tables.h
+    src/rip/jaudio1_rip.cpp
+    src/rip/jaudio1_rip.h
     src/rip/jaudio_rip.cpp
     src/rip/jaudio_rip.h
     src/rip/rip.cpp
     src/rip/rip.h
 )
-target_link_libraries(hsf_rip PUBLIC hsf_format hsf_jaudio ntdlib::nx xsflib::rip ntdlib::rip_archive)
+target_link_libraries(hsf_rip PUBLIC hsf_format hsf_jac hsf_jaudio hsf_jaudio1 ntdlib::nx xsflib::rip ntdlib::rip_archive)
 target_compile_options(hsf_rip PRIVATE ${HSF_WARNINGS})
 
 # The version of each program, as HSF_VERSION, and on Windows the version resource that Explorer shows in the file's
@@ -142,6 +190,9 @@ if (HSF_TESTS)
     xsflib_add_project_test(hsf game hsf_game xsflib::zstd)
     xsflib_add_project_test(hsf player hsf_player)
     xsflib_add_project_test(hsf rip hsf_rip)
+    xsflib_add_project_test(hsf jac_tables hsf_rip)
+    xsflib_add_project_test(hsf jac_rip hsf_rip)
+    xsflib_add_project_test(hsf jaudio1 hsf_jaudio1)
 
     # The tools report the version they were built as.
     string(REPLACE "." "\\." version_pattern ${hsf_VERSION})

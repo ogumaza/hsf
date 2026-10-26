@@ -189,8 +189,9 @@ SoundFiles::SequenceRef SoundFiles::SequenceOf(const nj::SoundEntry& sound) cons
 
 void SoundFiles::LoadWaves(const WaveArchives& waves)
 {
-    // Each wave system's wave archives go into the DSP's memory, each once, on 32-byte boundaries. A wave plays from
-    // the archive of the first group that lists it, at the wave's offset there.
+    // Each wave system's wave archives go into the DSP's memory, each once, on 32-byte boundaries. A wave that several
+    // groups list has a copy in each of their archives, at another offset in each. The copies hold the same bytes. The
+    // model plays the copy of the last group that lists the wave: ntdlib keeps that group's record of it.
     const std::vector<nj::WaveSystem> systems = nj::ReadWaveSystems(baa_);
     std::map<std::string, const std::vector<uint8_t>*> archives;
     for (const nj::WaveSystem& system : systems)
@@ -233,14 +234,7 @@ void SoundFiles::LoadWaves(const WaveArchives& waves)
         WaveBank& bank = wave_banks_[system.number];
         for (const auto& [id, info] : system.waves)
         {
-            const auto group = std::find_if(system.groups.begin(), system.groups.end(), [id](const nj::WaveGroup& g)
-                                            { return std::find(g.waves.begin(), g.waves.end(), id) != g.waves.end(); });
-            if (group == system.groups.end())
-            {
-                continue;
-            }
-
-            const auto address = addresses.find(group->archive);
+            const auto address = addresses.find(info.archive);
             if (address == addresses.end())
             {
                 continue;

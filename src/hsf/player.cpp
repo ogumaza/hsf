@@ -17,12 +17,16 @@
 #include "xsflib/text.h"
 
 #include "hsf/format.h"
+#include "hsf/jac.h"
 #include "hsf/jaudio.h"
+#include "hsf/jaudio1.h"
 #include "hsf/model.h"
 #include "hsf/nx.h"
 #include "hsf/sar.h"
+#include "jac/engine.h"
 #include "jaudio/engine.h"
 #include "jaudio/output.h"
+#include "jaudio1/engine.h"
 
 namespace hsf
 {
@@ -32,15 +36,16 @@ struct Player::SourceTraits
     using Set = LoadedSet;
     using Archive = fsar::SoundArchive;
 
-    // The model, and whether the last frame's output was silence.
+    // The model, and how long the effects have rung in its output (EffectTail).
     struct Model
     {
-        Model(const Archive& archive, const atk::EngineOptions& options) : model(archive, options)
+        Model(const Archive& archive, const atk::EngineOptions& options, const std::vector<AuxEffect>& effects)
+            : model(archive, options), tail(effects)
         {
         }
 
         atk::ArchiveModel model;
-        bool silent = false;
+        EffectTail tail;
     };
 
     // What the descriptor gives the model, and the sound.
@@ -51,9 +56,12 @@ struct Player::SourceTraits
         uint32_t sound = 0;
     };
 
-    // The model between frames: ntdlib's snapshot of the renderer and the engine. The snapshot leaves out whether the
-    // last frame was silent. The player reads that flag only after a step, and each step's frame sets it.
-    using Snapshot = atk::ArchiveModel::Snapshot;
+    // The model between frames: ntdlib's snapshot of the renderer and the engine, and the effects' tail.
+    struct Snapshot
+    {
+        atk::ArchiveModel::Snapshot model;
+        EffectTail tail;
+    };
 
     // The archive loads at the first start, and later starts reuse it.
     static constexpr bool kKeepArchive = true;
@@ -79,7 +87,7 @@ struct Player::SourceTraits
 
     static std::unique_ptr<Model> MakeModel(const Prepared& prepared, const Archive& archive)
     {
-        return std::make_unique<Model>(archive, prepared.options);
+        return std::make_unique<Model>(archive, prepared.options, prepared.effects);
     }
 
     // The scene's effects, in their order, before the sound starts.
@@ -107,29 +115,29 @@ struct Player::SourceTraits
     {
         model.model.engine->RunFrame();
         const std::span<const int16_t> output = model.model.renderer.DeviceOutput();
-        model.silent = std::all_of(output.begin(), output.end(), [](int16_t sample) { return sample == 0; });
+        model.tail.Frame(output);
         out.insert(out.end(), output.begin(), output.end());
 
         return true;
     }
 
-    // The sound has finished once the sequence has ended and the output is silence. The effects have then died away
-    // too.
+    // The sound has finished once the sequence has ended and the effects no longer ring.
     static bool Busy(const Model& model)
     {
-        return !model.silent || model.model.engine->IsBusy();
+        return model.tail.Ringing() || model.model.engine->IsBusy();
     }
 
     // ntdlib's snapshot shares nothing with an earlier one. `previous` goes unused.
     static Snapshot Save(const Model& model, const Snapshot*)
     {
-        return model.model.Save();
+        return {model.model.Save(), model.tail};
     }
 
     // ntdlib's Restore throws for a snapshot of another model, and then changes nothing.
     static void Restore(Model& model, const Snapshot& snapshot)
     {
-        model.model.Restore(snapshot);
+        model.model.Restore(snapshot.model);
+        model.tail = snapshot.tail;
     }
 };
 
@@ -234,6 +242,209 @@ struct Player::JaudioTraits
     }
 };
 
+// The model of JAudio1 (src/jaudio1) for a set of library 2: the game's sound files, and an engine that plays a sound
+// of them through Hagi's path to AudioOut.
+struct Player::Jaudio1Traits
+{
+    using Set = LoadedSet;
+    using Archive = Jaudio1Files;
+
+    // The engine, AudioOut's resampler, and whether the last frame's output was silence. The files outlive the model.
+    struct Model
+    {
+        Model(const Archive& archive, const jaudio1::Settings& settings)
+            : files(archive), engine(archive.sound, settings)
+        {
+        }
+
+        const Archive& files;
+        jaudio1::Engine engine;
+        jaudio::AudioOut out;
+        bool silent = false;
+    };
+
+    struct Prepared
+    {
+        jaudio1::Settings settings;
+        JaudioLibrary2 library;
+        uint32_t sound = 0;
+    };
+
+    // The files load at the first start, and later starts reuse them.
+    static constexpr bool kKeepArchive = true;
+
+    static std::optional<std::string> Prepare(const Set& set, Prepared& prepared)
+    {
+        const ArchiveDescriptor& d = *set.archive;
+        prepared.settings = Jaudio1EngineSettings(d.jaudio);
+        prepared.library = d.jaudio.library2;
+        prepared.sound = set.sound.value_or(0);
+
+        return std::nullopt;
+    }
+
+    // The model copies what it plays from the set's files. The set's copies are then dropped.
+    static std::optional<std::string> LoadArchive(Set& set, const Prepared&, std::optional<Archive>& files)
+    {
+        const ArchiveDescriptor& d = *set.archive;
+        const auto file = [&set](const std::string& path)
+        {
+            return static_cast<const std::vector<uint8_t>*>(set.File(path));
+        };
+        if (std::optional<std::string> err = LoadJaudio1Files(d, file, files))
+        {
+            return err;
+        }
+
+        for (FileChunk& chunk : set.files)
+        {
+            std::vector<uint8_t>().swap(chunk.data);
+        }
+
+        return std::nullopt;
+    }
+
+    static std::unique_ptr<Model> MakeModel(const Prepared& prepared, const Archive& files)
+    {
+        return std::make_unique<Model>(files, prepared.settings);
+    }
+
+    static std::optional<std::string> StartModel(Model&, const Archive&, const Prepared&)
+    {
+        return std::nullopt;
+    }
+
+    static std::optional<std::string> StartSequence(Model& model, const Set&, const Prepared& prepared)
+    {
+        if (const std::optional<std::string> err =
+                StartJaudio1Sound(model.engine, model.files, prepared.library, prepared.sound))
+        {
+            return "sound " + xsflib::Hex(prepared.sound, 8) + ": " + *err;
+        }
+
+        return std::nullopt;
+    }
+
+    // A sub-frame of 2.5 ms, as for JAudio2.
+    static bool RunFrame(Model& model, std::vector<int16_t>& out)
+    {
+        model.engine.RunSubframe();
+        const std::span<const int16_t> output = model.engine.Output();
+        model.silent = std::all_of(output.begin(), output.end(), [](int16_t sample) { return sample == 0; });
+        model.out.Push(output, out);
+
+        return true;
+    }
+
+    // The sound has finished once the sequence or the effect has ended, no DSP channel plays and the output is silence.
+    // The FX lines have then died away too.
+    static bool Busy(const Model& model)
+    {
+        return !model.silent || model.engine.Busy();
+    }
+};
+
+// The model of the C JAudio (src/jac) for a set of library 3: the game's sound files, and an engine that plays a sound
+// of them after the game's start-up, through Hagi's path to AudioOut.
+struct Player::JacTraits
+{
+    using Set = LoadedSet;
+    using Archive = JacFiles;
+
+    // The engine, AudioOut's resampler, and whether the last frame's output was silence. The files outlive the model.
+    struct Model
+    {
+        Model(const Archive& archive, const jac::Settings& settings) : engine(*archive.sound, settings)
+        {
+        }
+
+        jac::Engine engine;
+        jaudio::AudioOut out;
+        bool silent = false;
+    };
+
+    struct Prepared
+    {
+        jac::Settings settings;
+        JaudioLibrary3 library;
+        uint32_t sound = 0;
+    };
+
+    // The files load at the first start, and later starts reuse them.
+    static constexpr bool kKeepArchive = true;
+
+    static std::optional<std::string> Prepare(const Set& set, Prepared& prepared)
+    {
+        const ArchiveDescriptor& d = *set.archive;
+        prepared.settings = JacEngineSettings(d.jaudio);
+        prepared.library = d.jaudio.library3;
+        prepared.sound = set.sound.value_or(0);
+
+        return std::nullopt;
+    }
+
+    // The set's chunks move into the files. The model reads the wave archives from them as the game's scenes load.
+    static std::optional<std::string> LoadArchive(Set& set, const Prepared&, std::optional<Archive>& files)
+    {
+        const ArchiveDescriptor& d = *set.archive;
+        files.emplace();
+        for (FileChunk& chunk : set.files)
+        {
+            files->chunks[chunk.path] = std::move(chunk.data);
+        }
+
+        const auto file = [&chunks = files->chunks](const std::string& path) -> const std::vector<uint8_t>*
+        {
+            const auto found = chunks.find(path);
+            return found == chunks.end() ? nullptr : &found->second;
+        };
+        return LoadJacFiles(d, file, files->sound);
+    }
+
+    static std::unique_ptr<Model> MakeModel(const Prepared& prepared, const Archive& files)
+    {
+        return std::make_unique<Model>(files, prepared.settings);
+    }
+
+    static std::optional<std::string> StartModel(Model&, const Archive&, const Prepared&)
+    {
+        return std::nullopt;
+    }
+
+    // The game's start-up runs first. Its sub-frames make no sound, and they don't reach AudioOut.
+    static std::optional<std::string> StartSequence(Model& model, const Set&, const Prepared& prepared)
+    {
+        if (const std::optional<std::string> err = StartJacSound(model.engine, prepared.library, prepared.sound))
+        {
+            return "sound " + xsflib::Hex(prepared.sound, 8) + ": " + *err;
+        }
+
+        return std::nullopt;
+    }
+
+    // The loudest sample of a silent sub-frame. The FX lines' feedback can hold quieter values for ever.
+    static constexpr int kSilence = 8;
+
+    // A sub-frame of 2.5 ms, as for JAudio2: Hagi's DSP renders it, then the CPU side and the game's code run.
+    static bool RunFrame(Model& model, std::vector<int16_t>& out)
+    {
+        model.engine.RunFrame();
+        const std::span<const int16_t> output = model.engine.Output();
+        model.silent = std::all_of(output.begin(), output.end(),
+                                   [](int16_t sample) { return sample <= kSilence && sample >= -kSilence; });
+        model.out.Push(output, out);
+
+        return true;
+    }
+
+    // The sound has finished once it has stopped playing (jac::Engine::Playing), no DSP channel plays and the output is
+    // silent. The FX lines have then died away too.
+    static bool Busy(const Model& model)
+    {
+        return !model.silent || model.engine.Busy();
+    }
+};
+
 struct Player::SourceSnapshot
 {
     std::shared_ptr<SourceTraits::Snapshot> model;
@@ -247,11 +458,23 @@ void Player::Unload()
 {
     source_.reset();
     jaudio_.reset();
+    jaudio1_.reset();
+    jac_.reset();
 }
 
 bool Player::Jaudio() const
 {
     return set_.archive && set_.archive->version == ArchiveDescriptor::kJaudioVersion;
+}
+
+bool Player::Jaudio1() const
+{
+    return Jaudio() && set_.archive->jaudio.library == JaudioSettings::kPikmin2Library;
+}
+
+bool Player::Jac() const
+{
+    return Jaudio() && set_.archive->jaudio.library == JaudioSettings::kPikminLibrary;
 }
 
 bool Player::StartSource()
@@ -260,7 +483,23 @@ bool Player::StartSource()
 
     // The source keeps the archive for restarts. Unload drops it with the set.
     std::optional<std::string> err;
-    if (Jaudio())
+    if (Jac())
+    {
+        if (!jac_)
+        {
+            jac_ = std::make_unique<JacSource>();
+        }
+        err = jac_->Start(set_, output_);
+    }
+    else if (Jaudio1())
+    {
+        if (!jaudio1_)
+        {
+            jaudio1_ = std::make_unique<Jaudio1Source>();
+        }
+        err = jaudio1_->Start(set_, output_);
+    }
+    else if (Jaudio())
     {
         if (!jaudio_)
         {
@@ -288,11 +527,29 @@ bool Player::StartSource()
 bool Player::RunStep()
 {
     // The model reports a failure by throwing.
+    if (Jac())
+    {
+        return jac_->RunFrame(output_);
+    }
+    if (Jaudio1())
+    {
+        return jaudio1_->RunFrame(output_);
+    }
+
     return Jaudio() ? jaudio_->RunFrame(output_) : source_->RunFrame(output_);
 }
 
 bool Player::Finished() const
 {
+    if (Jac())
+    {
+        return !jac_->Busy();
+    }
+    if (Jaudio1())
+    {
+        return !jaudio1_->Busy();
+    }
+
     return Jaudio() ? !jaudio_->Busy() : !source_->Busy();
 }
 

@@ -13,6 +13,7 @@
 
 #include "ntdlib/rip/archive.h"
 #include "xsflib/rip/file_names.h"
+#include "xsflib/rip/length.h"
 
 #include "hsf/format.h"
 #include "hsf/sar.h"
@@ -66,13 +67,21 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-// What the length analysis finds of a JAudio sound: its timing, and the notes that it plays on banks that the files
-// don't load. The game stops at the first such note. Such a sound's data isn't all there.
+// What the length analysis finds of a JAudio sound: its timing, and the notes that the files can't play. With libraries
+// 1 and 2, those are the notes on banks that the files don't load. Such a sound's data isn't all there. With library 1,
+// the game stops at the first such note. With library 3, they're the notes that get no wave from the bank file. With
+// libraries 2 and 3, the game's note doesn't start. For library 2, also the numbers that the sound's sequence draws
+// from the sequences' generator.
 struct JaudioTiming
 {
     std::optional<Timing> timing;
     uint32_t missing_bank_notes = 0;
+    uint32_t sequence_draws = 0;
 };
+
+// The length analysis's rules for the models of JAudio: frames of one sub-frame, 2.5 ms, and LengthAnalyzer's limits in
+// them.
+xsflib::rip::LengthRules JaudioLengthRules();
 
 // Works out how long JAudio sounds play, on the model of JAudio set up as the player sets it up for a version 2
 // descriptor (hsf/jaudio.h). Analyze can be called from several threads at once.

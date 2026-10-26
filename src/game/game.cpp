@@ -3,6 +3,7 @@
 #include "game/game.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -35,6 +36,11 @@ namespace fs = std::filesystem;
 constexpr char kBoot[] = "boot.lua";
 constexpr char kVoiceSetting[] = "SetVoiceCountMax(";
 constexpr char kEffectList[] = "Data/SheetBin/SoundEffectList.elf";
+
+// The presets that the games put on the aux buses (StartupEffects), and an I3DL2 reverb's type as an aux effect.
+constexpr char kDefaultReverb[] = "I3DL2_Default";
+constexpr std::array<const char*, 3> kMoveItEffects = {"Delay_Waltz", "I3DL2_Waltz", "Limiter_Waltz"};
+constexpr uint32_t kI3dl2Reverb = 1;
 
 // Reads the first `count` bytes of the file at `path` into `out`, or all of it when it's shorter. Returns false if they
 // can't be read.
@@ -98,7 +104,8 @@ std::optional<int> VoiceCount(const std::vector<uint8_t>& text)
     return std::nullopt;
 }
 
-// Adds the I3DL2 reverbs of a sound effect list to `out`. A list that doesn't parse adds none.
+// Adds the effects of a sound effect list to `out`. The list has WarioWare: Get It Together!'s form or WarioWare: Move
+// It!'s. A list that doesn't parse adds none.
 void AddEffectList(std::vector<uint8_t> bytes, GameFiles& out)
 {
     Sheet sheet;
@@ -110,6 +117,16 @@ void AddEffectList(std::vector<uint8_t> bytes, GameFiles& out)
     for (auto& [preset, parameters] : ReadI3dl2Presets(sheet))
     {
         out.i3dl2_presets[preset] = parameters;
+    }
+
+    RawEffectPresets raw = ReadRawEffectPresets(sheet);
+    for (auto& [preset, parameters] : raw.i3dl2)
+    {
+        out.i3dl2_presets[preset] = parameters;
+    }
+    for (auto& [preset, effect] : raw.renderer)
+    {
+        out.renderer_presets[preset] = effect;
     }
 }
 
@@ -280,7 +297,52 @@ std::optional<std::string> LoadBeaArchive(const fs::path& input, GameFiles& out)
     return std::nullopt;
 }
 
+// The effect of the preset `name` on aux bus `bus`: an I3DL2 reverb, or one of the renderer's effects. The game has the
+// preset.
+BusEffect PresetEffect(const GameFiles& game, const std::string& name, uint32_t bus)
+{
+    BusEffect effect;
+    effect.bus = bus;
+    effect.name = name;
+    const auto reverb = game.i3dl2_presets.find(name);
+    if (reverb != game.i3dl2_presets.end())
+    {
+        effect.type = kI3dl2Reverb;
+        effect.parameters.assign(reverb->second.begin(), reverb->second.end());
+    }
+    else
+    {
+        const RendererPreset& preset = game.renderer_presets.at(name);
+        effect.type = preset.type;
+        effect.parameters.assign(preset.parameters.begin(), preset.parameters.end());
+    }
+
+    return effect;
+}
+
 } // namespace
+
+std::vector<BusEffect> StartupEffects(const GameFiles& game)
+{
+    std::vector<BusEffect> effects;
+    const auto has = [&game](const char* name)
+    {
+        return game.i3dl2_presets.contains(name) || game.renderer_presets.contains(name);
+    };
+    if (std::all_of(kMoveItEffects.begin(), kMoveItEffects.end(), has))
+    {
+        for (uint32_t bus = 0; bus < kMoveItEffects.size(); ++bus)
+        {
+            effects.push_back(PresetEffect(game, kMoveItEffects[bus], bus));
+        }
+    }
+    else if (game.i3dl2_presets.contains(kDefaultReverb))
+    {
+        effects.push_back(PresetEffect(game, kDefaultReverb, 0));
+    }
+
+    return effects;
+}
 
 std::optional<std::string> EncryptedKind(const fs::path& path)
 {

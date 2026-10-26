@@ -2,8 +2,8 @@
 
 // HSF player core: loads an .hsflib and .minihsf set and produces its audio. A set of version 1 plays on ntdlib's model
 // of the SDK's sound library (nn::atk) and of the console's audio renderer. A set of version 2 plays on HSF's model of
-// JAudio. Portable C++ with no platform audio or UI. The CLI renderer, the foobar2000 component and the XMPlay plugin
-// use it.
+// JAudio: of JAudio2 with library 1, of JAudio1 with library 2 and of the C JAudio with library 3. Portable C++ with no
+// platform audio or UI. The CLI renderer, the foobar2000 component and the XMPlay plugin use it.
 
 #pragma once
 
@@ -49,11 +49,16 @@ public:
 private:
     friend class xsflib::player::PlayerBase<Player, LoadedSet>;
 
-    // Archive mode's steps on ntdlib's model (xsflib::player::ArchiveSource), and on the model of JAudio.
+    // Archive mode's steps on ntdlib's model (xsflib::player::ArchiveSource), and on the models of JAudio2, JAudio1 and
+    // the C JAudio.
     struct SourceTraits;
     using Source = xsflib::player::ArchiveSource<SourceTraits>;
     struct JaudioTraits;
     using JaudioSource = xsflib::player::ArchiveSource<JaudioTraits>;
+    struct Jaudio1Traits;
+    using Jaudio1Source = xsflib::player::ArchiveSource<Jaudio1Traits>;
+    struct JacTraits;
+    using JacSource = xsflib::player::ArchiveSource<JacTraits>;
 
     static constexpr const char* kNotPlayable = "no archive descriptor";
     static constexpr const char* kStartFailure = "the sound couldn't start: ";
@@ -67,8 +72,11 @@ private:
     // Drops the sources, with the archives that they keep for restarts.
     void Unload();
 
-    // Whether the set plays on the model of JAudio: its descriptor has version 2.
+    // Whether the set plays on the model of JAudio: its descriptor has version 2. Jaudio1: whether it plays on the
+    // model of JAudio1, with library 2. Jac: whether it plays on the model of the C JAudio, with library 3.
     bool Jaudio() const;
+    bool Jaudio1() const;
+    bool Jac() const;
 
     bool Playable() const
     {
@@ -88,9 +96,11 @@ private:
     bool CanRestore(const SourceSnapshot* source) const;
     void RestoreSource(const SourceSnapshot& source);
 
-    std::unique_ptr<Source> source_;       // the model, and the archive that it keeps for restarts
-    std::unique_ptr<JaudioSource> jaudio_; // the same for a set of version 2
-    std::vector<int16_t> output_;          // samples produced and not dropped yet
+    std::unique_ptr<Source> source_;         // the model, and the archive that it keeps for restarts
+    std::unique_ptr<JaudioSource> jaudio_;   // the same for a set of version 2
+    std::unique_ptr<Jaudio1Source> jaudio1_; // the same for a set of library 2
+    std::unique_ptr<JacSource> jac_;         // the same for a set of library 3
+    std::vector<int16_t> output_;            // samples produced and not dropped yet
 };
 
 // Playback with length, fade, volume and seeking, and its options (xsflib::player).

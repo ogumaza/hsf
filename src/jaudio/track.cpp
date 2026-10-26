@@ -823,14 +823,17 @@ int32_t Tracks::ParseCommand(uint32_t index, uint32_t command, uint32_t register
             value = s.U8(track.cursor);
             track.cursor += 1;
             break;
+
         case 1:
             value = static_cast<uint32_t>(s.U8(track.cursor)) << 8 | s.U8(track.cursor + 1);
             track.cursor += 2;
             break;
+
         case 2:
             value = Be24(track, track.cursor);
             track.cursor += 3;
             break;
+
         default:
             value = ReadReg(track, s.U8(track.cursor));
             track.cursor += 1;
@@ -855,25 +858,34 @@ uint32_t Tracks::RegisterRead(const Track& track, uint32_t reg)
     {
     case 0x20:
         return (r[0] & 0xffu) << 8 | (r[1] & 0xffu);
+
     case 0x21:
         return uint32_t{r[4]} << 16 | r[5];
+
     case 0x22:
         return r[4] >> 8;
+
     case 0x23:
         return r[4] & 0xffu;
+
     case 0x24:
         return r[5] >> 8;
+
     case 0x25:
         return r[5] & 0xffu;
+
     case 0x26:
         return uint32_t{r[6]} << 16 | r[7];
+
     case 0x27:
         return uint32_t{r[8]} << 16 | r[9];
+
     // The game's read (0x7548c in Super Mario Galaxy's main) returns registers 10 and 11 for both 0x28 and 0x29. A
     // write of 0x29 sets registers 12 and 13.
     case 0x28:
     case 0x29:
         return uint32_t{r[10]} << 16 | r[11];
+
     default:
         return 0;
     }
@@ -899,33 +911,43 @@ void Tracks::RegisterWrite(Track& track, uint32_t reg, uint32_t value)
         r[0] = static_cast<uint16_t>((value >> 8) & 0xff);
         r[1] = static_cast<uint16_t>(value & 0xff);
         break;
+
     case 0x21:
         pair(4);
         break;
+
     case 0x22:
         r[4] = static_cast<uint16_t>((r[4] & 0x00ff) | (value & 0xff) << 8);
         break;
+
     case 0x23:
         r[4] = static_cast<uint16_t>((r[4] & 0xff00) | (value & 0xff));
         break;
+
     case 0x24:
         r[5] = static_cast<uint16_t>((r[5] & 0x00ff) | (value & 0xff) << 8);
         break;
+
     case 0x25:
         r[5] = static_cast<uint16_t>((r[5] & 0xff00) | (value & 0xff));
         break;
+
     case 0x26:
         pair(6);
         break;
+
     case 0x27:
         pair(8);
         break;
+
     case 0x28:
         pair(10);
         break;
+
     case 0x29:
         pair(12);
         break;
+
     default:
         break;
     }
@@ -959,48 +981,69 @@ uint32_t Tracks::ReadReg(const Track& track, uint32_t reg) const
 
             return bits;
         }
+
     case 0x61:
         return track.depth != 0 ? track.loop_counts[track.depth - 1] : 0;
+
     case 0x62:
         return track.timebase;
+
     case 0x63:
         return static_cast<uint32_t>(static_cast<int32_t>(track.transpose));
+
     case 0x64:
         return track.bend_sense;
+
     case 0x65:
         return track.gate_rate;
+
     case 0x66:
         return track.skip_samples;
+
     case 0x67:
         return track.bank;
+
     case 0x68:
         return track.program;
+
     case 0x69:
         return ToUint32(track.pan_power * 32767.0f);
+
     case 0x6a:
         // The game's read (0x7518c in Super Mario Galaxy's main) ORs the two priorities without a shift. A write of
         // 0x6a puts the release priority in the high byte.
         return uint32_t{track.note_on_priority} | track.release_priority;
+
     case 0x6b:
         return track.note_on_priority;
+
     case 0x6c:
         return track.release_priority;
+
     case 0x6d:
         return track.direct_release;
+
     case 0x6e:
         return ToUint32(track.vibrato_depth * 1524.0f);
+
     case 0x6f:
         return ToUint32(track.vibrato_depth * 12192.0f);
+
     case 0x70:
         return ToUint32(track.tremolo_depth * 256.0f);
+
     case 0x71:
         return ToUint32(track.vibrato_pitch * 64.0f);
+
     case 0x72:
         return ToUint32(track.tremolo_pitch * 64.0f);
+
     case 0x73:
         return track.vibrato_delay;
+
     case 0x74:
         return track.tremolo_delay;
+
     default:
         return 0;
     }
@@ -1029,61 +1072,80 @@ void Tracks::WriteReg(uint32_t index, uint32_t reg, uint32_t value)
         track.flags |= Track::kInvalid;
         UpdateTempo(track);
         break;
+
     case 0x63:
         track.transpose = static_cast<int8_t>(static_cast<uint8_t>(value));
         break;
+
     case 0x64:
         track.bend_sense = static_cast<uint8_t>(value);
         break;
+
     case 0x65:
         track.gate_rate = static_cast<uint8_t>(value);
         break;
+
     case 0x66:
         track.skip_samples = value;
         break;
+
     case 0x67:
         track.bank = static_cast<uint16_t>(value & 0xff);
         break;
+
     case 0x68:
         track.program = static_cast<uint16_t>(value & 0xff);
         break;
+
     case 0x69:
         track.pan_power = static_cast<float>(value) / 32767.0f;
         break;
+
     case 0x6a:
         track.note_on_priority = static_cast<uint8_t>(value);
         track.release_priority = static_cast<uint8_t>(value >> 8);
         break;
+
     case 0x6b:
         track.note_on_priority = static_cast<uint8_t>(value);
         break;
+
     case 0x6c:
         track.release_priority = static_cast<uint8_t>(value);
         break;
+
     case 0x6d:
         track.direct_release = static_cast<uint16_t>(value);
         break;
+
     case 0x6e:
         track.vibrato_depth = static_cast<float>(value) / 1524.0f;
         break;
+
     case 0x6f:
         track.vibrato_depth = static_cast<float>(value) / 12192.0f;
         break;
+
     case 0x70:
         track.tremolo_depth = static_cast<float>(value) * (1.0f / 256.0f);
         break;
+
     case 0x71:
         track.vibrato_pitch = static_cast<float>(value) * (1.0f / 64.0f);
         break;
+
     case 0x72:
         track.tremolo_pitch = static_cast<float>(value) * (1.0f / 64.0f);
         break;
+
     case 0x73:
         track.vibrato_delay = static_cast<uint16_t>(value);
         break;
+
     case 0x74:
         track.tremolo_delay = static_cast<uint16_t>(value);
         break;
+
     default:
         break;
     }
@@ -1178,30 +1240,38 @@ int32_t Tracks::Execute(uint32_t index, uint32_t command, const Args& a)
     case 0xb1:
         NoteOn(index, a[1], a[0], a[2]);
         break;
+
     case 0xb2:
         NoteOff(index, a[0], 0);
         break;
+
     case 0xb3:
         NoteOnGate(index, a[1], a[2], a[3], a[0]);
         break;
+
     case 0xb4:
         if (a[0] <= 0xff)
         {
             SetLatestKey(index, a[0]);
         }
         break;
+
     case 0xb8:
         SetParam(track, a[0], ByteParam(a[1]), 0);
         break;
+
     case 0xb9:
         SetParam(track, a[0], HalfParam(a[1]), 0);
         break;
+
     case 0xba:
         SetParam(track, a[0], ByteParam(a[1]), a[2]);
         break;
+
     case 0xbb:
         SetParam(track, a[0], HalfParam(a[1]), a[2]);
         break;
+
     case 0xc1:
         {
             const uint32_t child = OpenChild(index, a[0]);
@@ -1217,31 +1287,38 @@ int32_t Tracks::Execute(uint32_t index, uint32_t command, const Args& a)
             }
             break;
         }
+
     case 0xc2:
         CloseChild(index, a[0]);
         break;
+
     case 0xc3:
         call(a[0]);
         break;
+
     case 0xc4:
         if (Condition(track, a[0]))
         {
             call(a[1]);
         }
         break;
+
     case 0xc5:
         ret();
         break;
+
     case 0xc6:
         if (Condition(track, a[0]))
         {
             ret();
         }
         break;
+
     case 0xc7:
         JumpBack(index, a[0]);
         track.cursor = a[0];
         break;
+
     case 0xc8:
         if (Condition(track, a[0]))
         {
@@ -1249,12 +1326,15 @@ int32_t Tracks::Execute(uint32_t index, uint32_t command, const Args& a)
             track.cursor = a[1];
         }
         break;
+
     case 0xc9:
         track.cursor = Be24(track, a[1] + 3 * a[0]);
         break;
+
     case 0xca:
         call(Be24(track, a[1] + 3 * a[0]));
         break;
+
     case 0xcb:
         if (track.depth < track.stack.size())
         {
@@ -1263,6 +1343,7 @@ int32_t Tracks::Execute(uint32_t index, uint32_t command, const Args& a)
             track.depth++;
         }
         break;
+
     case 0xcc:
         if (track.depth != 0)
         {
@@ -1279,6 +1360,7 @@ int32_t Tracks::Execute(uint32_t index, uint32_t command, const Args& a)
             }
         }
         break;
+
     case 0xd0:
         {
             // readPort: the port's value from the game, which clears its flag.
@@ -1291,6 +1373,7 @@ int32_t Tracks::Execute(uint32_t index, uint32_t command, const Args& a)
             WriteReg(index, a[1], value & 0xffff);
             break;
         }
+
     case 0xd1:
         if (a[0] < track.ports.size())
         {
@@ -1298,24 +1381,29 @@ int32_t Tracks::Execute(uint32_t index, uint32_t command, const Args& a)
             track.ports[a[0]] = static_cast<uint16_t>(a[1]);
         }
         break;
+
     case 0xd2:
         RegisterWrite(track, kRegFlag, (uint32_t{track.import_flags} >> (a[0] & 31)) & 1);
         break;
+
     case 0xd3:
         RegisterWrite(track, kRegFlag, (uint32_t{track.export_flags} >> (a[0] & 31)) & 1);
         break;
+
     case 0xd4:
         if (track.parent != Track::kNone)
         {
             WritePort(track.parent, a[0], a[1]);
         }
         break;
+
     case 0xd5:
         if (const uint32_t child = child_of(a[0]); child != Track::kNone)
         {
             WritePort(child, a[0] & 15, a[1]);
         }
         break;
+
     case 0xd6:
     case 0xd7:
         {
@@ -1334,9 +1422,11 @@ int32_t Tracks::Execute(uint32_t index, uint32_t command, const Args& a)
             }
             break;
         }
+
     case 0xd8:
         WriteReg(index, a[0], a[1]);
         break;
+
     case 0xd9:
     case 0xda:
         {
@@ -1348,27 +1438,35 @@ int32_t Tracks::Execute(uint32_t index, uint32_t command, const Args& a)
             case 0:
                 WriteReg(index, reg, value);
                 break;
+
             case 1:
                 WriteReg(index, reg, ReadReg(track, reg) + value);
                 break;
+
             case 2:
                 WriteReg(index, reg, ReadReg(track, reg) - value);
                 break;
+
             case 3:
                 WriteReg(index, kRegFlag, ReadReg(track, reg) - value);
                 break;
+
             case 4:
                 WriteReg(index, 0x21, ReadReg(track, reg) * value);
                 break;
+
             case 5:
                 WriteReg(index, reg, ReadReg(track, reg) & value);
                 break;
+
             case 6:
                 WriteReg(index, reg, ReadReg(track, reg) | value);
                 break;
+
             case 7:
                 WriteReg(index, reg, ReadReg(track, reg) ^ value);
                 break;
+
             case 8:
                 {
                     seq_random_ = seq_random_ * 0x19660du + 0x3c6ef35fu;
@@ -1376,23 +1474,28 @@ int32_t Tracks::Execute(uint32_t index, uint32_t command, const Args& a)
                     WriteReg(index, reg, value != 0 ? r % value : r);
                     break;
                 }
+
             case 9:
                 WriteReg(index, reg, ReadReg(track, reg) << (value & 31));
                 break;
+
             case 10:
                 WriteReg(index, reg, ReadReg(track, reg) >> (value & 31));
                 break;
+
             default:
                 break;
             }
             break;
         }
+
     case 0xdb:
         if (a[0] == 0xb)
         {
             WriteReg(index, a[1], 0u - ReadReg(track, a[1]));
         }
         break;
+
     case 0xdc:
         {
             const uint32_t table = a[2];
@@ -1429,25 +1532,31 @@ int32_t Tracks::Execute(uint32_t index, uint32_t command, const Args& a)
             }
             break;
         }
+
     case 0xe0:
         SetTempo(track, a[0]);
         break;
+
     case 0xe1:
         track.bank = static_cast<uint16_t>((a[0] & 0xffff) >> 8);
         track.program = static_cast<uint16_t>(a[0] & 0xff);
         break;
+
     case 0xe2:
         track.bank = static_cast<uint16_t>(a[0] & 0xff);
         break;
+
     case 0xe3:
         track.program = static_cast<uint16_t>(a[0] & 0xff);
         break;
+
     case 0xe7:
         if (a[0] < track.oscillators.size())
         {
             track.oscillators[a[0]].scale = static_cast<float>(a[1]) / 16383.0f;
         }
         break;
+
     case 0xe8:
         if (a[0] < track.oscillators.size())
         {
@@ -1460,6 +1569,7 @@ int32_t Tracks::Execute(uint32_t index, uint32_t command, const Args& a)
             }
         }
         break;
+
     case 0xe9:
         // simpleADSR: the volume's envelope from the track's points, with a direct release.
         track.adsr[0].time = static_cast<int16_t>(a[0]);
@@ -1471,12 +1581,14 @@ int32_t Tracks::Execute(uint32_t index, uint32_t command, const Args& a)
         track.oscillators[0].table = track.adsr;
         track.oscillator_tables[0] = true;
         break;
+
     case 0xea:
         if (a[0] < track.mix_configs.size())
         {
             track.mix_configs[a[0]] = static_cast<uint16_t>(a[1]);
         }
         break;
+
     case 0xeb:
         if (a[0] <= 0x7f)
         {
@@ -1487,6 +1599,7 @@ int32_t Tracks::Execute(uint32_t index, uint32_t command, const Args& a)
             track.filter_mode |= 0x20;
         }
         break;
+
     case 0xec:
         // IIRSet: four coefficients. The game copies four more from its stack. The DSP doesn't read them. The model
         // leaves them 0.
@@ -1500,6 +1613,7 @@ int32_t Tracks::Execute(uint32_t index, uint32_t command, const Args& a)
                      0};
         track.filter_mode |= 0x20;
         break;
+
     case 0xed:
         for (uint32_t i = 0; i < track.fir.size(); i++)
         {
@@ -1507,21 +1621,27 @@ int32_t Tracks::Execute(uint32_t index, uint32_t command, const Args& a)
         }
         track.filter_mode = static_cast<uint8_t>((track.filter_mode & 0x20) | 8);
         break;
+
     case 0xf0:
         track.timer = static_cast<int32_t>(ReadMidiValue(track));
         break;
+
     case 0xf1:
         track.timer = static_cast<int32_t>(a[0]);
         break;
+
     case 0xf3:
         track.interrupt_table = a[0];
         break;
+
     case 0xf4:
         track.mask = static_cast<uint16_t>(track.mask | a[0]);
         break;
+
     case 0xf5:
         track.mask = static_cast<uint16_t>(track.mask & ~a[0]);
         break;
+
     case 0xf6:
         if (track.interrupted)
         {
@@ -1531,26 +1651,32 @@ int32_t Tracks::Execute(uint32_t index, uint32_t command, const Args& a)
         }
         CheckInterrupt(track);
         break;
+
     case 0xf7:
         track.interrupted = false;
         track.swap = 0;
         CheckInterrupt(track);
         break;
+
     case 0xf8:
         track.interrupt_timer = static_cast<uint8_t>(a[0]);
         track.timer_count = a[1];
         track.timer_reload = a[1];
         break;
+
     case 0xf9:
         // syncCPU: the game's callbacks answer from the game's state. Without a callback, the command gets 0xffff.
         // A rip has none of that state.
         RegisterWrite(track, kRegFlag, 0xffff);
         break;
+
     case 0xfd:
         Printf(track);
         break;
+
     case 0xff:
         return -1;
+
     default:
         break;
     }
@@ -2039,6 +2165,7 @@ void Tracks::OnChannel(uint32_t owner, Channel::Event event, uint32_t channel, D
             block->SetDistFilter(ToInt32(track.params[5].value * 32767.0f));
             break;
         }
+
     case Channel::kEventStop:
         for (uint32_t& slot : mgr.channels)
         {
@@ -2049,6 +2176,7 @@ void Tracks::OnChannel(uint32_t owner, Channel::Event event, uint32_t channel, D
             }
         }
         break;
+
     case Channel::kEventTimer:
         voices_.Release(channel, 0);
         voices_.Free(channel);

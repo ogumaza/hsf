@@ -2,10 +2,10 @@
 
 // A model of JAudio's DSP program in the Switch ports. Each port's `main` links Hagi, an emulator of the GameCube's and
 // the Wii's hardware. Hagi runs the DSP program as a high-level emulation in C++. This model follows that emulation in
-// the Super Mario Galaxy games' build, for their stereo output: the channels' decoding of AFC and PCM16 waves, their
-// resampling, filters, mixers and auto mixer, the four FX lines, the matrix of the buses, and the output. The CPU side
-// of JAudio writes each channel's block and the FX lines' settings in the emulated console's memory. The DSP reads them
-// there, renders 80 samples a sub-frame at 32 kHz, and writes the output there.
+// the Super Mario Galaxy games' build, for their stereo output: the channels' decoding of AFC, PCM8 and PCM16 waves,
+// their resampling, the oscillators, the filters, mixers and auto mixer, the four FX lines, the matrix of the buses,
+// and the output. The CPU side of JAudio writes each channel's block and the FX lines' settings in the emulated
+// console's memory. The DSP reads them there, renders 80 samples a sub-frame at 32 kHz, and writes the output there.
 //
 // The arithmetic follows Hagi's. Products are rounded half to even at bit 15, like the DSP's accumulator. Sums are
 // clamped to 16 bits in the decoders, the resamplers and the mixers. In the matrix and the FX lines, they wrap.
@@ -97,7 +97,7 @@ struct DspChannelBlock
     static constexpr std::size_t kAdpcmHistory1 = 0xce;
     static constexpr std::size_t kDelayHistory = 0xd0; // ends at 0xee
     static constexpr std::size_t kDistState = 0xf0;
-    static constexpr std::size_t kFormat = 0x100; // bytes per block of 16 samples: 9 or 5 for AFC, 16 for PCM16
+    static constexpr std::size_t kFormat = 0x100; // 9 or 5 for AFC, 8 for PCM8, 16 for PCM16, or an oscillator
     static constexpr std::size_t kLoops = 0x102;
     static constexpr std::size_t kLoopLast = 0x104; // the decoder's history at the loop start
     static constexpr std::size_t kLoopPenult = 0x106;
@@ -177,14 +177,16 @@ public:
 
     static constexpr int kSubframeSamples = 80;
     static constexpr std::size_t kResampleTableSize = 0x280;
+    static constexpr std::size_t kOscillatorTables = 0x100; // where the oscillators' tables start
+    static constexpr std::size_t kOscillatorTableSize = 64;
     static constexpr std::size_t kAdpcmTableSize = 32;
     static constexpr std::size_t kAutoMixerSine = 0x200; // where the auto mixer's quarter of a sine starts
 
     using Bus = std::array<int16_t, kBusSamples>;
 
     // The DSP program's tables. The CPU side hands them over at start-up (DsetupTable): the resampler's filter, 64
-    // phases of 4 taps with the oscillators' waveforms and the auto mixer's quarter of a sine after them, and the AFC
-    // decoder's 16 pairs of coefficients.
+    // phases of 4 taps with the oscillators' 4 tables and the auto mixer's quarter of a sine after them, and the AFC
+    // decoder's 16 pairs of coefficients. The program changes two of the oscillators' tables as it runs.
     struct Tables
     {
         std::array<int16_t, kResampleTableSize> resample{};
@@ -199,6 +201,22 @@ public:
     void Setup(uint16_t channel_count, uint32_t channel_blocks, uint32_t fx_settings);
     void SetVaram(uint32_t base);
 
+    // How the CPU side lays out each FX line's settings. JAudio2's JASDsp::FxBuf, as the Galaxy games build it, gives a
+    // line 0x28 bytes: the flags, the delay's length, the buffer at +8, the two sends from +0x10 and the filter from
+    // +0x18. JAudio1's, as Pikmin 2 builds it, gives a line 0x20 bytes: the buffer at +4, the sends from +8 and the
+    // filter from +0x10. The emulation in Pikmin 2's main reads that layout. The model holds a line in JAudio2's layout
+    // either way.
+    enum class FxLayout
+    {
+        kJaudio2,
+        kJaudio1,
+    };
+
+    void SetFxLayout(FxLayout layout)
+    {
+        fx_layout_ = layout;
+    }
+
     // A frame's start (DsyncFrame2ch): the sub-frames to render, the mixer's level (4096 for 1.0) and the addresses of
     // the left and right output buffers. The DSP copies the FX lines' settings.
     void StartFrame(uint16_t subframes, uint16_t level, uint32_t left, uint32_t right);
@@ -211,6 +229,17 @@ public:
 
     // Renders a whole sub-frame: its start, every channel whose block is active, and its end.
     void RenderSubframe();
+
+    // A channel's oscillator (Hagi's OscSub functions): 80 samples of a waveform into `out`, from the phase in the
+    // block's fraction. The phase has 16 bits, and moves on by half the block's pitch at each sample. The formats 0 to
+    // 12 are oscillators, but for 5 and 9 (AFC) and 8 (PCM8). Returns false for the oscillators that the model leaves
+    // out: 2 and 10 (they add bus 4's samples to the pitch) and formats past 12. No game this model plays uses them.
+    bool Oscillate(DspChannelBlock& block, int16_t* out) const;
+
+    // The update of the oscillators' tables 3 and 4 at each sub-frame's start, after the FX lines. Table 3 takes
+    // products of its samples and becomes noise. Table 4 becomes a ramp on from its last sample. The ramp's step
+    // depends on table 4's last two samples and on table 3.
+    void UpdateOscillatorTables();
 
     uint16_t ChannelCount() const
     {
@@ -306,6 +335,16 @@ public:
         return resets_;
     }
 
+    Tables& CurrentTables()
+    {
+        return tables_;
+    }
+
+    const Tables& CurrentTables() const
+    {
+        return tables_;
+    }
+
 private:
     // A bus by the address that a mixer or an FX line names, or null. The address 0x0a60 names no bus that they can
     // reach. Hagi's emulation doesn't check the address: for one that names no bus, it writes through a null pointer.
@@ -320,7 +359,9 @@ private:
 
     // The steps of a channel.
     void DecodeAfc(DspChannelBlock& block, std::span<int16_t> source, int blocks);
-    void FetchPcm16(DspChannelBlock& block, int16_t* destination);
+    // PCM16 (2 bytes a sample) and PCM8 (1). Hagi's two fetches differ only in their reads and in the steps of the
+    // read address.
+    void FetchPcm(DspChannelBlock& block, int16_t* destination, uint32_t bytes);
     void Resample(DspChannelBlock& block, int16_t* source, int16_t* out);
     void Dist(DspChannelBlock& block, int16_t* samples);
     void Fir(DspChannelBlock& block, int16_t* samples);
@@ -343,6 +384,7 @@ private:
     uint16_t channel_count_ = 0;
     uint32_t channel_blocks_ = 0;
     uint32_t fx_settings_ = 0;
+    FxLayout fx_layout_ = FxLayout::kJaudio2;
     uint32_t varam_ = 0;
 
     uint16_t subframe_ = 0;

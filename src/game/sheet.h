@@ -85,4 +85,26 @@ using I3dl2Preset = std::array<float, 12>;
 // gives nn::audio: it divides the times by 1000 (ms to s), and the ratio and the dry gain by 100.
 std::map<std::string, I3dl2Preset> ReadI3dl2Presets(const Sheet& sheet);
 
+// A delay or a light limiter of a sound effect list, in the form that the game gives nn::atk: an aux effect's type (2
+// for a delay, 3 for a light limiter) and its 8 parameters in the archive descriptor's order and units (docs/hsf.md,
+// "Aux effects").
+struct RendererPreset
+{
+    uint32_t type = 0;
+    std::array<float, 8> parameters{};
+
+    bool operator==(const RendererPreset&) const = default;
+};
+
+// The effects of a sound effect list in WarioWare: Move It!'s form (s_RawEffectDataList), by name. The game divides an
+// I3DL2 reverb's times by 1000 (ms to s), and keeps its other parameters. It sets its delays and light limiters up on 2
+// channels.
+struct RawEffectPresets
+{
+    std::map<std::string, I3dl2Preset> i3dl2;
+    std::map<std::string, RendererPreset> renderer;
+};
+
+RawEffectPresets ReadRawEffectPresets(const Sheet& sheet);
+
 } // namespace hsf::game

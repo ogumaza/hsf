@@ -43,6 +43,11 @@ public:
     Sequence(const Sequence&) = delete;
     Sequence& operator=(const Sequence&) = delete;
 
+    uint32_t Size() const
+    {
+        return static_cast<uint32_t>(bytes_.size());
+    }
+
     uint8_t U8(uint32_t offset) const
     {
         return offset < bytes_.size() ? bytes_[offset] : 0xff;

@@ -68,7 +68,7 @@ std::vector<JaudioSoundVolume> ReadBgmVolumes(std::span<const uint8_t> table_arc
 const JaudioGame* FindJaudioGame(std::span<const uint8_t> startup);
 
 // A sound to rip: its index in the sound table, its label, its ID, its timing once the length analysis has worked it
-// out, and the notes that it plays on banks that the files don't load.
+// out, and the notes that the files can't play (JaudioTiming).
 struct JaudioJob
 {
     uint32_t index = 0;
@@ -76,6 +76,7 @@ struct JaudioJob
     uint32_t id = 0;
     std::optional<Timing> timing;
     uint32_t missing_bank_notes = 0;
+    uint32_t sequence_draws = 0; // library 2: the numbers that the sound's sequence draws from the sequences' generator
 };
 
 // The sounds of the sound table that play sequences that the files hold, in the table's order, whose labels match
@@ -87,8 +88,9 @@ std::vector<JaudioJob> SelectJaudioSounds(const jaudio::SoundFiles& files, const
 // A sound's label: its name in the sound table, or "sound" and its ID in hex.
 std::string JaudioLabel(const ntdlib::jaudio::SoundEntry& sound);
 
-// The library of a rip: the start-up archive, the sequence archive and the wave archives in `waves`, in FILE chunks at
-// their paths among the game's files, with `descriptor` (version 2) naming them, and the tags.
+// The library of a rip: the start-up archive, the sequence archive and the files in `waves`, in FILE chunks at their
+// paths among the game's files, with `descriptor` (version 2) naming them, and the tags. `waves` holds the wave
+// archives, and then Pikmin 2's conductor archive or Pikmin's sequence index.
 std::vector<uint8_t> BuildJaudioLibrary(const FileChunk& startup, const std::optional<FileChunk>& sequences,
                                         const std::vector<FileChunk>& waves, ArchiveDescriptor descriptor,
                                         const xsflib::psf::Tags& tags);

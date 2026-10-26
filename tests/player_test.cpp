@@ -4,7 +4,8 @@
 // output must be the model's output. A tagged length and fade must be kept. A set without a length must end half a
 // second after its sound. A seek must land where a straight render does, from a snapshot of the model too. The volume
 // tag must apply. A group file outside the archive must be found. A reverb on an aux bus must play as the model plays
-// it. A set that can't play must report why.
+// it. So must a delay, whose output never returns to 0, and a set without a length must still end. A set that can't
+// play must report why.
 
 #include "hsf/player.h"
 
@@ -22,6 +23,7 @@
 #include "ntdlib/nx/atk/engine.h"
 #include "ntdlib/nx/audio/i3dl2.h"
 #include "ntdlib/testing/sar_files.h"
+#include "xsflib/rip/length.h"
 #include "xsflib/testing/check.h"
 #include "xsflib/testing/sets.h"
 
@@ -257,6 +259,91 @@ void TestReverb(const TestArchive& plain)
     CheckSnapshotSeeks(reverb_mini, played, 2000, {wet_end - 1500, dry_end + 777, (dry_end + wet_end) / 2, 4321});
 }
 
+// An archive with one sequence: C4 for 250 ms, at full level on the main bus and on aux bus A. Program 0 plays a square
+// wave of 1 s that ends: 0x1000 and -0x1000 by turns, 16 samples of each.
+TestArchive SquareArchive()
+{
+    const std::vector<uint8_t> kBytecode = {0xB0, 48, 0xE1, 120, 0x00, 0xD9, 127, 60, 127, 24, 0xFF};
+    std::vector<uint8_t> samples(64000);
+    for (std::size_t i = 0; i < samples.size(); i += 2)
+    {
+        const uint16_t value = (i / 32) % 2 == 0 ? 0x1000 : 0xF000;
+        samples[i] = static_cast<uint8_t>(value);
+        samples[i + 1] = static_cast<uint8_t>(value >> 8);
+    }
+    sar_files::WaveSpec wave;
+    wave.encoding = 1;
+    wave.loop_end = 32000;
+    wave.channels = {samples};
+
+    sar_files::ArchiveSpec spec;
+    sar_files::SoundSpec sound;
+    sound.name = "SEQ_SQUARE";
+    sound.volume = 127;
+    sound.banks = {0};
+    spec.sounds = {sound};
+    spec.banks = {{"BANK", 1}};
+    spec.wave_archives = {{"WARC", 2}};
+    spec.players = {{"PLAYER", 1}};
+    spec.files = {{sar_files::Sequence(false, kBytecode, {{"Start", 0}}), "", false},
+                  {sar_files::Bank(false, sar_files::OneRegionBank()), "", false},
+                  {sar_files::WaveArchive(false, {sar_files::Wave(false, wave)}), "", false}};
+
+    return {sar_files::Archive(false, spec), {}};
+}
+
+// A delay of 400 ms on aux bus A, with a feedback of 0.5 and no dry part, plays as the model plays it. The delay rounds
+// down. Its output therefore never returns to 0. A set without a length still ends: half a second after the effects
+// stop ringing, 81 frames after the last audible frame. A seek back into the echoes from a snapshot ends there too.
+void TestDelay()
+{
+    const TestArchive square = SquareArchive();
+    hsf::AuxEffect delay;
+    delay.type = hsf::AuxEffect::kDelay;
+    delay.parameters = {1000000.0f, 400000.0f, 1.0f, 0.5f, 0.0f, 0.0f, 0.0f, 1.0f};
+    hsf::ArchiveDescriptor descriptor;
+    descriptor.effects = {delay};
+    const std::string mini = WriteMini("delay", WriteLibrary("delay", square, descriptor), 0x01000000, {});
+
+    // The model's output for 20 s, its last audible frame, and whether its last 80 frames hold a sample other than 0.
+    const hsf::fsar::SoundArchive archive = hsf::fsar::SoundArchive::Load(square.archive, hsf::kSarOptions);
+    hsf::atk::ArchiveModel model(archive);
+    hsf::AppendEffects(*model.engine, descriptor.effects);
+    model.engine->StartSequence(0);
+    std::vector<int16_t> wet;
+    std::size_t last_audible = 0;
+    bool ringing = false;
+    for (std::size_t frame = 1; frame <= 4000; ++frame)
+    {
+        model.engine->RunFrame();
+        const std::span<const int16_t> output = model.renderer.DeviceOutput();
+        wet.insert(wet.end(), output.begin(), output.end());
+        last_audible = xsflib::rip::Audible(output) ? frame : last_audible;
+        ringing =
+            ringing || (frame > 3920 && std::any_of(output.begin(), output.end(), [](int16_t s) { return s != 0; }));
+    }
+
+    const std::vector<int16_t> played = RenderAll(mini);
+    Check(ringing && last_audible > 160 && last_audible < 3000, "the delay's echoes die away, and -1 stays");
+    CheckEnd(played, wet, (last_audible + 81) * kFrame, 24000);
+
+    hsf::PlaybackOptions options;
+    options.snapshot_interval = 2000;
+    hsf::Playback playback;
+    const auto render = [&playback](int16_t* out, std::size_t frames)
+    {
+        return playback.Render(out, frames);
+    };
+    const uint64_t target = (last_audible + 40) * kFrame;
+    bool same = playback.Open(mini, kReader, options) && playback.Start() &&
+                RenderFrames(render, SIZE_MAX, 1000) == played && playback.SeekStart(target) > 0 &&
+                playback.Seek(target);
+    const std::vector<int16_t> rest = RenderFrames(render, SIZE_MAX, 1000);
+    same = same && 2 * target + rest.size() == played.size() &&
+           std::equal(rest.begin(), rest.end(), played.begin() + static_cast<std::ptrdiff_t>(2 * target));
+    Check(same, "a seek back into the delay's echoes, from a snapshot, ends where the straight render does");
+}
+
 // Sets that can't play: a group file the set doesn't hold, a sound the archive doesn't have, an item that isn't a
 // sound, and a descriptor's voice count beyond the most a player has.
 void TestRefusals(const TestArchive& plain, const std::string& library)
@@ -291,6 +378,7 @@ int main()
     TestTagged(plain, library);
     TestUntagged(plain, library);
     TestReverb(plain);
+    TestDelay();
     TestRefusals(plain, library);
 
     return xsflib::testing::Summary("player");

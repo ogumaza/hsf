@@ -51,15 +51,15 @@ xsflib::rip::LengthRules HsfLengthRules()
 }
 
 // ntdlib's model for the length analysis (xsflib::rip::MeasureLength): the engine and the renderer of an ArchiveModel,
-// and the sound's player. A frame's output is what the renderer rendered in it. The model also counts each track's
-// passes. A looping sequence's fade then waits for the tracks that loop at other lengths than the main track
-// (OthersLooped). A track that another track opens again makes a pass each time. The fade therefore doesn't wait for
-// the tracks that a looping track opens again in each of its loops.
+// and the sound's player. A frame's output is what the renderer rendered in it. EffectTail (hsf/model.h) says how long
+// the effects ring. The model also counts each track's passes. A looping sequence's fade then waits for the tracks that
+// loop at other lengths than the main track (OthersLooped). A track that another track opens again makes a pass each
+// time. The fade therefore doesn't wait for the tracks that a looping track opens again in each of its loops.
 class LengthModel
 {
 public:
-    LengthModel(atk::ArchiveModel& model, atk::SequenceSoundPlayer& player)
-        : model_(model), engine_(*model.engine), player_(player)
+    LengthModel(atk::ArchiveModel& model, atk::SequenceSoundPlayer& player, const std::vector<AuxEffect>& effects)
+        : model_(model), engine_(*model.engine), player_(player), tail_(effects)
     {
     }
 
@@ -67,6 +67,7 @@ public:
     {
         engine_.RunFrame();
         output_ = model_.renderer.DeviceOutput();
+        tail_.Frame(output_);
         ++frames_;
 
         return true;
@@ -83,10 +84,10 @@ public:
         return xsflib::rip::Audible(output_);
     }
 
-    // The effects ring on after the sequence, until their output is silence.
+    // The effects ring on after the sequence (EffectTail).
     bool Ringing() const
     {
-        return std::any_of(output_.begin(), output_.end(), [](int16_t sample) { return sample != 0; });
+        return tail_.Ringing();
     }
 
     std::size_t VoiceCount()
@@ -191,6 +192,7 @@ private:
     atk::Engine& engine_;
     atk::SequenceSoundPlayer& player_;
     std::span<const int16_t> output_;
+    EffectTail tail_;
     uint64_t frames_ = 0;
     std::array<int, kTrackCount> passes_{};  // each track's passes that changed the sound
     std::array<bool, kTrackCount> opened_{}; // whether another track has opened each track
@@ -236,7 +238,7 @@ std::optional<Timing> MeasureSequence(const fsar::SoundArchive& archive, const A
         return std::nullopt;
     }
 
-    LengthModel length_model(*model, *player);
+    LengthModel length_model(*model, *player, settings.effects);
     const xsflib::rip::LengthRules rules = HsfLengthRules();
     const std::optional<Timing> timing = xsflib::rip::MeasureLength(length_model, rules);
 
@@ -255,9 +257,10 @@ std::optional<Timing> MeasureSequence(const fsar::SoundArchive& archive, const A
     return timing;
 }
 
-// The length analysis's rules for the model of JAudio: frames of one sub-frame, 2.5 ms, and the limits of
-// HsfLengthRules in them. A note that a sub-frame's commands start sounds two sub-frames on: the next sub-frame writes
-// its channel's block, and the one after renders it.
+} // namespace
+
+// A note that a sub-frame's commands start sounds two sub-frames on: the next sub-frame writes its channel's block, and
+// the one after renders it. The limits are HsfLengthRules'.
 xsflib::rip::LengthRules JaudioLengthRules()
 {
     xsflib::rip::LengthRules rules;
@@ -271,6 +274,9 @@ xsflib::rip::LengthRules JaudioLengthRules()
 
     return rules;
 }
+
+namespace
+{
 
 // The model of JAudio for the length analysis (xsflib::rip::MeasureLength). A frame's output is what AudioOut plays of
 // the sub-frame. The FX lines ring on until their delays are empty. The voices are the DSP channels. A sequence is

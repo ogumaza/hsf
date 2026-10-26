@@ -35,10 +35,27 @@ struct GameFiles
     std::function<bool(const std::string& path, std::vector<uint8_t>& data)> read_file;
 
     // What a Bezel Engine game's files set for its sound: the voice count that its boot.lua gives the engine
-    // (engine:SetVoiceCountMax), and the I3DL2 reverbs of its sound effect list.
+    // (engine:SetVoiceCountMax), and the effects of its sound effect list: I3DL2 reverbs, delays and light limiters.
     std::optional<int> voice_count;
     std::map<std::string, I3dl2Preset> i3dl2_presets;
+    std::map<std::string, RendererPreset> renderer_presets;
 };
+
+// An effect that a Bezel Engine game's code puts on an aux bus: the bus (0 to 2 for A to C), the preset's name, and the
+// effect as an aux effect's type and parameters (docs/hsf.md, "Aux effects").
+struct BusEffect
+{
+    uint32_t bus = 0;
+    std::string name;
+    uint32_t type = 0;
+    std::vector<float> parameters;
+};
+
+// The effects that a Bezel Engine game's code puts on the aux buses before its sound starts, from the presets of its
+// sound effect list. WarioWare: Move It! puts Delay_Waltz on aux bus A, I3DL2_Waltz on B and Limiter_Waltz on C as it
+// starts (0xc7c1ac in its main). A list with those three presets gets them. Otherwise, a list with I3DL2_Default gets
+// that reverb on bus A. WarioWare: Get It Together!'s scenes put it there unless one names another.
+std::vector<BusEffect> StartupEffects(const GameFiles& game);
 
 // Whether a file is one of the encrypted forms a game comes in: an NSP, an XCI or an NCA. Returns its kind's name, or
 // nothing.

@@ -12,11 +12,11 @@
 //   --archive PATH   rip only this sound archive of a game (its path among the game's files)
 //   --only REGEX     rip only sounds whose label matches (ECMAScript regex)
 //   --bgm            rip only the music (ntdlib::rip::IsMusic): sequences whose labels say BGM, or that play on a
-//                    music player
-//   --no-length      don't analyze lengths (no length/fade tags, and only the sequences at a volume of 0 are found to
-//                    make no sound)
+//                    music player. For a JAudio game, the sounds that it plays as music.
+//   --no-length      don't analyze lengths (no length/fade tags, and only a sound archive's sequences at a volume of 0
+//                    are found to make no sound)
 //   --voices N       nn::atk's voice count (default: a Bezel Engine game's voice count, from its boot.lua, or else 96)
-//   --no-effects     leave out the reverb a Bezel Engine game puts on aux bus A
+//   --no-effects     leave out the effects a Bezel Engine game puts on the aux buses
 //   --jobs N         length analyses run in parallel (default: the number of CPU threads)
 //   --game NAME      game tag (default: the input's name)
 //   --artist NAME, --year YEAR, --copyright TEXT, --by NAME (hsfby)
@@ -46,6 +46,9 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/jaudio/barc.h"
+#include "ntdlib/jaudio/bx.h"
+#include "ntdlib/nx/nso.h"
 #include "ntdlib/rip/archive.h"
 #include "ntdlib/rip/archive_mode.h"
 #include "xsflib/cli/rip.h"
@@ -53,9 +56,13 @@
 
 #include "game/game.h"
 #include "hsf/format.h"
+#include "hsf/jac.h"
 #include "hsf/jaudio.h"
+#include "hsf/jaudio1.h"
 #include "hsf/sar.h"
 #include "jaudio/engine.h"
+#include "rip/jac_rip.h"
+#include "rip/jaudio1_rip.h"
 #include "rip/jaudio_rip.h"
 #include "rip/rip.h"
 
@@ -68,11 +75,11 @@ using hsf::FileChunk;
 using ntdlib::rip::Job;
 using xsflib::rip::InputPath;
 
-// The effect a Bezel Engine game's scenes put on aux bus A unless one names another.
-constexpr char kDefaultReverb[] = "I3DL2_Default";
-
 // The most voices a set can have. It's also nn::atk's voice count when the game doesn't change it.
 constexpr int kMaxVoices = static_cast<int>(hsf::ArchiveDescriptor::kDefaultVoices);
+
+// The most draws from the sequences' generator that the Pikmin 2 ripper tries before a sound that never sounds.
+constexpr uint32_t kSearchDraws = 16;
 
 constexpr char kUsage[] =
     "usage: hsfrip [options] <input> [<input> ...]\n"
@@ -90,13 +97,14 @@ constexpr char kUsage[] =
     "  --archive PATH       rip only this sound archive of a game (its path among the game's files)\n"
     "  --only REGEX         rip only the sounds whose label matches\n"
     "  --bgm                rip only the music: sequences whose labels say BGM, or that play on\n"
-    "                       a player named for music (BGM, MUSIC, SONG or FANFARE)\n"
+    "                       a player named for music (BGM, MUSIC, SONG or FANFARE). For a game\n"
+    "                       that plays its sound with JAudio, the sounds that it plays as music.\n"
     "  --no-length          skip length analysis and omit length and fade tags. The analysis also\n"
-    "                       finds the sequences that make no sound. Without it, only those at a\n"
-    "                       volume of 0 are skipped.\n"
+    "                       finds the sequences that make no sound. Without it, only a sound\n"
+    "                       archive's sequences at a volume of 0 are skipped.\n"
     "  --voices N           the sound library's voice count, 1 to 96 (default: what a Bezel\n"
     "                       Engine game's boot.lua gives, or else 96)\n"
-    "  --no-effects         leave out the reverb a Bezel Engine game puts on aux bus A\n"
+    "  --no-effects         leave out the effects a Bezel Engine game puts on the aux buses\n"
     "  --jobs N             the number of length analyses that run at once (default: the number\n"
     "                       of CPU threads)\n"
     "  --game NAME, --artist NAME, --year YEAR, --copyright TEXT, --by NAME\n"
@@ -225,8 +233,27 @@ bool VoicesFromBoot(const hsf::game::GameFiles& game, const Options& o)
     return o.voices == 0 && game.voice_count && *game.voice_count >= 1 && *game.voice_count <= kMaxVoices;
 }
 
+// The effects that a Bezel Engine game's code puts on the aux buses (hsf::game::StartupEffects), or none with
+// --no-effects.
+std::vector<hsf::game::BusEffect> GameEffects(const hsf::game::GameFiles& game, const Options& o)
+{
+    return o.effects ? hsf::game::StartupEffects(game) : std::vector<hsf::game::BusEffect>{};
+}
+
+// The effects as hsfrip reports them, such as "I3DL2_Default on aux bus A", or `none` without any.
+std::string EffectsText(const std::vector<hsf::game::BusEffect>& effects, const std::string& none)
+{
+    std::string text;
+    for (const hsf::game::BusEffect& e : effects)
+    {
+        text += (text.empty() ? "" : ", ") + e.name + " on aux bus " + static_cast<char>('A' + e.bus);
+    }
+
+    return text.empty() ? none : text;
+}
+
 // The settings every sound archive of a game is ripped with: the options' settings, the voice count of the game's
-// boot.lua when --voices isn't given, and the reverb a Bezel Engine game puts on aux bus A.
+// boot.lua when --voices isn't given, and the effects a Bezel Engine game puts on the aux buses.
 hsf::ArchiveDescriptor GameSettings(const hsf::game::GameFiles& game, const Options& o)
 {
     hsf::ArchiveDescriptor settings = OptionSettings(o);
@@ -235,13 +262,12 @@ hsf::ArchiveDescriptor GameSettings(const hsf::game::GameFiles& game, const Opti
         settings.voice_count = static_cast<uint32_t>(*game.voice_count);
     }
 
-    const auto reverb = game.i3dl2_presets.find(kDefaultReverb);
-    if (o.effects && reverb != game.i3dl2_presets.end())
+    for (hsf::game::BusEffect& e : GameEffects(game, o))
     {
         hsf::AuxEffect effect;
-        effect.bus = 0;
-        effect.type = hsf::AuxEffect::kI3dl2Reverb;
-        effect.parameters.assign(reverb->second.begin(), reverb->second.end());
+        effect.bus = e.bus;
+        effect.type = e.type;
+        effect.parameters = std::move(e.parameters);
         settings.effects.push_back(std::move(effect));
     }
 
@@ -280,8 +306,8 @@ void ListGame(const std::string& input, const hsf::game::GameFiles& game, const 
     std::printf("%s: %zu files, %zu sound archive%s\n", input.c_str(), game.files.size(), archives.size(),
                 archives.size() == 1 ? "" : "s");
     ntdlib::rip::ListArchives(archives, game.read_file, DescribeArchive);
-    std::printf("voices: %u%s; reverb on aux bus A: %s\n", settings.voice_count,
-                VoicesFromBoot(game, o) ? " (boot.lua)" : "", settings.effects.empty() ? "none" : kDefaultReverb);
+    std::printf("voices: %u%s; effects: %s\n", settings.voice_count, VoicesFromBoot(game, o) ? " (boot.lua)" : "",
+                EffectsText(GameEffects(game, o), "none").c_str());
 }
 
 // The wave archives of a JAudio game, read from the game's files as the start-up archive's wave systems name them. Each
@@ -309,6 +335,13 @@ public:
         return &chunk->second.data;
     }
 
+    // The archive `name` if a call has read it, or null. Find reads no file. Several threads can call it at once.
+    const std::vector<uint8_t>* Find(const std::string& name) const
+    {
+        const auto chunk = chunks_.find(name);
+        return chunk == chunks_.end() ? nullptr : &chunk->second.data;
+    }
+
     // The archives read, in the order of their names.
     std::vector<FileChunk> Chunks() const
     {
@@ -326,6 +359,103 @@ private:
     std::string folder_;
     std::map<std::string, FileChunk> chunks_;
 };
+
+// The exit code when a JAudio game's selection holds no sound. An --only or --bgm that matches nothing is an error.
+// Otherwise the game has nothing to rip. `source` is the start-up archive or the bank file.
+int NoJaudioSounds(const std::string& source, const Options& o)
+{
+    if (!o.only_text.empty() || o.bgm)
+    {
+        return ntdlib::rip::NoSoundMatches(o.only_text, o.bgm);
+    }
+
+    std::fprintf(stderr, "%s: nothing to rip\n", source.c_str());
+    return 0;
+}
+
+// The sounds that a JAudio game's length analysis skips: those that play notes on banks that the files don't load, and
+// those that make no sound.
+struct Skipped
+{
+    std::size_t missing = 0;
+    std::size_t silent = 0;
+};
+
+// Drops the sounds that play notes on banks that the start-up archive doesn't load, and those that make no sound, with
+// a line for each. Returns how many of each it dropped.
+Skipped DropUnplayable(std::vector<hsf::rip::JaudioJob>& jobs)
+{
+    Skipped skipped;
+    std::vector<hsf::rip::JaudioJob> kept;
+    for (hsf::rip::JaudioJob& job : jobs)
+    {
+        if (job.missing_bank_notes != 0)
+        {
+            skipped.missing++;
+            std::fprintf(stderr, "skipped %s: it plays notes on banks that the start-up archive doesn't load\n",
+                         job.label.c_str());
+        }
+        else if (job.timing && job.timing->silent)
+        {
+            skipped.silent++;
+            std::fprintf(stderr, "skipped %s: it makes no sound\n", job.label.c_str());
+        }
+        else
+        {
+            kept.push_back(std::move(job));
+        }
+    }
+    jobs = std::move(kept);
+
+    return skipped;
+}
+
+// Writes a JAudio game's rip into the folder of `out_dir` named after `startup`, the start-up archive or the bank file:
+// a library of `startup`, `sequences` and `files` with `descriptor`, and a mini for each of `jobs`. The messages name
+// `startup`'s path, and the last ends with `skipped_text`. Returns the exit code.
+int WriteJaudioRip(const FileChunk& startup, const std::optional<FileChunk>& sequences,
+                   const std::vector<FileChunk>& files, const hsf::ArchiveDescriptor& descriptor,
+                   const std::vector<hsf::rip::JaudioJob>& jobs, const std::string& skipped_text,
+                   const hsf::game::GameFiles& game, const fs::path& out_dir, const Options& o,
+                   xsflib::cli::FileNameRegistries& registries)
+{
+    const char* source = startup.path.c_str();
+    if (jobs.empty())
+    {
+        std::fprintf(stderr, "%s: nothing to rip%s\n", source, skipped_text.c_str());
+        return 0;
+    }
+
+    const std::string game_name = o.game_name.empty() ? game.name : o.game_name;
+    const std::string folder = xsflib::rip::ArchiveFolders({startup.path}).front();
+    const fs::path rip_dir = out_dir / folder;
+    hsf::rip::FileNames& names = xsflib::cli::NamesIn(registries, rip_dir, ".hsflib", ".minihsf");
+    const xsflib::psf::Tags common = xsflib::cli::RipTags(o, game_name, "hsf", nullptr);
+    const std::vector<uint8_t> lib = hsf::rip::BuildJaudioLibrary(startup, sequences, files, descriptor, common);
+    const std::string lib_name = names.LibraryIn(rip_dir, game_name + " " + folder, lib);
+    fs::create_directories(rip_dir);
+    if (!xsflib::rip::WriteFile(rip_dir / xsflib::PathFromUtf8(lib_name), lib))
+    {
+        std::fprintf(stderr, "error: can't write %s\n", lib_name.c_str());
+        return 1;
+    }
+    std::fprintf(stderr, "wrote %s (%zu bytes)\n", lib_name.c_str(), lib.size());
+
+    const auto build_mini = [&lib_name](const hsf::rip::JaudioJob& job, const xsflib::psf::Tags& tags)
+    {
+        return hsf::rip::BuildJaudioMini(job.id, lib_name, tags);
+    };
+    const int written = xsflib::cli::WriteMinis(rip_dir, names, jobs, common, "hsf_sound", build_mini);
+    if (written < 0)
+    {
+        return 1;
+    }
+
+    std::fprintf(stderr, "%s: %d minihsf files%s\n", source, written, skipped_text.c_str());
+    xsflib::rip::ReportOutput(out_dir);
+
+    return 0;
+}
 
 // Rips a game that plays its sound with JAudio: one library of its sound files, and a mini for each sound that plays
 // a sequence. The settings come from the game's code when HSF holds them for the game. The folder of the rip has the
@@ -438,13 +568,7 @@ int RipJaudioGame(const std::string& input, const hsf::game::GameFiles& game, co
     std::vector<hsf::rip::JaudioJob> jobs = hsf::rip::SelectJaudioSounds(*files, known, o.only, o.bgm);
     if (jobs.empty())
     {
-        if (!o.only_text.empty() || o.bgm)
-        {
-            return ntdlib::rip::NoSoundMatches(o.only_text, o.bgm);
-        }
-
-        std::fprintf(stderr, "%s: nothing to rip\n", paths.startup.c_str());
-        return 0;
+        return NoJaudioSounds(paths.startup, o);
     }
 
     hsf::ArchiveDescriptor descriptor = hsf::ArchiveDescriptor::Jaudio(settings);
@@ -453,11 +577,320 @@ int RipJaudioGame(const std::string& input, const hsf::game::GameFiles& game, co
 
     // The sounds that play notes on banks that the files don't load stop the game. Their data isn't all there. The
     // length analysis finds them and the sounds that never sound.
-    std::size_t missing = 0;
-    std::size_t silent = 0;
+    Skipped skipped;
     if (o.lengths)
     {
         const hsf::rip::JaudioLengthAnalyzer analyzer(*files, descriptor);
+        const auto analyze = [&analyzer](hsf::rip::JaudioJob& job)
+        {
+            const hsf::rip::JaudioTiming result = analyzer.Analyze(job.id);
+            job.timing = result.timing;
+            job.missing_bank_notes = result.missing_bank_notes;
+            return true;
+        };
+        xsflib::cli::AnalyzeLengths(jobs, o.jobs, analyze);
+        skipped = DropUnplayable(jobs);
+    }
+
+    const std::string skipped_text =
+        xsflib::cli::SkippedText(skipped.missing, "banks not loaded", skipped.silent, "sequence");
+    return WriteJaudioRip(startup, sequences, waves.Chunks(), descriptor, jobs, skipped_text, game, out_dir, o,
+                          registries);
+}
+
+// Rips Pikmin 2, whose Switch release plays its sound with JAudio1: one library of its sound files with the conductor
+// archive, and a mini for each piece of music, each conductor of the cave music and each effect. The settings come
+// from the game's code and from its list of its music and its track maps. The folder of the rip has the start-up
+// archive's name. Returns the exit code.
+int RipJaudio1Game(const std::string& input, const hsf::game::GameFiles& game, const hsf::rip::Jaudio1Paths& paths,
+                   const fs::path& out_dir, const Options& o, xsflib::cli::FileNameRegistries& registries)
+{
+    FileChunk startup;
+    startup.path = paths.startup;
+    FileChunk sequences;
+    sequences.path = paths.sequences;
+    FileChunk conductors;
+    conductors.path = paths.conductors;
+    for (FileChunk* chunk : {&startup, &sequences, &conductors})
+    {
+        if (!game.read_file(chunk->path, chunk->data))
+        {
+            std::fprintf(stderr, "error: can't read %s\n", chunk->path.c_str());
+            return 1;
+        }
+    }
+
+    hsf::rip::Jaudio1GameText text;
+    if (const std::optional<std::string> error = hsf::rip::ReadJaudio1GameText(paths, game.read_file, text))
+    {
+        std::fprintf(stderr, "error: %s\n", error->c_str());
+        return 1;
+    }
+
+    hsf::ArchiveDescriptor descriptor = hsf::ArchiveDescriptor::Jaudio(hsf::rip::Jaudio1Settings());
+    descriptor.archive_path = startup.path;
+    descriptor.group_paths = {sequences.path, paths.waves};
+    descriptor.jaudio.library2.conductor_archive = conductors.path;
+
+    JaudioWaves waves(game, paths.waves);
+    std::optional<hsf::Jaudio1Files> files;
+    try
+    {
+        const std::string wave_prefix = paths.waves + "/";
+        const auto file = [&](const std::string& path) -> const std::vector<uint8_t>*
+        {
+            for (const FileChunk* chunk : {&startup, &sequences, &conductors})
+            {
+                if (path == chunk->path)
+                {
+                    return &chunk->data;
+                }
+            }
+
+            return path.starts_with(wave_prefix) ? waves(path.substr(wave_prefix.size())) : nullptr;
+        };
+        if (const std::optional<std::string> error = hsf::LoadJaudio1Files(descriptor, file, files))
+        {
+            std::fprintf(stderr, "error: %s\n", error->c_str());
+            return 1;
+        }
+    }
+    catch (const std::exception& e)
+    {
+        std::fprintf(stderr, "error: %s: %s\n", paths.startup.c_str(), e.what());
+        return 1;
+    }
+
+    hsf::rip::Jaudio1Selection selection = hsf::rip::SelectJaudio1Sounds(*files, text, o.only, o.bgm);
+    selection.library.conductor_archive = conductors.path;
+    descriptor.jaudio.library2 = selection.library;
+    const std::size_t pieces = selection.library.pieces.size();
+    const std::string summary = std::to_string(pieces) + " pieces of music and " +
+                                std::to_string(selection.jobs.size() - pieces) + " sound effects";
+    if (o.list)
+    {
+        std::printf("%s: JAudio1: start-up archive %s (%zu bytes), %s; Pikmin 2's settings\n", input.c_str(),
+                    paths.startup.c_str(), startup.data.size(), summary.c_str());
+        return 0;
+    }
+
+    std::fprintf(stderr, "JAudio1: %s, %s; Pikmin 2's settings\n", paths.startup.c_str(), summary.c_str());
+    for (const std::string& warning : selection.warnings)
+    {
+        std::fprintf(stderr, "warning: %s\n", warning.c_str());
+    }
+    for (const std::string& name : files->sound.MissingWaves())
+    {
+        std::fprintf(stderr, "warning: the wave archive %s isn't among the game's files; its waves stay silent\n",
+                     name.c_str());
+    }
+
+    std::vector<hsf::rip::JaudioJob> jobs = std::move(selection.jobs);
+    if (jobs.empty())
+    {
+        return NoJaudioSounds(paths.startup, o);
+    }
+
+    // The sounds that play notes on banks that the files don't load, and those that never sound, are left out.
+    Skipped skipped;
+    if (o.lengths)
+    {
+        const hsf::rip::Jaudio1LengthAnalyzer analyzer(*files, descriptor);
+        const auto analyze = [&analyzer](hsf::rip::JaudioJob& job)
+        {
+            const hsf::rip::JaudioTiming result = analyzer.Analyze(job.id);
+            job.timing = result.timing;
+            job.missing_bank_notes = result.missing_bank_notes;
+            job.sequence_draws = result.sequence_draws;
+            return true;
+        };
+        xsflib::cli::AnalyzeLengths(jobs, o.jobs, analyze);
+
+        // A sound that never sounds may take another branch where its sequence draws a number at random. The game's
+        // generator can be in another state as the sound starts. The rip plays the first state after 1 to
+        // kSearchDraws draws in which the sound sounds, and the descriptor lists that sound's draws.
+        for (hsf::rip::JaudioJob& job : jobs)
+        {
+            if (job.missing_bank_notes != 0 || !job.timing || !job.timing->silent || job.sequence_draws == 0)
+            {
+                continue;
+            }
+
+            for (uint32_t draws = 1; draws <= kSearchDraws; draws++)
+            {
+                const hsf::rip::JaudioTiming result = analyzer.Analyze(job.id, draws);
+                if (result.missing_bank_notes == 0 && result.timing && !result.timing->silent)
+                {
+                    job.timing = result.timing;
+                    descriptor.jaudio.library2.draws.push_back({job.id, draws});
+                    break;
+                }
+            }
+        }
+
+        skipped = DropUnplayable(jobs);
+    }
+
+    const std::string skipped_text =
+        xsflib::cli::SkippedText(skipped.missing, "banks not loaded", skipped.silent, "sound");
+    std::vector<FileChunk> files_in_library = waves.Chunks();
+    files_in_library.push_back(conductors);
+    return WriteJaudioRip(startup, sequences, files_in_library, descriptor, jobs, skipped_text, game, out_dir, o,
+                          registries);
+}
+
+// Rips Pikmin, whose sound plays with the C JAudio: one library of the game's sound files and of the sequence index
+// from its main, and a mini for each piece of music, each piece of the cutscenes' music and each effect. The settings
+// come from the game's main, the build that hsfrip reads. The folder of the rip has the bank file's name. Returns the
+// exit code.
+int RipJacGame(const std::string& input, const hsf::game::GameFiles& game, const hsf::rip::JacPaths& paths,
+               const fs::path& out_dir, const Options& o, xsflib::cli::FileNameRegistries& registries)
+{
+    if (paths.main.empty())
+    {
+        std::fprintf(stderr,
+                     "error: %s: Pikmin's sound settings are in the game's code, the ExeFS's main, and the input\n"
+                     "       lacks it. Give hsfrip a folder that holds both the game's RomFS and its ExeFS, as\n"
+                     "       romfs/ and exefs/.\n",
+                     input.c_str());
+        return 1;
+    }
+
+    FileChunk bank;
+    bank.path = paths.bank;
+    FileChunk sequences;
+    sequences.path = paths.sequences;
+    std::vector<uint8_t> main;
+    for (FileChunk* chunk : {&bank, &sequences})
+    {
+        if (!game.read_file(chunk->path, chunk->data))
+        {
+            std::fprintf(stderr, "error: can't read %s\n", chunk->path.c_str());
+            return 1;
+        }
+    }
+    if (!game.read_file(paths.main, main))
+    {
+        std::fprintf(stderr, "error: can't read %s\n", paths.main.c_str());
+        return 1;
+    }
+
+    const std::string build = hsf::rip::NsoBuildId(main);
+    if (build != hsf::rip::kJacMainBuildId)
+    {
+        const std::string other = build.empty() ? std::string("no NSO's header") : "build ID " + build;
+        std::fprintf(stderr,
+                     "error: %s isn't the main that hsfrip reads Pikmin's settings from: version %s's, build ID %s.\n"
+                     "       It has %s.\n",
+                     paths.main.c_str(), std::string(hsf::rip::kJacMainVersion).c_str(),
+                     std::string(hsf::rip::kJacMainBuildId).c_str(), other.c_str());
+        return 1;
+    }
+
+    hsf::rip::JacGameCode code;
+    std::vector<ntdlib::jaudio::ArchiveFile> files;
+    std::vector<ntdlib::jaudio::WaveSystem> systems;
+    try
+    {
+        code = hsf::rip::ReadJacGameCode(ntdlib::nx::ReadNso(main));
+        files = ntdlib::jaudio::ReadBarcSequenceFiles(code.sequence_index, sequences.data, false);
+        systems = ntdlib::jaudio::ReadBxWaveSystems(bank.data);
+    }
+    catch (const std::exception& e)
+    {
+        std::fprintf(stderr, "error: %s: %s\n", paths.bank.c_str(), e.what());
+        return 1;
+    }
+
+    // The sequence index goes in a FILE chunk whose path no file of the game can have.
+    FileChunk index;
+    index.path = hsf::rip::kJacSequenceIndexPath;
+    index.data = code.sequence_index;
+
+    hsf::rip::JacSelection selection = hsf::rip::SelectJacSounds(code, files, systems, o.only, o.bgm);
+    selection.library.sequence_index = index.path;
+    hsf::ArchiveDescriptor descriptor = hsf::ArchiveDescriptor::Jaudio(hsf::rip::JacSettings(code));
+    descriptor.archive_path = bank.path;
+    descriptor.group_paths = {sequences.path, paths.waves};
+    descriptor.jaudio.library3 = selection.library;
+    const std::size_t pieces = selection.library.pieces.size();
+    const std::size_t parts = selection.library.parts.size();
+    const std::string summary = std::to_string(pieces) + " pieces of music, " + std::to_string(parts) +
+                                " pieces of the cutscenes' music and " +
+                                std::to_string(selection.jobs.size() - pieces - parts) + " sound effects";
+    if (o.list)
+    {
+        std::printf("%s: Jac: bank file %s (%zu bytes), %s; Pikmin's settings from main version %s\n", input.c_str(),
+                    paths.bank.c_str(), bank.data.size(), summary.c_str(),
+                    std::string(hsf::rip::kJacMainVersion).c_str());
+        return 0;
+    }
+
+    std::fprintf(stderr, "Jac: %s, %s; Pikmin's settings from main version %s\n", paths.bank.c_str(), summary.c_str(),
+                 std::string(hsf::rip::kJacMainVersion).c_str());
+    for (const std::string& warning : selection.warnings)
+    {
+        std::fprintf(stderr, "warning: %s\n", warning.c_str());
+    }
+
+    // The library holds every wave archive that a wave system names.
+    JaudioWaves waves(game, paths.waves);
+    std::vector<std::string> missing_waves;
+    for (const ntdlib::jaudio::WaveSystem& system : systems)
+    {
+        for (const ntdlib::jaudio::WaveGroup& group : system.groups)
+        {
+            if (!group.archive.empty() && !waves(group.archive) &&
+                std::find(missing_waves.begin(), missing_waves.end(), group.archive) == missing_waves.end())
+            {
+                missing_waves.push_back(group.archive);
+                std::fprintf(stderr,
+                             "warning: the wave archive %s isn't among the game's files; its waves stay silent\n",
+                             group.archive.c_str());
+            }
+        }
+    }
+
+    std::vector<hsf::rip::JaudioJob> jobs = std::move(selection.jobs);
+    if (jobs.empty())
+    {
+        return NoJaudioSounds(paths.bank, o);
+    }
+
+    // The sounds that never sound are left out. The analyses run on several threads, and each reads the wave archives
+    // as the game's code loads its scenes. They find the archives that the loop above read.
+    std::size_t silent = 0;
+    if (o.lengths)
+    {
+        std::optional<hsf::jac::SoundFiles> sound;
+        const std::string wave_prefix = paths.waves + "/";
+        const auto file = [&](const std::string& path) -> const std::vector<uint8_t>*
+        {
+            for (const FileChunk* chunk : {&bank, &sequences, &index})
+            {
+                if (path == chunk->path)
+                {
+                    return &chunk->data;
+                }
+            }
+
+            return path.starts_with(wave_prefix) ? waves.Find(path.substr(wave_prefix.size())) : nullptr;
+        };
+        try
+        {
+            if (const std::optional<std::string> error = hsf::LoadJacFiles(descriptor, file, sound))
+            {
+                std::fprintf(stderr, "error: %s\n", error->c_str());
+                return 1;
+            }
+        }
+        catch (const std::exception& e)
+        {
+            std::fprintf(stderr, "error: %s: %s\n", paths.bank.c_str(), e.what());
+            return 1;
+        }
+
+        const hsf::rip::JacLengthAnalyzer analyzer(*sound, descriptor);
         const auto analyze = [&analyzer](hsf::rip::JaudioJob& job)
         {
             const hsf::rip::JaudioTiming result = analyzer.Analyze(job.id);
@@ -470,66 +903,35 @@ int RipJaudioGame(const std::string& input, const hsf::game::GameFiles& game, co
         std::vector<hsf::rip::JaudioJob> kept;
         for (hsf::rip::JaudioJob& job : jobs)
         {
-            if (job.missing_bank_notes != 0)
-            {
-                missing++;
-                std::fprintf(stderr, "skipped %s: it plays notes on banks that the start-up archive doesn't load\n",
-                             job.label.c_str());
-            }
-            else if (job.timing && job.timing->silent)
+            if (job.timing && job.timing->silent)
             {
                 silent++;
                 std::fprintf(stderr, "skipped %s: it makes no sound\n", job.label.c_str());
+                continue;
             }
-            else
+
+            if (job.missing_bank_notes != 0)
             {
-                kept.push_back(std::move(job));
+                std::fprintf(stderr,
+                             "warning: %s plays notes that get no wave from the bank file; they stay silent, as in "
+                             "the game\n",
+                             job.label.c_str());
             }
+            kept.push_back(std::move(job));
         }
         jobs = std::move(kept);
     }
 
-    const std::string skipped_text = xsflib::cli::SkippedText(missing, "banks not loaded", silent, "sequence");
-    if (jobs.empty())
-    {
-        std::fprintf(stderr, "%s: nothing to rip%s\n", paths.startup.c_str(), skipped_text.c_str());
-        return 0;
-    }
-
-    const std::string game_name = o.game_name.empty() ? game.name : o.game_name;
-    const std::string folder = xsflib::rip::ArchiveFolders({paths.startup}).front();
-    const fs::path rip_dir = out_dir / folder;
-    hsf::rip::FileNames& names = xsflib::cli::NamesIn(registries, rip_dir, ".hsflib", ".minihsf");
-    const xsflib::psf::Tags common = xsflib::cli::RipTags(o, game_name, "hsf", nullptr);
-    const std::vector<uint8_t> lib =
-        hsf::rip::BuildJaudioLibrary(startup, sequences, waves.Chunks(), descriptor, common);
-    const std::string lib_name = names.LibraryIn(rip_dir, game_name + " " + folder, lib);
-    fs::create_directories(rip_dir);
-    if (!xsflib::rip::WriteFile(rip_dir / xsflib::PathFromUtf8(lib_name), lib))
-    {
-        std::fprintf(stderr, "error: can't write %s\n", lib_name.c_str());
-        return 1;
-    }
-    std::fprintf(stderr, "wrote %s (%zu bytes)\n", lib_name.c_str(), lib.size());
-
-    const auto build_mini = [&lib_name](const hsf::rip::JaudioJob& job, const xsflib::psf::Tags& tags)
-    {
-        return hsf::rip::BuildJaudioMini(job.id, lib_name, tags);
-    };
-    const int written = xsflib::cli::WriteMinis(rip_dir, names, jobs, common, "hsf_sound", build_mini);
-    if (written < 0)
-    {
-        return 1;
-    }
-
-    std::fprintf(stderr, "%s: %d minihsf files%s\n", paths.startup.c_str(), written, skipped_text.c_str());
-    xsflib::rip::ReportOutput(out_dir);
-
-    return 0;
+    const std::string skipped_text = xsflib::cli::SkippedText(0, "", silent, "sound");
+    std::vector<FileChunk> files_in_library = waves.Chunks();
+    files_in_library.push_back(index);
+    return WriteJaudioRip(bank, sequences, files_in_library, descriptor, jobs, skipped_text, game, out_dir, o,
+                          registries);
 }
 
 // Rips a game's sound archives (or the one --archive names). Each archive's folder takes its registry of file names
-// from `registries`. A game that plays its sound with JAudio is ripped by RipJaudioGame. Returns the exit code.
+// from `registries`. A game that plays its sound with JAudio is ripped by RipJaudioGame, Pikmin 2 by RipJaudio1Game
+// and Pikmin by RipJacGame. Returns the exit code.
 int RipGame(const std::string& input, const fs::path& out_dir, const Options& o,
             xsflib::cli::FileNameRegistries& registries)
 {
@@ -545,6 +947,17 @@ int RipGame(const std::string& input, const fs::path& out_dir, const Options& o,
         if (const std::optional<hsf::rip::JaudioPaths> jaudio = hsf::rip::FindJaudioFiles(game.files, game.read_file))
         {
             return RipJaudioGame(input, game, *jaudio, out_dir, o, registries);
+        }
+
+        if (const std::optional<hsf::rip::Jaudio1Paths> jaudio1 =
+                hsf::rip::FindJaudio1Files(game.files, game.read_file))
+        {
+            return RipJaudio1Game(input, game, *jaudio1, out_dir, o, registries);
+        }
+
+        if (const std::optional<hsf::rip::JacPaths> jac = hsf::rip::FindJacFiles(game.files))
+        {
+            return RipJacGame(input, game, *jac, out_dir, o, registries);
         }
     }
 
@@ -567,9 +980,9 @@ int RipGame(const std::string& input, const fs::path& out_dir, const Options& o,
         return 1;
     }
 
-    std::fprintf(stderr, "%zu sound archive%s; %u voices%s; %s on aux bus A\n", archives.size(),
-                 archives.size() == 1 ? "" : "s", settings.voice_count, VoicesFromBoot(game, o) ? " (boot.lua)" : "",
-                 settings.effects.empty() ? "no reverb" : kDefaultReverb);
+    std::fprintf(stderr, "%zu sound archive%s; %u voices%s; %s\n", archives.size(), archives.size() == 1 ? "" : "s",
+                 settings.voice_count, VoicesFromBoot(game, o) ? " (boot.lua)" : "",
+                 EffectsText(GameEffects(game, o), "no effects on the aux buses").c_str());
 
     const auto find_group = [&game](const std::string& name)
     {

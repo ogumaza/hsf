@@ -4,8 +4,9 @@
 // compressed assets, a data sheet with a sound effect list, and a boot.lua, and puts them in a folder with a loose
 // sound archive. It checks what LoadGame finds in the folder and in the archive alone: the files, the sound archives,
 // the voice count and the I3DL2 reverbs, and that each file reads back as it was written. The test also loads a title's
-// folder whose archive was unpacked. That folder holds three boot.lua files at two depths. Damaged archives and sheets
-// must be refused, and the encrypted forms a game comes in must be recognised.
+// folder whose archive was unpacked. That folder holds three boot.lua files at two depths. A list in WarioWare: Move
+// It!'s form gives an I3DL2 reverb, a delay and a light limiter. Damaged archives and sheets must be refused, and the
+// encrypted forms a game comes in must be recognised.
 //
 // usage: game_test
 
@@ -17,6 +18,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "xsflib/bytes.h"
@@ -137,44 +139,49 @@ std::vector<uint8_t> Bea(const std::vector<AssetSpec>& assets)
     return out;
 }
 
-// A data sheet with a sound effect list: a little-endian AArch64 ELF relocatable object. Section 1 holds the records of
-// 0x88 bytes and their count, section 2 the names, sections 3 and 4 the symbols and their names, and section 5 a
-// relocation for each record's pointer to its name, against section 2's symbol.
-std::vector<uint8_t> EffectSheet(const std::vector<EffectSpec>& effects)
+// A record of a data sheet: its name, and its 32-bit words by their offsets in the record.
+struct RecordSpec
 {
-    std::vector<uint8_t> records(0x88 * effects.size() + 4);
+    std::string name;
+    std::vector<std::pair<std::size_t, uint32_t>> words;
+};
+
+// A data sheet with a list called `list`, of records of `size` bytes: a little-endian AArch64 ELF relocatable object.
+// Section 1 holds the records and their count, section 2 the names, sections 3 and 4 the symbols and their names, and
+// section 5 a relocation for each record's pointer to its name, against section 2's symbol.
+std::vector<uint8_t> SheetOf(const std::string& list, std::size_t size, const std::vector<RecordSpec>& specs)
+{
+    std::vector<uint8_t> records(size * specs.size() + 4);
     std::vector<uint8_t> names;
     std::vector<uint8_t> relocations;
-    for (std::size_t i = 0; i < effects.size(); ++i)
+    for (std::size_t i = 0; i < specs.size(); ++i)
     {
-        uint8_t* record = &records[0x88 * i];
-        xsflib::StoreLe32(record + 8, effects[i].type);
-        for (std::size_t k = 0; k < effects[i].parameters.size(); ++k)
+        for (const auto& [offset, word] : specs[i].words)
         {
-            xsflib::StoreLe32(record + 0x38 + 4 * k, std::bit_cast<uint32_t>(effects[i].parameters[k]));
+            xsflib::StoreLe32(&records[size * i + offset], word);
         }
 
         const std::size_t relocation = relocations.size();
         relocations.resize(relocation + 24);
-        xsflib::StoreLe64(&relocations[relocation], 0x88 * i);
+        xsflib::StoreLe64(&relocations[relocation], size * i);
         xsflib::StoreLe64(&relocations[relocation + 8], (uint64_t{1} << 32) | 257); // symbol 1, R_AARCH64_ABS64
         xsflib::StoreLe64(&relocations[relocation + 16], names.size());
-        names.insert(names.end(), effects[i].name.begin(), effects[i].name.end());
+        names.insert(names.end(), specs[i].name.begin(), specs[i].name.end());
         names.push_back(0);
     }
-    xsflib::StoreLe32(&records[0x88 * effects.size()], static_cast<uint32_t>(effects.size()));
+    xsflib::StoreLe32(&records[size * specs.size()], static_cast<uint32_t>(specs.size()));
 
     // The symbols: none, section 2's symbol, then the list and its count in section 1.
-    const std::vector<uint8_t> strings = Bytes(std::string("\0s_SoundEffectList\0s_SoundEffectListCount\0", 42));
+    const std::vector<uint8_t> strings = Bytes(std::string(1, '\0') + list + '\0' + list + "Count" + '\0');
     std::vector<uint8_t> symbols(4 * 24);
     symbols[24 + 4] = 3; // STT_SECTION
     xsflib::StoreLe16(&symbols[24 + 6], 2);
     xsflib::StoreLe32(&symbols[48], 1);
     xsflib::StoreLe16(&symbols[48 + 6], 1);
-    xsflib::StoreLe64(&symbols[48 + 16], 0x88 * effects.size());
-    xsflib::StoreLe32(&symbols[72], 19);
+    xsflib::StoreLe64(&symbols[48 + 16], size * specs.size());
+    xsflib::StoreLe32(&symbols[72], static_cast<uint32_t>(list.size() + 2));
     xsflib::StoreLe16(&symbols[72 + 6], 1);
-    xsflib::StoreLe64(&symbols[72 + 8], 0x88 * effects.size());
+    xsflib::StoreLe64(&symbols[72 + 8], size * specs.size());
     xsflib::StoreLe64(&symbols[72 + 16], 4);
 
     // The header, the sections' data, then the section headers.
@@ -220,6 +227,51 @@ std::vector<uint8_t> EffectSheet(const std::vector<EffectSpec>& effects)
     out.insert(out.end(), headers.begin(), headers.end());
 
     return out;
+}
+
+// A sound effect list of WarioWare: Get It Together!'s form: records of 0x88 bytes, with the type at +0x8 and an I3DL2
+// reverb's 12 parameters from +0x38.
+std::vector<uint8_t> EffectSheet(const std::vector<EffectSpec>& effects)
+{
+    std::vector<RecordSpec> records;
+    for (const EffectSpec& effect : effects)
+    {
+        RecordSpec record{effect.name, {{8, effect.type}}};
+        for (std::size_t k = 0; k < effect.parameters.size(); ++k)
+        {
+            record.words.emplace_back(0x38 + 4 * k, std::bit_cast<uint32_t>(effect.parameters[k]));
+        }
+        records.push_back(record);
+    }
+
+    return SheetOf("s_SoundEffectList", 0x88, records);
+}
+
+// A record of a list in WarioWare: Move It!'s form: its name, its type and its parameters in the game's units.
+struct RawEffectSpec
+{
+    std::string name;
+    uint32_t type = 1;
+    std::vector<float> parameters;
+};
+
+// A sound effect list of Move It!'s form: records of 0xB8 bytes, with the type at +0x8. An I3DL2 reverb's 12 parameters
+// start at +0x38, a delay's 7 at +0x68, and those of any other type at +0x84.
+std::vector<uint8_t> RawEffectSheet(const std::vector<RawEffectSpec>& effects)
+{
+    std::vector<RecordSpec> records;
+    for (const RawEffectSpec& effect : effects)
+    {
+        const std::size_t start = effect.type == 1 ? 0x38 : effect.type == 2 ? 0x68 : 0x84;
+        RecordSpec record{effect.name, {{8, effect.type}}};
+        for (std::size_t k = 0; k < effect.parameters.size(); ++k)
+        {
+            record.words.emplace_back(start + 4 * k, std::bit_cast<uint32_t>(effect.parameters[k]));
+        }
+        records.push_back(record);
+    }
+
+    return SheetOf("s_RawEffectDataList", 0xB8, records);
 }
 
 // Writes `data` to the file at `path` after making the folders that hold it.
@@ -360,6 +412,33 @@ void TestArchive(const fs::path& dir)
     XSFLIB_CHECK(hsf::game::LoadGame(dir / "Missing.bea", game).has_value());
 }
 
+// A list of Move It!'s form: an I3DL2 reverb, a delay, a light limiter, and a record of type 4 that the reader leaves
+// out. The game divides the times by 1000 (ms to s). It gives nn::atk a delay's longest delay and each time of a light
+// limiter in whole milliseconds, and a delay's delay in whole microseconds, on 2 channels.
+void TestRawEffectList(const fs::path& dir)
+{
+    const std::vector<RawEffectSpec> kEffects = {
+        {"I3DL2_Waltz",
+         1,
+         {-1000.0f, -1000.0f, 2000.0f, 0.8f, -700.0f, 5.0f, -500.0f, 40.0f, 50.0f, 3.0f, 6000.0f, 0.0f}},
+        {"Delay_Waltz", 2, {1999.9f, 250.7004f, 0.5f, 0.2f, 0.0f, 0.4f, 0.3f}},
+        {"Limiter_Waltz", 3, {1.0f, 0.02f, 50.9f, 0.5f, 0.3f, 1.0f, 1.0f}},
+        {"Other", 4, {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f}}};
+    WriteFile(dir / "romfs" / "Data" / "SheetBin" / "SoundEffectList.elf", RawEffectSheet(kEffects));
+
+    GameFiles game;
+    const std::optional<std::string> error = hsf::game::LoadGame(dir / "romfs", game);
+
+    const I3dl2Preset kReverb = {-1000.0f, -1000.0f, 2.0f,  0.8f, -700.0f, 0.005f,
+                                 -500.0f,  0.04f,    50.0f, 3.0f, 6000.0f, 0.0f};
+    const hsf::game::RendererPreset kDelay{2, {1999000.0f, 250700.0f, 0.5f, 0.2f, 0.0f, 0.4f, 0.3f, 1.0f}};
+    const hsf::game::RendererPreset kLimiter{3, {1000.0f, 0.0f, 50000.0f, 0.0f, 0.3f, 1.0f, 1.0f, 1.0f}};
+    XSFLIB_CHECK(!error);
+    XSFLIB_CHECK(game.i3dl2_presets.size() == 1 && game.i3dl2_presets.at("I3DL2_Waltz") == kReverb);
+    XSFLIB_CHECK(game.renderer_presets.size() == 2 && game.renderer_presets.at("Delay_Waltz") == kDelay &&
+                 game.renderer_presets.at("Limiter_Waltz") == kLimiter);
+}
+
 void TestDamagedArchives()
 {
     const std::vector<uint8_t> good = Bea(GameAssets());
@@ -456,6 +535,7 @@ int main()
     TestFolder(dir / "folder");
     TestUnpackedFolder(dir / "unpacked");
     TestArchive(dir / "archive");
+    TestRawEffectList(dir / "raw");
     TestDamagedArchives();
     TestDamagedSheets();
     TestEncrypted(dir / "encrypted");
