@@ -568,6 +568,7 @@ int32_t Tracks::OpenTrack(uint32_t index, uint32_t flags, uint32_t cursor)
     child.flags = kind;
     InitTrack(child_index, cursor, index);
     child.muted = track.muted || ((track.child_mutes >> slot) & 1) != 0;
+    child.unheard = track.unheard || track.unheard_opens;
     child.outer = track.child_outer[slot];
     if (child.outer != Track::kNone)
     {
@@ -626,6 +627,8 @@ void Tracks::CloseTrack(uint32_t index)
     }
     track.muted = false;
     track.child_mutes = 0;
+    track.unheard = false;
+    track.unheard_opens = false;
     if (track.parent != Track::kNone)
     {
         channels_.FixMoveAll(index, track.parent);
@@ -2081,7 +2084,7 @@ int32_t Tracks::NoteOn(uint32_t index, uint8_t slot, uint8_t key, uint8_t veloci
     track.channels[slot] = channel;
     if (channel == kNone)
     {
-        if (program < 0xf0 && channels_.CheckInstWave(bank, program, key, velocity) != 0)
+        if (!track.unheard && program < 0xf0 && channels_.CheckInstWave(bank, program, key, velocity) != 0)
         {
             missing_notes_++;
         }
@@ -2089,6 +2092,7 @@ int32_t Tracks::NoteOn(uint32_t index, uint8_t slot, uint8_t key, uint8_t veloci
     }
 
     track.channel_ids[slot] = channels_.At(channel).id;
+    channels_.At(channel).unheard = track.unheard;
     channels_.SetPanPower(channel, static_cast<float>(track.registers[kRegArguments + 0]),
                           static_cast<float>(track.registers[kRegArguments + 1]),
                           static_cast<float>(track.registers[kRegArguments + 2]));

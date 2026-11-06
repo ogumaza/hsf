@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.20)
 # Shared version for the tools (HSF_VERSION_ARGS below). For a release, update it here and add notes in
 # docs/release-notes/.
-project(hsf VERSION 1.3.0 LANGUAGES C CXX)
+project(hsf VERSION 1.4.0 LANGUAGES C CXX)
 
 # xsflib: a library for players and rippers of the PSF family, as a submodule. Its XsflibProject.cmake sets what a
 # project built on it starts with: C++20, a release build by default, the static C runtime, the options that keep the
@@ -38,7 +38,7 @@ add_library(hsf_game STATIC
     src/game/sheet.cpp
     src/game/sheet.h
 )
-target_link_libraries(hsf_game PUBLIC hsf_common PRIVATE xsflib::zstd)
+target_link_libraries(hsf_game PUBLIC hsf_common ntdlib::bezel PRIVATE xsflib::zstd)
 target_compile_options(hsf_game PRIVATE ${HSF_WARNINGS})
 
 # The HSF file format: the PSF container, chunks, the archive descriptor and tags, and loading a set with its libraries.
@@ -55,7 +55,8 @@ add_library(hsf_player STATIC
     src/hsf/player.cpp
     src/hsf/player.h
 )
-target_link_libraries(hsf_player PUBLIC hsf_format hsf_jaudio hsf_jaudio1 hsf_jac ntdlib::nx xsflib::player)
+target_link_libraries(hsf_player PUBLIC hsf_format hsf_jaudio hsf_jaudio1 hsf_jac ntdlib::nx ntdlib::nx_bex
+                                        xsflib::player)
 target_compile_options(hsf_player PRIVATE ${HSF_WARNINGS})
 
 # The model of JAudio's Switch ports: Hagi's emulation of JAudio's DSP program, and the sound library above it.
@@ -133,10 +134,17 @@ add_library(hsf_rip STATIC
     src/rip/jaudio1_rip.h
     src/rip/jaudio_rip.cpp
     src/rip/jaudio_rip.h
+    src/rip/procedures.cpp
+    src/rip/procedures.h
     src/rip/rip.cpp
     src/rip/rip.h
+    src/rip/sound_states.cpp
+    src/rip/sound_states.h
+    src/rip/variable_states.cpp
+    src/rip/variable_states.h
 )
-target_link_libraries(hsf_rip PUBLIC hsf_format hsf_jac hsf_jaudio hsf_jaudio1 ntdlib::nx xsflib::rip ntdlib::rip_archive)
+target_link_libraries(hsf_rip PUBLIC hsf_format hsf_jac hsf_jaudio hsf_jaudio1 ntdlib::nx ntdlib::nx_bex xsflib::rip
+                                     ntdlib::rip_archive)
 target_compile_options(hsf_rip PRIVATE ${HSF_WARNINGS})
 
 # The version of each program, as HSF_VERSION, and on Windows the version resource that Explorer shows in the file's
@@ -147,7 +155,7 @@ set(HSF_VERSION_ARGS VERSION ${hsf_VERSION} DEFINE HSF_VERSION PRODUCT HSF
 # hsfrip rips on several threads (--jobs). glibc before 2.34 keeps threads in a separate library.
 find_package(Threads REQUIRED)
 add_executable(hsfrip src/cli/hsfrip.cpp)
-target_link_libraries(hsfrip PRIVATE hsf_rip hsf_game xsflib::cli Threads::Threads)
+target_link_libraries(hsfrip PRIVATE hsf_rip hsf_game ntdlib::nx_bex xsflib::cli Threads::Threads)
 target_compile_options(hsfrip PRIVATE ${HSF_WARNINGS})
 xsflib_add_version(hsfrip ${HSF_VERSION_ARGS} DESCRIPTION "HSF ripper")
 

@@ -134,6 +134,14 @@ struct Effect
     uint16_t finish = 0;
 };
 
+// A later timed event of a cutscene's sound: the game's frames from the sound's event to this one, and the value that
+// Jac_DemoFrame queues for port 2 of track 0x1000f.
+struct DemoEvent
+{
+    uint16_t frames = 0;
+    uint16_t value = 0;
+};
+
 // The game's numbers of the effects that the game's code handles apart from the others. A rip's selection of the
 // effects reads them too.
 //
@@ -255,6 +263,14 @@ public:
     // after frame 0 runs in UpdateFrame.
     std::optional<std::string> StartEffect(const Effect& effect);
 
+    // Later events of the cutscene whose sound StartEffect has just started, in the order of the cutscene's table.
+    // Jac_DemoFrame queues each value in the frame `frames` after the sound's, after the values of the events before it
+    // and before the cutscene's finish. A rip's effect record has no room for them, and the player leaves them out. The
+    // length analysis queues them `unheard`. Track 0x1000f then opens unheard tracks for them. Their notes play as the
+    // game plays them, at a level of 0. The engine's tests of the sound below leave unheard tracks and notes out. The
+    // length is then that of the sound alone while the game plays the later events.
+    void QueueDemoEvents(std::vector<DemoEvent> events, bool unheard);
+
     // A frame: the DSP's render, then the CPU's update.
     void RunFrame()
     {
@@ -285,7 +301,7 @@ public:
     // Whether the sound plays, a DSP channel sounds, or the FX lines' delays still hold sound.
     bool Busy() const;
 
-    // The DSP channels that play.
+    // The DSP channels that play. Those of unheard notes (QueueDemoEvents) don't count.
     int ActiveChannels() const;
 
     // Whether the FX lines' delays hold sound that they haven't played yet: a sample louder than 8 (-72 dB). A line's
@@ -293,7 +309,7 @@ public:
     bool FxRinging() const;
 
     // The notes that asked for a bank, a program or a wave that the bank file and the current scenes lack. The game's
-    // note then doesn't start.
+    // note then doesn't start. Unheard notes (QueueDemoEvents) don't count.
     uint32_t MissingBankNotes() const;
 
     // The steps that the model leaves out: the tracks' (Tracks::Unmodelled) and the game's code's.
@@ -307,8 +323,9 @@ public:
     void SetLoopHook(LoopHook hook);
 
     // The sound's tracks in the order of the sequence's tree: the root, then each child after its parent, by the
-    // child's slot. Tracks that have closed aren't in it. A piece has its root's tree. A part or an effect has the
-    // trees of the tracks whose ports its code writes, in the order of the writes.
+    // child's slot. Tracks that have closed aren't in it, and neither are unheard tracks (QueueDemoEvents). A piece has
+    // its root's tree. A part or an effect has the trees of the tracks whose ports its code writes, in the order of the
+    // writes.
     std::vector<uint32_t> TreeOrder() const;
 
     // Whether the track has started a note since the sound started, and whether its last pass, up to its last jump
@@ -320,7 +337,8 @@ public:
     // on a looping wave or an oscillator, and each open track has started a note, jumped back or opened a track that
     // is still open. An envelope with no attack table holds its level from the note's start.
     // Moving: a track's levels move. WaitsForNotes: the track waits for its note to end. WaitsForEver: it waits for a
-    // note that is held. Waiting: each open track that has opened no track still open waits for its note to end.
+    // note that is held. Waiting: each open track that has opened no track still open waits for its note to end. An
+    // unheard track or note (QueueDemoEvents) doesn't count.
     bool Held() const;
     bool Moving() const;
     bool WaitsForNotes(uint32_t track) const;
@@ -328,7 +346,8 @@ public:
     bool Waiting() const;
 
     // A DSP channel's place in its wave: whether it plays a wave, whether the wave loops, and a position that drops
-    // each time the wave passes back to its loop's start.
+    // each time the wave passes back to its loop's start. A DSP channel of an unheard note (QueueDemoEvents) plays no
+    // wave here.
     struct WavePlace
     {
         bool playing = false;

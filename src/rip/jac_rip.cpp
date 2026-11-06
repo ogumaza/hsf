@@ -534,16 +534,16 @@ std::string NsoBuildId(std::span<const uint8_t> file)
     return id;
 }
 
-JacGameCode ReadJacGameCode(const ntdlib::nx::Nso& main)
+JacGameCode ReadJacGameCode(const ntdlib::nx::Nso& main, const JacTableAddresses& at)
 {
     const std::map<uint64_t, uint64_t> pointers = RelativePointers(main);
     JacGameCode code;
-    code.sequence_index = ReadSequenceIndex(main);
-    code.music = ReadMusicTables(main, pointers);
-    code.fx_lines = ReadFxLines(main);
-    code.cutscenes = ReadCutscenes(main, pointers);
-    code.actions = ReadEventActions(main);
-    code.effects = ReadEffects(main, pointers);
+    code.sequence_index = ReadSequenceIndex(main, at);
+    code.music = ReadMusicTables(main, at, pointers);
+    code.fx_lines = ReadFxLines(main, at);
+    code.cutscenes = ReadCutscenes(main, at, pointers);
+    code.actions = ReadEventActions(main, at);
+    code.effects = ReadEffects(main, at, pointers);
 
     return code;
 }
@@ -669,7 +669,8 @@ JacSelection SelectJacSounds(const JacGameCode& code, const std::vector<ntdlib::
 
     // The effects. An effect that another one plays the same way is left out.
     std::set<std::tuple<uint8_t, uint8_t, uint16_t, uint16_t>> taken;
-    const auto add_effect = [&](const std::string& label, const JacEffect& effect)
+    const auto add_effect =
+        [&](const std::string& label, const JacEffect& effect, std::vector<JacLaterEvent> later_events = {})
     {
         if (!taken.insert({effect.kind, effect.type, effect.value, effect.first}).second ||
             !std::regex_search(label, only))
@@ -679,6 +680,7 @@ JacSelection SelectJacSounds(const JacGameCode& code, const std::vector<ntdlib::
 
         add_job(label, JaudioLibrary3::kEffectSection | static_cast<uint32_t>(library.effects.size()));
         library.effects.push_back(effect);
+        selection.later_events.push_back(std::move(later_events));
     };
 
     // The system's effect `value` as the game plays it, or nothing for one that plays no effect.
@@ -757,7 +759,8 @@ JacSelection SelectJacSounds(const JacGameCode& code, const std::vector<ntdlib::
     add_effect("footstep", MakeEffect(JacEffect::kWalk, kFootstep));
 
     // Each cutscene's sounds, in the order of their first events. A sound's finish counts the game's frames from the
-    // sound's first event to the cutscene's finish (FramesToFinish).
+    // sound's first event to the cutscene's finish (FramesToFinish). Its later events are the events after that one
+    // that queue a value.
     for (const Cutscene& cutscene : code.cutscenes)
     {
         for (std::size_t i = 0; i < cutscene.events.size(); ++i)
@@ -772,37 +775,107 @@ JacSelection SelectJacSounds(const JacGameCode& code, const std::vector<ntdlib::
                                           static_cast<uint16_t>(cutscene.number));
             effect.type = WritesPortOne(cutscene) ? JacEffect::kCutscenePart : 0;
             effect.finish = FramesToFinish(cutscene, i);
+            std::vector<JacLaterEvent> later_events;
+            for (std::size_t j = i + 1; j < cutscene.events.size(); ++j)
+            {
+                if (cutscene.events[j].value >= 0)
+                {
+                    later_events.push_back(
+                        {FramesBetween(cutscene, i, j), static_cast<uint16_t>(cutscene.events[j].value)});
+                }
+            }
+
             add_effect("cutscene-" + Decimal(cutscene.number, 3) + "-" + Decimal(static_cast<unsigned>(event.value), 2),
-                       effect);
+                       effect, std::move(later_events));
         }
     }
 
     return selection;
 }
 
-JacLengthAnalyzer::JacLengthAnalyzer(const jac::SoundFiles& files, ArchiveDescriptor settings)
-    : files_(files), settings_(std::move(settings))
+JacLengthAnalyzer::JacLengthAnalyzer(const jac::SoundFiles& files, ArchiveDescriptor settings,
+                                     std::vector<std::vector<JacLaterEvent>> later_events)
+    : files_(files), settings_(std::move(settings)), later_events_(std::move(later_events))
 {
 }
 
 JaudioTiming JacLengthAnalyzer::Analyze(uint32_t sound) const
 {
-    JaudioTiming result;
-    const auto measure = [this, sound, &result]() -> std::optional<Timing>
+    // An effect's ID holds no bits above its place.
+    std::vector<jac::DemoEvent> events;
+    if (sound < later_events_.size())
     {
-        jac::Engine engine(files_, JacEngineSettings(settings_.jaudio));
-        if (StartJacSound(engine, settings_.jaudio.library3, sound))
+        for (const JacLaterEvent& event : later_events_[sound])
         {
-            return std::nullopt;
+            events.push_back({event.frames, event.value});
         }
+    }
 
-        JacLengthModel model(engine);
-        const std::optional<Timing> timing = xsflib::rip::MeasureLength(model, JaudioLengthRules());
-        result.missing_bank_notes = engine.MissingBankNotes();
+    // Measures the sound with the events `queued` unheard. The count of notes without a wave goes to
+    // `missing_bank_notes`.
+    const xsflib::rip::LengthRules rules = JaudioLengthRules();
+    const auto measure = [this, sound, &rules](const std::vector<jac::DemoEvent>& queued, uint32_t& missing_bank_notes)
+    {
+        const auto run = [this, sound, &rules, &queued, &missing_bank_notes]() -> std::optional<Timing>
+        {
+            jac::Engine engine(files_, JacEngineSettings(settings_.jaudio));
+            if (StartJacSound(engine, settings_.jaudio.library3, sound))
+            {
+                return std::nullopt;
+            }
 
-        return timing;
+            engine.QueueDemoEvents(queued, true);
+
+            JacLengthModel model(engine);
+            const std::optional<Timing> timing = xsflib::rip::MeasureLength(model, rules);
+            missing_bank_notes = engine.MissingBankNotes();
+
+            return timing;
+        };
+
+        return xsflib::rip::TryMeasure(run);
     };
-    result.timing = xsflib::rip::TryMeasure(measure);
+
+    JaudioTiming result;
+    result.timing = measure(events, result.missing_bank_notes);
+    if (events.empty() || !result.timing || result.timing->silent || result.timing->fade_ms != 0)
+    {
+        return result;
+    }
+
+    // A second run without the events plays the sound as a player plays the rip. A sound that plays on past the end of
+    // the first run is one that an event stops.
+    uint32_t missing_alone = 0;
+    const std::optional<Timing> alone = measure({}, missing_alone);
+    Timing& timing = *result.timing;
+    if (!alone || alone->length_ms + alone->fade_ms <= timing.length_ms)
+    {
+        return result;
+    }
+
+    // The rip of such a sound fades out from the frame in which the game's sound first differs from the rip's. The fade
+    // ends where the game's sound ends, without the tail. Two engines play the sound side by side up to there, one with
+    // the events unheard and one without them.
+    const auto end_ms = timing.length_ms - static_cast<long long>(rules.tail_ms);
+    const auto end_frame = static_cast<uint64_t>(static_cast<double>(end_ms) / rules.frame_ms);
+    jac::Engine game(files_, JacEngineSettings(settings_.jaudio));
+    jac::Engine rip(files_, JacEngineSettings(settings_.jaudio));
+    StartJacSound(game, settings_.jaudio.library3, sound);
+    StartJacSound(rip, settings_.jaudio.library3, sound);
+    game.QueueDemoEvents(events, true);
+    uint64_t frame = 0;
+    for (; frame < end_frame; ++frame)
+    {
+        game.RunFrame();
+        rip.RunFrame();
+        if (!std::ranges::equal(game.Output(), rip.Output()))
+        {
+            break;
+        }
+    }
+
+    timing.length_ms = std::min(static_cast<long long>(static_cast<double>(frame) * rules.frame_ms), end_ms);
+    timing.fade_ms = end_ms - timing.length_ms;
 
     return result;
 }

@@ -32,7 +32,7 @@ public:
     };
 
     // The size of an archive's header: "SCNE", the byte order mark at +0xC, the asset count at +0x20 and the asset
-    // table's offset at +0x28.
+    // table's offset at +0x28. The table holds the offsets of the assets' headers, or in newer archives the headers.
     static constexpr std::size_t kHeaderSize = 0x30;
 
     // Whether `data` starts as a little-endian Bezel Engine archive does. Data shorter than the header doesn't.

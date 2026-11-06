@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -34,33 +35,54 @@ namespace hsf
 struct Player::SourceTraits
 {
     using Set = LoadedSet;
-    using Archive = fsar::SoundArchive;
 
-    // The model, and how long the effects have rung in its output (EffectTail).
+    // The set's sound archive and the add-on archives that its scripts start sounds from (docs/hsf.md, "Scripted
+    // starts"). The add-ons are all loaded before a model points at them.
+    struct Archive
+    {
+        fsar::SoundArchive archive;
+        std::vector<fsar::SoundArchive> addons;
+    };
+
+    // The model, how long the effects have rung in its output (EffectTail), the sound's scripted start and the frames
+    // that the model has run. The engine plays the add-on archives as numbers 1 and up, in the descriptor's order.
     struct Model
     {
-        Model(const Archive& archive, const atk::EngineOptions& options, const std::vector<AuxEffect>& effects)
-            : model(archive, options), tail(effects)
+        Model(const Archive& archives, const atk::EngineOptions& options, const std::vector<AuxEffect>& effects)
+            : model(archives.archive, options), tail(effects)
         {
+            for (const fsar::SoundArchive& addon : archives.addons)
+            {
+                model.engine->AddArchive(addon);
+            }
         }
 
         atk::ArchiveModel model;
         EffectTail tail;
+        std::optional<ScriptRunner> script;
+        uint64_t frame = 0;
     };
 
-    // What the descriptor gives the model, and the sound.
+    // What the descriptor gives the model, the sound, the volumes of the sound's tracks, the sound's scripted start and
+    // the game's handler of user procedures.
     struct Prepared
     {
         atk::EngineOptions options;
         std::vector<AuxEffect> effects;
         uint32_t sound = 0;
+        SoundTrackVolumes track_volumes;
+        ScriptedStart script;
+        UserProcedureHandler procedures;
     };
 
-    // The model between frames: ntdlib's snapshot of the renderer and the engine, and the effects' tail.
+    // The model between frames: ntdlib's snapshot of the renderer and the engine, the effects' tail, the frames run,
+    // and the script's writes of kind 2 that have taken effect with the state of the game's handler of user procedures.
     struct Snapshot
     {
         atk::ArchiveModel::Snapshot model;
         EffectTail tail;
+        uint64_t frame = 0;
+        ScriptRunner::State script;
     };
 
     // The archive loads at the first start, and later starts reuse it.
@@ -74,15 +96,42 @@ struct Player::SourceTraits
         prepared.options = EngineOptionsFor(d);
         prepared.effects = d.effects;
         prepared.sound = set.sound.value_or(0);
+        if (const SoundTrackVolumes* volumes = d.TrackVolumesOf(prepared.sound))
+        {
+            prepared.track_volumes = *volumes;
+        }
+
+        const ScriptedStart* script = d.ScriptOf(prepared.sound);
+        prepared.script = script ? *script : ScriptedStart::Plain(prepared.sound);
+        prepared.procedures = d.procedures;
 
         return std::nullopt;
     }
 
-    // The set's bytes move into the archive. The archive is only given out once all its group files are in it.
+    // The set's bytes move into the archives. They are only given out once every archive has all its group files.
     static std::optional<std::string> LoadArchive(Set& set, const Prepared&, std::optional<Archive>& archive)
     {
         const ArchiveDescriptor& d = *set.archive;
-        return fsar::LoadSetArchive(set, d.archive_path, d.group_paths, kSarOptions, archive);
+        std::optional<fsar::SoundArchive> loaded;
+        if (auto err = fsar::LoadSetArchive(set, d.archive_path, d.group_paths, kSarOptions, loaded))
+        {
+            return err;
+        }
+
+        Archive archives{std::move(*loaded), {}};
+        for (const AddonArchive& addon : d.addons)
+        {
+            std::optional<fsar::SoundArchive> added;
+            if (auto err = fsar::LoadSetArchive(set, addon.archive_path, addon.group_paths, kSarOptions, added))
+            {
+                return "an add-on archive: " + *err;
+            }
+            archives.addons.push_back(std::move(*added));
+        }
+
+        archive.emplace(std::move(archives));
+
+        return std::nullopt;
     }
 
     static std::unique_ptr<Model> MakeModel(const Prepared& prepared, const Archive& archive)
@@ -98,13 +147,38 @@ struct Player::SourceTraits
         return std::nullopt;
     }
 
-    // A sound's nn::atk item ID is its index in the archive's sound table, with the sound type in its top byte.
+    // Runs the model's next frame, then takes the script's steps of the frame after it. StartSequence takes frame 0's.
+    // The effects' tail follows the frames whose output is `heard`. The length analysis doesn't follow the lead-in's
+    // either.
+    static std::optional<std::string> Advance(Model& model, bool heard)
+    {
+        model.model.engine->RunFrame();
+        if (heard)
+        {
+            model.tail.Frame(model.model.renderer.DeviceOutput());
+        }
+        ++model.frame;
+
+        return model.script->Apply(*model.model.engine, model.frame);
+    }
+
+    // A sound's nn::atk item ID is its index in the archive's sound table, with the sound type in its top byte. The
+    // sound starts as its script says: the steps of frame 0, then the lead-in's frames, whose output nobody hears. The
+    // game's code gives the sound's tracks their volumes as it starts the sound (ScriptRunner).
     static std::optional<std::string> StartSequence(Model& model, const Set&, const Prepared& prepared)
     {
-        if (fsar::ItemType(prepared.sound) != fsar::kSoundItem ||
-            !model.model.engine->StartSequence(fsar::ItemNumber(prepared.sound)))
+        model.script.emplace(prepared.script, prepared.track_volumes.volumes, prepared.procedures);
+        if (auto err = model.script->Apply(*model.model.engine, 0))
         {
-            return "sound " + xsflib::Hex(prepared.sound, 8) + " isn't a sequence whose files the set holds";
+            return err;
+        }
+
+        for (uint32_t i = 0; i < prepared.script.lead_in; ++i)
+        {
+            if (auto err = Advance(model, false))
+            {
+                return err;
+            }
         }
 
         return std::nullopt;
@@ -113,9 +187,12 @@ struct Player::SourceTraits
     // A frame of 5 ms: the device's output, 240 interleaved stereo pairs. The model reports a failure by throwing.
     static bool RunFrame(Model& model, std::vector<int16_t>& out)
     {
-        model.model.engine->RunFrame();
+        if (auto err = Advance(model, true))
+        {
+            throw std::runtime_error(*err);
+        }
+
         const std::span<const int16_t> output = model.model.renderer.DeviceOutput();
-        model.tail.Frame(output);
         out.insert(out.end(), output.begin(), output.end());
 
         return true;
@@ -124,20 +201,23 @@ struct Player::SourceTraits
     // The sound has finished once the sequence has ended and the effects no longer ring.
     static bool Busy(const Model& model)
     {
-        return model.tail.Ringing() || model.model.engine->IsBusy();
+        return model.tail.Ringing() || model.model.engine->IsBusy() || model.script->Pending(model.frame);
     }
 
     // ntdlib's snapshot shares nothing with an earlier one. `previous` goes unused.
     static Snapshot Save(const Model& model, const Snapshot*)
     {
-        return {model.model.Save(), model.tail};
+        return {model.model.Save(), model.tail, model.frame, model.script->Saved()};
     }
 
-    // ntdlib's Restore throws for a snapshot of another model, and then changes nothing.
+    // ntdlib's Restore throws for a snapshot of another model, and then changes nothing. The restore drops the players
+    // that started after the snapshot. The steps of the snapshot's next frame came before it.
     static void Restore(Model& model, const Snapshot& snapshot)
     {
         model.model.Restore(snapshot.model);
         model.tail = snapshot.tail;
+        model.frame = snapshot.frame;
+        model.script->Rewind(snapshot.frame + 1, snapshot.script);
     }
 };
 

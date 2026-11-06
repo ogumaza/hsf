@@ -177,12 +177,21 @@ bool NoteHeld(const Channel& channel)
     return true;
 }
 
-// Whether a track has opened a track that is still open.
+// Whether a track has opened a track that is still open. An unheard track (Engine::QueueDemoEvents) doesn't count.
 bool HasChildren(const Tracks& tracks, uint32_t index)
 {
+    const auto open = [&tracks](uint32_t child)
+    {
+        return child != Track::kNone && tracks.At(child).state != Track::kClosed && !tracks.At(child).unheard;
+    };
     const Track& track = tracks.At(index);
-    return std::any_of(track.children.begin(), track.children.end(), [&tracks](uint32_t child)
-                       { return child != Track::kNone && tracks.At(child).state != Track::kClosed; });
+    return std::any_of(track.children.begin(), track.children.end(), open);
+}
+
+// Whether a DSP channel plays an unheard note (Engine::QueueDemoEvents).
+bool UnheardDsp(const Channels& channels, const DspChannel& dsp_channel)
+{
+    return dsp_channel.channel != kNone && channels.At(dsp_channel.channel).unheard;
 }
 
 } // namespace
@@ -274,12 +283,20 @@ struct Engine::Model
     Bgm bgm;
     uint32_t bgm_calls = 0;
 
-    // The queues of values for the tracks' ports (Jal's list from 0x7e8238), in the order of their set-up.
+    // The queues of values for the tracks' ports (Jal's list from 0x7e8238), in the order of their set-up. For the
+    // length analysis, a value can be unheard: the tracks that the port's track opens once it has the value are unheard
+    // (Tracks::SetUnheardOpens).
+    struct QueuedValue
+    {
+        uint16_t value = 0;
+        bool unheard = false;
+    };
+
     struct PortQueue
     {
         uint32_t track = kNone;
         uint32_t port = 0;
-        std::deque<uint16_t> values;
+        std::deque<QueuedValue> values;
     };
     std::vector<PortQueue> queues;
 
@@ -356,6 +373,10 @@ struct Engine::Model
     Effect effect;
     uint32_t effect_frame = 0;
     int32_t event = -1;
+
+    // A cutscene's later events, from Engine::QueueDemoEvents, and whether they're unheard.
+    std::vector<DemoEvent> demo_events;
+    bool demo_events_unheard = false;
 
     // For Playing: the ports that a part's or an effect's code writes and the queues that it sends to, each once, and
     // the tracks' opens and notes as the sound started (Tracks::Opens and Tracks::NoteCount). The code records them
@@ -467,14 +488,15 @@ public:
     }
 
     // Jal_SendCmdQueue_Noblock and Jal_SendCmdQueue_Force: the latter takes the queue's first value out to make room.
-    bool Send(uint32_t queue, uint16_t value)
+    // The length analysis sends a cutscene's later events unheard.
+    bool Send(uint32_t queue, uint16_t value, bool unheard = false)
     {
         if (queue == kNone)
         {
             return false;
         }
 
-        std::deque<uint16_t>& values = m_.queues[queue].values;
+        std::deque<Engine::Model::QueuedValue>& values = m_.queues[queue].values;
         if (m_.recording && std::find(m_.sound_queues.begin(), m_.sound_queues.end(), queue) == m_.sound_queues.end())
         {
             m_.sound_queues.push_back(queue);
@@ -485,7 +507,7 @@ public:
             return false;
         }
 
-        values.push_back(value);
+        values.push_back({value, unheard});
 
         return true;
     }
@@ -514,9 +536,10 @@ public:
                 continue;
             }
 
-            const uint16_t value = queue.values.front();
+            const Engine::Model::QueuedValue value = queue.values.front();
             queue.values.pop_front();
-            t_.WritePortAppDirect(queue.track, queue.port, value);
+            t_.WritePortAppDirect(queue.track, queue.port, value.value);
+            t_.SetUnheardOpens(queue.track, value.unheard);
         }
 
         return 0;
@@ -1127,11 +1150,11 @@ public:
     }
 
     // Jac_DemoSound, from Jac_DemoFrame's timed event.
-    void DemoSound(uint16_t value)
+    void DemoSound(uint16_t value, bool unheard)
     {
         if (m_.demo != -1)
         {
-            Send(m_.demo_queue, value);
+            Send(m_.demo_queue, value, unheard);
         }
     }
 
@@ -1162,10 +1185,22 @@ void TakeStartCounts(Engine::Model& m)
     }
 }
 
+// The game's frames from a cutscene's sound to its last step: the cutscene's finish, or the last of its later events.
+uint32_t LastDemoStep(const Engine::Model& m)
+{
+    uint32_t last = m.effect.finish;
+    for (const DemoEvent& event : m.demo_events)
+    {
+        last = std::max<uint32_t>(last, event.frames);
+    }
+
+    return last;
+}
+
 // Whether a part's or an effect's code has a step still to take, or a value that its tracks haven't read: the action of
-// an object's effect in frame 2, the sound of a cutscene in frame 1 and the cutscene's finish, a value in a queue or on
-// a queue's port, or a value on port 0 or 1. A value on port 0 or 1 starts an interrupt of the track. A track reads a
-// queue's port as it polls, and its other ports only when its sequence asks.
+// an object's effect in frame 2, the sound of a cutscene in frame 1, its later events and the cutscene's finish, a
+// value in a queue or on a queue's port, or a value on port 0 or 1. A value on port 0 or 1 starts an interrupt of the
+// track. A track reads a queue's port as it polls, and its other ports only when its sequence asks.
 //
 // The formation's and the crowd's code runs in every frame for as long as the game holds the stick or keeps the crowd.
 // Their sounds play for as long as that code runs.
@@ -1174,7 +1209,7 @@ bool SoundWaits(const Engine::Model& m)
     if (m.sound == Engine::Model::Sound::kEffect &&
         ((m.effect.kind == Effect::kEvent && m.effect_frame <= kEventActionFrame) ||
          m.effect.kind == Effect::kFormation || m.effect.kind == Effect::kCrowd ||
-         (m.effect.kind == Effect::kCutscene && m.effect_frame <= kDemoSoundFrame + m.effect.finish)))
+         (m.effect.kind == Effect::kCutscene && m.effect_frame <= kDemoSoundFrame + LastDemoStep(m))))
     {
         return true;
     }
@@ -1325,6 +1360,12 @@ std::optional<std::string> Engine::StartEffect(const Effect& effect)
     return std::nullopt;
 }
 
+void Engine::QueueDemoEvents(std::vector<DemoEvent> events, bool unheard)
+{
+    model_->demo_events = std::move(events);
+    model_->demo_events_unheard = unheard;
+}
+
 // The effect's work in its frame `m.effect_frame`.
 void Engine::EffectFrame()
 {
@@ -1394,7 +1435,14 @@ void Engine::EffectFrame()
         }
         if (frame == kDemoSoundFrame)
         {
-            game.DemoSound(e.value);
+            game.DemoSound(e.value, false);
+        }
+        for (const DemoEvent& event : m.demo_events)
+        {
+            if (frame == kDemoSoundFrame + event.frames)
+            {
+                game.DemoSound(event.value, m.demo_events_unheard);
+            }
         }
         if (e.finish != 0 && frame == kDemoSoundFrame + e.finish)
         {
@@ -1487,7 +1535,8 @@ int Engine::ActiveChannels() const
     int count = 0;
     for (uint32_t i = 0; i < Channels::kDspChannels; i++)
     {
-        count += model_->channels.Dsp(i).state != DspChannel::kFree ? 1 : 0;
+        const DspChannel& dsp_channel = model_->channels.Dsp(i);
+        count += dsp_channel.state != DspChannel::kFree && !UnheardDsp(model_->channels, dsp_channel) ? 1 : 0;
     }
 
     return count;
@@ -1558,7 +1607,8 @@ std::vector<uint32_t> Engine::TreeOrder() const
         const uint32_t index = pending.back();
         pending.pop_back();
         const Track& track = m.tracks.At(index);
-        if (track.state == Track::kClosed || std::find(order.begin(), order.end(), index) != order.end())
+        if (track.state == Track::kClosed || track.unheard ||
+            std::find(order.begin(), order.end(), index) != order.end())
         {
             continue;
         }
@@ -1601,7 +1651,7 @@ bool Engine::Held() const
     for (uint32_t i = 0; i < Channels::kChannels; i++)
     {
         const Channel& channel = m.channels.At(i);
-        if (channel.dsp_channel == kNone)
+        if (channel.dsp_channel == kNone || channel.unheard)
         {
             continue;
         }
@@ -1632,7 +1682,7 @@ bool Engine::Moving() const
     for (uint32_t i = 0; i < Channels::kChannels; i++)
     {
         const Channel& channel = m.channels.At(i);
-        if (channel.dsp_channel != kNone && channel.sweep_steps != 0)
+        if (channel.dsp_channel != kNone && !channel.unheard && channel.sweep_steps != 0)
         {
             return true;
         }
@@ -1676,7 +1726,7 @@ Engine::WavePlace Engine::DspChannelPlace(uint32_t index) const
     // An oscillator's channel plays no wave.
     const DspChannel& dsp_channel = model_->channels.Dsp(index);
     if (dsp_channel.state == DspChannel::kFree || dsp_channel.channel == kNone ||
-        model_->channels.At(dsp_channel.channel).kind != Channel::kWave)
+        model_->channels.At(dsp_channel.channel).kind != Channel::kWave || UnheardDsp(model_->channels, dsp_channel))
     {
         return place;
     }

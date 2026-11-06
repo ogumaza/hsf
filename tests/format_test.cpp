@@ -13,6 +13,7 @@
 #include <initializer_list>
 #include <limits>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -113,7 +114,7 @@ void TestArchiveDescriptor()
     ArchiveDescriptor bus = v1;
     bus.effects[0].bus = 3;
     ArchiveDescriptor type = v1;
-    type.effects[0].type = 4;
+    type.effects[0].type = 5;
     ArchiveDescriptor count = v1;
     count.effects[0].parameters.pop_back();
     ArchiveDescriptor infinite = v1;
@@ -177,6 +178,413 @@ void TestRendererEffects()
     XSFLIB_CHECK(!fraction.Check());
     XSFLIB_CHECK(short_list.Check() &&
                  short_list.Check()->find("a light limiter has 7 parameters") != std::string::npos);
+}
+
+// A reverb (type 4) of 12 parameters makes the round trip. A player accepts it with a pre-delay of whole microseconds
+// from 0 to 300 ms, a decay time of whole microseconds from 100 ms to 20 s, modes of 0 to 4, a channel mode of 0 to 3
+// and other parameters that are finite. It refuses any other.
+void TestReverbEffect()
+{
+    hsf::AuxEffect reverb;
+    reverb.bus = 1;
+    reverb.type = hsf::AuxEffect::kReverb;
+    reverb.parameters = {2.0f, 0.7f, 15000.0f, 1.0f, 0.7f, 2500000.0f, 0.8f, 0.7f, 0.4f, 1.0f, 0.0f, 2.0f};
+    ArchiveDescriptor d;
+    d.effects = {Reverb(0), reverb};
+
+    const auto back = ArchiveDescriptor::Parse(d.Serialize());
+
+    XSFLIB_CHECK(!d.Check());
+    XSFLIB_CHECK(back && back->effects.size() == 2 && back->effects[1].type == hsf::AuxEffect::kReverb &&
+                 back->effects[1].bus == 1 && back->effects[1].parameters == reverb.parameters);
+
+    // The limits of the times and the modes are accepted. Gains outside 0 to 1 are too: nn::atk holds them.
+    struct Change
+    {
+        std::size_t parameter;
+        float value;
+    };
+
+    const Change kAccepted[] = {{hsf::kReverbPredelay, 0.0f},
+                                {hsf::kReverbPredelay, 300000.0f},
+                                {hsf::kReverbDecay, 100000.0f},
+                                {hsf::kReverbDecay, 20000000.0f},
+                                {hsf::kReverbEarlyMode, 4.0f},
+                                {hsf::kReverbLateMode, 0.0f},
+                                {hsf::kReverbChannelMode, 3.0f},
+                                {hsf::kReverbGain, 1.5f},
+                                {hsf::kReverbHighFrequencyDecayRatio, 0.05f}};
+    for (const Change& change : kAccepted)
+    {
+        ArchiveDescriptor accepted = d;
+        accepted.effects[1].parameters[change.parameter] = change.value;
+        Check(!accepted.Check(),
+              "parameter " + std::to_string(change.parameter) + " at " + std::to_string(change.value) + " is accepted");
+    }
+
+    // Each change makes the descriptor one that a player refuses: a time past its limits or between microseconds, a
+    // mode past 4 or between modes, a channel mode past 3, and a number that isn't finite.
+    const Change kRefused[] = {{hsf::kReverbPredelay, -1.0f},
+                               {hsf::kReverbPredelay, 300001.0f},
+                               {hsf::kReverbPredelay, 0.5f},
+                               {hsf::kReverbDecay, 99999.0f},
+                               {hsf::kReverbDecay, 20000002.0f},
+                               {hsf::kReverbEarlyMode, 5.0f},
+                               {hsf::kReverbLateMode, 1.5f},
+                               {hsf::kReverbLateMode, -1.0f},
+                               {hsf::kReverbChannelMode, 4.0f},
+                               {hsf::kReverbOutGain, std::numeric_limits<float>::infinity()},
+                               {hsf::kReverbDryGain, std::numeric_limits<float>::quiet_NaN()}};
+    for (const Change& change : kRefused)
+    {
+        ArchiveDescriptor refused = d;
+        refused.effects[1].parameters[change.parameter] = change.value;
+        Check(refused.Check().has_value(), "parameter " + std::to_string(change.parameter) + " at " +
+                                               std::to_string(change.value) + " makes the descriptor refused");
+    }
+
+    ArchiveDescriptor short_list = d;
+    short_list.effects[1].parameters.pop_back();
+
+    XSFLIB_CHECK(short_list.Check() && short_list.Check()->find("a reverb has 11 parameters") != std::string::npos);
+}
+
+// Version 1's track volumes (flag bit 0) follow the paths. They make the round trip, and the bytes before them are
+// those of the descriptor without them, but for the flags. A player accepts each sound once, with volumes that are
+// finite numbers of 0 or more. It refuses other flags, and volumes without the flag. HSF 1.3.0 checked the flags with
+// xsflib's check of a version 1 descriptor's start. That check refuses the flag, with the message that docs/hsf.md
+// gives.
+void TestTrackVolumes()
+{
+    ArchiveDescriptor plain;
+    plain.voice_count = 72;
+    plain.effects = {Reverb(0)};
+    plain.archive_path = "Archive/Sound.bea/Audio/sound.bfsar";
+
+    ArchiveDescriptor d = plain;
+    d.flags = ArchiveDescriptor::kFlagTrackVolumes;
+    hsf::SoundTrackVolumes first;
+    first.sound = 0x010001aa;
+    first.volumes[1] = 0.0f;
+    first.volumes[15] = 0.25f;
+    hsf::SoundTrackVolumes second;
+    second.sound = 0x01000007;
+    second.volumes.fill(0.0f);
+    second.volumes[3] = 2.0f;
+    d.track_volumes = {first, second};
+
+    const std::vector<uint8_t> before = plain.Serialize();
+    const std::vector<uint8_t> raw = d.Serialize();
+    const auto back = ArchiveDescriptor::Parse(raw);
+
+    XSFLIB_CHECK(!d.Check());
+    XSFLIB_CHECK(
+        raw.size() == before.size() + 4 + 2 * 68 && raw[8] == 1 &&
+        std::equal(raw.begin() + 12, raw.begin() + static_cast<std::ptrdiff_t>(before.size()), before.begin() + 12));
+    XSFLIB_CHECK(back && back->flags == d.flags && back->track_volumes == d.track_volumes &&
+                 back->archive_path == d.archive_path && back->effects.size() == 1);
+    XSFLIB_CHECK(back && back->TrackVolumesOf(0x01000007) && back->TrackVolumesOf(0x01000007)->volumes[3] == 2.0f &&
+                 !back->TrackVolumesOf(0x01000008));
+    XSFLIB_CHECK(!ArchiveDescriptor::Parse(std::vector<uint8_t>(raw.begin(), raw.end() - 4)).has_value());
+    XSFLIB_CHECK(!plain.TrackVolumesOf(0x010001aa));
+
+    // A descriptor without the flag is the same as before: nothing follows the paths.
+    ArchiveDescriptor unflagged = d;
+    unflagged.flags = 0;
+    unflagged.track_volumes.clear();
+    XSFLIB_CHECK(unflagged.Serialize() == before);
+
+    ArchiveDescriptor other_flag = d;
+    other_flag.flags = 0x80000001;
+    ArchiveDescriptor no_flag = d;
+    no_flag.flags = 0;
+    ArchiveDescriptor twice = d;
+    twice.track_volumes[1].sound = first.sound;
+    ArchiveDescriptor negative = d;
+    negative.track_volumes[0].volumes[2] = -0.5f;
+    ArchiveDescriptor nan = d;
+    nan.track_volumes[1].volumes[0] = std::numeric_limits<float>::quiet_NaN();
+
+    XSFLIB_CHECK(other_flag.Check() && other_flag.Check()->find("version 1 has only bits 0") != std::string::npos);
+    XSFLIB_CHECK(no_flag.Check() && no_flag.Check()->find("without its flag") != std::string::npos);
+    XSFLIB_CHECK(twice.Check() && twice.Check()->find("more than once") != std::string::npos);
+    XSFLIB_CHECK(negative.Check().has_value());
+    XSFLIB_CHECK(nan.Check().has_value());
+
+    const std::optional<std::string> old_player = xsflib::psf::CheckArchiveStart(d, ArchiveDescriptor::kDefaultVoices);
+    Check(old_player == "the archive descriptor's flags are 0x1; version 1 has none",
+          "HSF 1.3.0's check refuses the flag: " + old_player.value_or("nothing"));
+}
+
+// Version 1's scripted starts (flag bit 1) follow the paths, or the track volumes when the descriptor has those too.
+// They make the round trip, with the track volumes before them. A player accepts each sound once, by a sound's item ID,
+// with a script that starts the sound from the set's archive. Its steps come in frame order. A start starts a sound
+// once, from the set's archive or a listed add-on archive, and sets nothing. A write sets a variable from 0 to 47 once
+// a frame: a global one of no sound, or a sound's or a track's of a sound that an earlier step starts, on a track from
+// 0 to 15 for 32 to 47. The sound starts by the end of the lead-in, and the lead-in ends at most 600 s after the last
+// step. The add-on archives follow the scripts, each with its paths padded to a multiple of 4 bytes. A write of kind 2
+// names a user procedure and a sound that an earlier step starts, a global variable's write too. Its kind and procedure
+// take a byte each, where a start or a write of kind 1 has its kind and a 0. A player refuses other scripts, and
+// scripts or add-on archives without the flag. HSF 1.3.0's check refuses the flag, with the message that docs/hsf.md
+// gives.
+void TestScriptedStarts()
+{
+    ArchiveDescriptor plain;
+    plain.voice_count = 96;
+    plain.archive_path = "Archive/sound~subarc_mg1801.nx.bea/audio/sounddata/subarc_mg1801/subarc_mg1801.fsst";
+
+    using hsf::ScriptStep;
+    ArchiveDescriptor d = plain;
+    d.flags = ArchiveDescriptor::kFlagScripts;
+    // A piece that waits for the global variables 27 and 28, with its variable 3 and track 0's variable 33 set.
+    const hsf::ScriptedStart piece = {
+        0x01000002,
+        0,
+        {ScriptStep::Write(0, 28, 18011), ScriptStep::Write(0, 27, 120), ScriptStep::Start(0, 0x01000002),
+         ScriptStep::Write(0, 3, -2, 0x01000002), ScriptStep::Write(0, 33, 7, 0x01000002, 0)}};
+    // A piece that starts beside another after a lead-in, with a write at a later frame.
+    const hsf::ScriptedStart other = {
+        0x01000005,
+        400,
+        {ScriptStep::Start(0, 0x01000009), ScriptStep::Write(1, 29, 200), ScriptStep::Start(2, 0x01000005),
+         ScriptStep::Write(2, 26, 1), ScriptStep::Write(900, 47, -32768, 0x01000009, 15)}};
+    d.scripts = {piece, other};
+
+    const std::vector<uint8_t> before = plain.Serialize();
+    const std::vector<uint8_t> raw = d.Serialize();
+    const auto back = ArchiveDescriptor::Parse(raw);
+
+    XSFLIB_CHECK(!d.Check());
+    // 4 for the count, 12 for each sound, 16 for each step, and 4 for the count of add-on archives: 192 bytes.
+    const std::size_t at = before.size();
+    XSFLIB_CHECK(raw.size() == at + 4 + 2 * 12 + 10 * 16 + 4 && raw[8] == 2 &&
+                 std::equal(raw.begin() + 12, raw.begin() + static_cast<std::ptrdiff_t>(at), before.begin() + 12));
+    XSFLIB_CHECK(raw[at] == 2 && raw[at + 4] == 0x02 && raw[at + 7] == 0x01 && raw[at + 12] == 5 &&
+                 raw[at + 16 + 4] == 1 && raw[at + 16 + 5] == 0 && raw[at + 16 + 6] == 28 && raw[at + 16 + 8] == 0xff &&
+                 raw[at + 16 + 10] == 0x5b && raw[at + 16 + 11] == 0x46 && raw[at + 16 + 2 * 16 + 4] == 0 &&
+                 raw[at + 16 + 2 * 16 + 12] == 0x02 && raw[at + 16 + 2 * 16 + 15] == 0x01);
+    XSFLIB_CHECK(back && back->flags == d.flags && back->scripts == d.scripts && back->track_volumes.empty());
+    XSFLIB_CHECK(back && back->ScriptOf(0x01000005) && back->ScriptOf(0x01000005)->lead_in == 400 &&
+                 back->ScriptOf(0x01000005)->steps[4].value == -32768 && !back->ScriptOf(0x01000006));
+    XSFLIB_CHECK(back && back->addons.empty() &&
+                 !ArchiveDescriptor::Parse(std::vector<uint8_t>(raw.begin(), raw.end() - 4)).has_value());
+
+    // An add-on archive for the companion to start from. The archive's path of 83 bytes and one group file's path of 9
+    // take 2 + 83 + 2 + 2 + 9 bytes, padded to 100.
+    ArchiveDescriptor addon = d;
+    addon.addons = {
+        {"Archive/sound~subarc_rc_cmn.nx.bea/audio/sounddata/subarc_rc_cmn/subarc_rc_cmn.fsst", {"G_A.bfgrp"}}};
+    addon.scripts[1].steps[0].variable = 0;
+    const std::vector<uint8_t> addon_raw = addon.Serialize();
+    const auto addon_back = ArchiveDescriptor::Parse(addon_raw);
+    XSFLIB_CHECK(addon.addons[0].archive_path.size() == 83 && !addon.Check());
+    XSFLIB_CHECK(addon_raw.size() == raw.size() + 100 && addon_back && addon_back->addons == addon.addons &&
+                 addon_back->scripts == addon.scripts);
+    XSFLIB_CHECK(!ArchiveDescriptor::Parse(std::vector<uint8_t>(addon_raw.begin(), addon_raw.end() - 12)));
+    XSFLIB_CHECK((hsf::ScriptedStart::Plain(0x01000003) ==
+                  hsf::ScriptedStart{0x01000003, 0, {ScriptStep::Start(0, 0x01000003)}}));
+
+    // With the track volumes too: the volumes come first, and the scripts after them.
+    ArchiveDescriptor both = d;
+    both.flags = ArchiveDescriptor::kFlagTrackVolumes | ArchiveDescriptor::kFlagScripts;
+    hsf::SoundTrackVolumes volumes;
+    volumes.sound = 0x01000002;
+    volumes.volumes[4] = 0.0f;
+    both.track_volumes = {volumes};
+    const std::vector<uint8_t> both_raw = both.Serialize();
+    const auto both_back = ArchiveDescriptor::Parse(both_raw);
+    XSFLIB_CHECK(!both.Check());
+    XSFLIB_CHECK(both_raw.size() == raw.size() + 4 + 68);
+    XSFLIB_CHECK(both_back && both_back->track_volumes == both.track_volumes && both_back->scripts == both.scripts);
+
+    // A descriptor without the flag is the same as before.
+    ArchiveDescriptor unflagged = d;
+    unflagged.flags = 0;
+    unflagged.scripts.clear();
+    XSFLIB_CHECK(unflagged.Serialize() == before);
+
+    const auto refused = [&d](auto change, std::string_view message)
+    {
+        ArchiveDescriptor bad = d;
+        change(bad);
+        const std::optional<std::string> err = bad.Check();
+        Check(err && err->find(message) != std::string::npos,
+              "refused with \"" + std::string(message) + "\": " + err.value_or("accepted"));
+    };
+
+    const auto step = [](ArchiveDescriptor& bad, std::size_t script, std::size_t i) -> ScriptStep&
+    {
+        return bad.scripts[script].steps[i];
+    };
+
+    refused([](ArchiveDescriptor& bad) { bad.flags = 0; }, "without its flag for them (bit 1)");
+    refused([](ArchiveDescriptor& bad) { bad.scripts[1].sound = 0x01000002; }, "more than once");
+    refused([](ArchiveDescriptor& bad) { bad.scripts[1].sound = 0x02000005; }, "the item isn't a sound");
+    refused([](ArchiveDescriptor& bad) { bad.scripts[0].steps.erase(bad.scripts[0].steps.begin() + 2); },
+            "no step before it starts that sound");
+    refused([](ArchiveDescriptor& bad) { bad.scripts[0].steps = {ScriptStep::Write(0, 28, 1)}; },
+            "never starts the sound");
+    refused([&step](ArchiveDescriptor& bad) { step(bad, 1, 3).frame = 1; }, "before the step ahead of it");
+    refused([&step](ArchiveDescriptor& bad) { step(bad, 1, 0).sound = 0x05000000; }, "the item isn't a sound");
+    refused([&step](ArchiveDescriptor& bad) { step(bad, 1, 2).sound = 0x01000009; }, "again");
+    refused([&step](ArchiveDescriptor& bad) { step(bad, 1, 2).value = 3; }, "starts a sound and sets a variable");
+    refused([&step](ArchiveDescriptor& bad) { step(bad, 1, 0).variable = 0; },
+            "starts a sound of add-on archive 0; it lists 0 add-on archives");
+    refused(
+        [&step](ArchiveDescriptor& bad)
+        {
+            bad.addons = {{"addon.fsst", {}}};
+            step(bad, 1, 2).variable = 0;
+        },
+        "never starts the sound from the set's archive");
+    refused(
+        [](ArchiveDescriptor& bad)
+        {
+            bad.flags = 0;
+            bad.scripts.clear();
+            bad.addons = {{"addon.fsst", {}}};
+        },
+        "without its flag for them (bit 1)");
+    refused([&step](ArchiveDescriptor& bad) { step(bad, 0, 0).kind = 3; }, "version 1 has only 0");
+    refused([&step](ArchiveDescriptor& bad) { step(bad, 0, 0).procedure = 1; }, "only a write of kind 2 names one");
+    refused([&step](ArchiveDescriptor& bad) { step(bad, 1, 0).procedure = 2; }, "only a write of kind 2 names one");
+    refused([&step](ArchiveDescriptor& bad) { step(bad, 0, 0).variable = 48; }, "are 0 to 47");
+    refused([&step](ArchiveDescriptor& bad) { step(bad, 0, 4).track = 16; }, "on track 0 to 15");
+    refused([&step](ArchiveDescriptor& bad) { step(bad, 0, 4).track = ScriptStep::kNone; }, "on track 0 to 15");
+    refused([&step](ArchiveDescriptor& bad) { step(bad, 0, 3).track = 0; }, "only variables 32 to 47");
+    refused([&step](ArchiveDescriptor& bad) { step(bad, 0, 1).sound = 0x01000002; }, "no sound's");
+    refused([&step](ArchiveDescriptor& bad) { step(bad, 0, 1).variable = 28; }, "a second time in frame 0");
+    refused([](ArchiveDescriptor& bad) { bad.scripts[1].lead_in = 0; }, "at frame 2, after the lead-in of 0 frames");
+    refused([](ArchiveDescriptor& bad) { bad.scripts[1].lead_in = 900 + 120001; }, "at most 120000 frames");
+
+    // The same variable on two tracks is two variables, and so is a variable of two frames.
+    ArchiveDescriptor two_tracks = d;
+    two_tracks.scripts[0].steps.push_back(ScriptStep::Write(0, 33, 8, 0x01000002, 1));
+    two_tracks.scripts[0].steps.push_back(ScriptStep::Write(1, 28, 5));
+    two_tracks.scripts[1].lead_in = 900 + 120000;
+    XSFLIB_CHECK(!two_tracks.Check());
+
+    // Writes of kind 2: two in procedure 2's call, and a global variable's in procedure 4's. A write of kind 1 of the
+    // same variable in the same frame is another write, and so is a write of the same variable in another procedure.
+    ArchiveDescriptor waits = d;
+    std::vector<ScriptStep>& waiting = waits.scripts[1].steps;
+    waiting.push_back(ScriptStep::WriteInProcedure(900, 2, 14, -1, 0x01000005));
+    waiting.push_back(ScriptStep::WriteInProcedure(900, 2, 13, 3, 0x01000005));
+    waiting.push_back(ScriptStep::WriteInProcedure(901, 4, 20, 98, 0x01000005));
+    waiting.push_back(ScriptStep::Write(901, 20, 97));
+    waiting.push_back(ScriptStep::WriteInProcedure(901, 3, 20, 96, 0x01000005));
+    waits.scripts[1].lead_in = 901;
+    const std::vector<uint8_t> waits_raw = waits.Serialize();
+    const auto waits_back = ArchiveDescriptor::Parse(waits_raw);
+    const std::size_t sixth = at + 4 + 2 * 12 + 10 * 16;
+    XSFLIB_CHECK(!waits.Check() && waits_raw.size() == raw.size() + 5 * 16);
+    XSFLIB_CHECK(waits_raw[sixth] == 0x84 && waits_raw[sixth + 1] == 0x03 && waits_raw[sixth + 4] == 2 &&
+                 waits_raw[sixth + 5] == 2 && waits_raw[sixth + 6] == 14 && waits_raw[sixth + 10] == 0xff &&
+                 waits_raw[sixth + 11] == 0xff && waits_raw[sixth + 12] == 0x05 && waits_raw[sixth + 15] == 0x01);
+    XSFLIB_CHECK(waits_back && waits_back->scripts == waits.scripts);
+    const auto refused_wait = [&waits](auto change, std::string_view message)
+    {
+        ArchiveDescriptor bad = waits;
+        change(bad.scripts[1].steps);
+        const std::optional<std::string> err = bad.Check();
+        Check(err && err->find(message) != std::string::npos,
+              "refused with \"" + std::string(message) + "\": " + err.value_or("accepted"));
+    };
+
+    refused_wait([](std::vector<ScriptStep>& steps) { steps[5].sound = 0x01000002; },
+                 "no step before it starts that sound");
+    refused_wait([](std::vector<ScriptStep>& steps) { steps[7].sound = 0; }, "no step before it starts that sound");
+    refused_wait([](std::vector<ScriptStep>& steps) { steps[6].variable = 14; },
+                 "a second time in frame 900 for user procedure 2");
+    refused_wait([](std::vector<ScriptStep>& steps) { steps[5].variable = 48; }, "are 0 to 47");
+
+    const std::optional<std::string> old_player = xsflib::psf::CheckArchiveStart(d, ArchiveDescriptor::kDefaultVoices);
+    Check(old_player == "the archive descriptor's flags are 0x2; version 1 has none",
+          "HSF 1.3.0's check refuses the flag: " + old_player.value_or("nothing"));
+}
+
+// Version 1's user procedures (flag bit 2) follow the blocks of the other flags. They make the round trip: the handler,
+// the count of the tables, and each table's number and 128 values. A player accepts handler 1 with tables 0 to 15, each
+// once, and handler 2 without tables. It refuses user procedures without the flag. HSF 1.3.0's check refuses the
+// flag, with the message that docs/hsf.md gives.
+void TestUserProcedures()
+{
+    ArchiveDescriptor plain;
+    plain.voice_count = 96;
+    plain.archive_path = "Archive/sound~subarc_mg1801.nx.bea/audio/sounddata/subarc_mg1801/subarc_mg1801.fsst";
+
+    ArchiveDescriptor d = plain;
+    d.flags = ArchiveDescriptor::kFlagProcedures;
+    d.procedures.handler = hsf::UserProcedureHandler::kJamboree;
+    hsf::UserProcedureTable table;
+    for (std::size_t i = 0; i < table.values.size(); ++i)
+    {
+        table.values[i] = static_cast<int16_t>(1000 - static_cast<int>(i) * 20);
+    }
+
+    d.procedures.tables = {table};
+    const std::vector<uint8_t> before = plain.Serialize();
+    const std::vector<uint8_t> raw = d.Serialize();
+    const auto back = ArchiveDescriptor::Parse(raw);
+
+    // 4 for the handler, 4 for the count, and 4 + 256 for the table.
+    const std::size_t at = before.size();
+    XSFLIB_CHECK(!d.Check());
+    XSFLIB_CHECK(raw.size() == at + 8 + 260 && raw[8] == 4 && raw[at] == 1 && raw[at + 4] == 1 && raw[at + 8] == 0 &&
+                 raw[at + 12] == 0xe8 && raw[at + 13] == 0x03 && raw[at + 12 + 2 * 127] == 0xfc &&
+                 raw[at + 13 + 2 * 127] == 0xf9);
+    XSFLIB_CHECK(back && back->flags == d.flags && back->procedures == d.procedures);
+    XSFLIB_CHECK(!ArchiveDescriptor::Parse(std::vector<uint8_t>(raw.begin(), raw.end() - 2)));
+
+    // With the other two flags: the track volumes and the scripts come first.
+    ArchiveDescriptor all = d;
+    all.flags |= ArchiveDescriptor::kFlagTrackVolumes | ArchiveDescriptor::kFlagScripts;
+    hsf::SoundTrackVolumes volumes;
+    volumes.sound = 0x01000002;
+    volumes.volumes[4] = 0.0f;
+    all.track_volumes = {volumes};
+    all.scripts = {hsf::ScriptedStart::Plain(0x01000002)};
+    all.addons = {{"Archive/sound~subarc_rc_cmn.nx.bea/audio/sounddata/subarc_rc_cmn/subarc_rc_cmn.fsst", {}}};
+    const auto all_back = ArchiveDescriptor::Parse(all.Serialize());
+    XSFLIB_CHECK(!all.Check());
+    XSFLIB_CHECK(all_back && all_back->procedures == all.procedures && all_back->scripts == all.scripts &&
+                 all_back->addons == all.addons && all_back->track_volumes == all.track_volumes);
+
+    // Superstars' handler has no tables.
+    ArchiveDescriptor superstars = d;
+    superstars.procedures = {hsf::UserProcedureHandler::kSuperstars, {}};
+    const std::vector<uint8_t> superstars_raw = superstars.Serialize();
+    const auto superstars_back = ArchiveDescriptor::Parse(superstars_raw);
+    XSFLIB_CHECK(!superstars.Check() && superstars_raw.size() == at + 8);
+    XSFLIB_CHECK(superstars_back && superstars_back->procedures == superstars.procedures);
+
+    const auto refused = [&d](auto change, std::string_view message)
+    {
+        ArchiveDescriptor bad = d;
+        change(bad);
+        const std::optional<std::string> err = bad.Check();
+        Check(err && err->find(message) != std::string::npos,
+              "refused with \"" + std::string(message) + "\": " + err.value_or("accepted"));
+    };
+
+    refused([](ArchiveDescriptor& bad) { bad.flags = 0; }, "without its flag for them (bit 2)");
+    refused([](ArchiveDescriptor& bad) { bad.procedures.handler = 3; }, "names handler 3 of user procedures");
+    refused([](ArchiveDescriptor& bad) { bad.procedures.handler = 0; }, "names handler 0 of user procedures");
+    refused([](ArchiveDescriptor& bad) { bad.procedures.handler = 2; }, "reads none");
+    refused([](ArchiveDescriptor& bad) { bad.procedures.tables[0].number = 16; }, "the tables are 0 to 15");
+    refused([](ArchiveDescriptor& bad) { bad.procedures.tables.push_back(bad.procedures.tables[0]); },
+            "more than once");
+    refused([](ArchiveDescriptor& bad) { bad.flags = 8; }, "version 1 has only bits 0 (track volumes), 1 (scripted");
+
+    // A descriptor without the flag is the same as before.
+    ArchiveDescriptor unflagged = d;
+    unflagged.flags = 0;
+    unflagged.procedures = {};
+    XSFLIB_CHECK(unflagged.Serialize() == before && !unflagged.Check());
+
+    const std::optional<std::string> old_player = xsflib::psf::CheckArchiveStart(d, ArchiveDescriptor::kDefaultVoices);
+    Check(old_player == "the archive descriptor's flags are 0x4; version 1 has none",
+          "HSF 1.3.0's check refuses the flag: " + old_player.value_or("nothing"));
 }
 
 // Version 2: the version 1 layout, then JAudio's settings after the paths. The settings, the track states and the
@@ -566,6 +974,10 @@ int main()
     TestVersion();
     TestArchiveDescriptor();
     TestRendererEffects();
+    TestReverbEffect();
+    TestTrackVolumes();
+    TestScriptedStarts();
+    TestUserProcedures();
     TestJaudioDescriptor();
     TestJaudioLibrary2();
     TestJaudioLibrary3();

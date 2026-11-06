@@ -845,7 +845,7 @@ void Channels::UpdateEffecterParam(uint32_t channel)
     fxmix = ClampUnit(fxmix);
     dolby = ClampUnit(dolby);
     c.final_pitch = static_cast<uint16_t>(ToInt32(((c.pitch * c.pitch_modifier) * c.manager_pitch) * 4096.0f));
-    const float volume = ClampUnit(volume_level);
+    const float volume = c.unheard ? 0.0f : ClampUnit(volume_level);
     const auto max = static_cast<float>(mixer_level_);
 
     if (c.mix_configs[0] == 0xffff)

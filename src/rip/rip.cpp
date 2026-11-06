@@ -4,15 +4,16 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <set>
 #include <span>
 #include <utility>
 #include <vector>
 
+#include "ntdlib/nwsnd/length_model.h"
 #include "ntdlib/nwsnd/sequence.h"
 #include "ntdlib/nx/atk/engine.h"
 #include "ntdlib/nx/atk/low_level_voice.h"
@@ -58,17 +59,33 @@ xsflib::rip::LengthRules HsfLengthRules()
 class LengthModel
 {
 public:
-    LengthModel(atk::ArchiveModel& model, atk::SequenceSoundPlayer& player, const std::vector<AuxEffect>& effects)
-        : model_(model), engine_(*model.engine), player_(player), tail_(effects)
+    // The model has run `frame` frames, and `script` has taken the steps of those frames and of the next. The model
+    // takes the steps of each later frame after the frame before it. The output that the analysis judges is scaled by
+    // `volume`, as a player scales it by the mini's volume tag.
+    LengthModel(atk::ArchiveModel& model, atk::SequenceSoundPlayer& player, const std::vector<AuxEffect>& effects,
+                ScriptRunner& script, uint64_t frame, float volume)
+        : model_(model),
+          engine_(*model.engine),
+          player_(player),
+          tail_(effects),
+          script_(script),
+          frame_(frame),
+          volume_(volume)
     {
     }
 
+    // A start that fails stops the measure.
     bool RunFrame()
     {
         engine_.RunFrame();
-        output_ = model_.renderer.DeviceOutput();
+        ++frame_;
+        output_ = Scaled(model_.renderer.DeviceOutput());
         tail_.Frame(output_);
         ++frames_;
+        if (script_.Apply(engine_, frame_))
+        {
+            return false;
+        }
 
         return true;
     }
@@ -106,14 +123,15 @@ public:
         return player_.IsActive();
     }
 
+    // A sequence that waits for a value from a later step of the script isn't settled or stuck.
     bool Settled() const
     {
-        return player_.IsSettled(engine_);
+        return player_.IsSettled(engine_) && !script_.Pending(frame_);
     }
 
     bool Stuck() const
     {
-        return player_.IsStuck(engine_);
+        return player_.IsStuck(engine_) && !script_.Pending(frame_);
     }
 
     bool Moving() const
@@ -126,9 +144,10 @@ public:
         return player_.ChangedAt();
     }
 
+    // The script's later steps keep the set going. The player does the same.
     bool Busy() const
     {
-        return engine_.IsBusy();
+        return engine_.IsBusy() || script_.Pending(frame_);
     }
 
     bool ChannelsChanging() const
@@ -188,73 +207,148 @@ public:
     }
 
 private:
+    // A frame's output as a player plays it with the mini's volume tag.
+    std::span<const int16_t> Scaled(std::span<const int16_t> output)
+    {
+        if (volume_ == 1.0f)
+        {
+            return output;
+        }
+
+        scaled_.resize(output.size());
+        std::transform(output.begin(), output.end(), scaled_.begin(),
+                       [this](int16_t sample)
+                       {
+                           const double value = std::round(static_cast<double>(sample) * static_cast<double>(volume_));
+                           return static_cast<int16_t>(std::clamp(value, -32768.0, 32767.0));
+                       });
+
+        return scaled_;
+    }
+
     atk::ArchiveModel& model_;
     atk::Engine& engine_;
     atk::SequenceSoundPlayer& player_;
     std::span<const int16_t> output_;
     EffectTail tail_;
-    uint64_t frames_ = 0;
+    ScriptRunner& script_;
+    uint64_t frame_;                         // the model's frames, the script's lead-in included
+    uint64_t frames_ = 0;                    // the frames measured
+    float volume_;                           // the mini's volume tag, which scales the output
+    std::vector<int16_t> scaled_;            // the frame's output, scaled
     std::array<int, kTrackCount> passes_{};  // each track's passes that changed the sound
     std::array<bool, kTrackCount> opened_{}; // whether another track has opened each track
 };
 
-// The counted loops that the player's open tracks are in, each a track and its loop's body.
-std::set<std::pair<int, uint32_t>> CountedLoops(const atk::SequenceSoundPlayer& player)
-{
-    std::set<std::pair<int, uint32_t>> loops;
-    for (int i = 0; i < kTrackCount; ++i)
-    {
-        const auto* track = player.Track(i);
-        if (!track || !track->IsOpen())
-        {
-            continue;
-        }
-
-        for (const auto& entry : track->CallStack())
-        {
-            if (entry.is_loop && entry.loop_count != 0)
-            {
-                loops.insert({i, entry.address});
-            }
-        }
-    }
-
-    return loops;
-}
-
-// Measures a sequence on the model, set up for `settings` (xsflib::rip::MeasureLength). The counted loops in
-// `endless_loops` loop for ever.
+// Measures a sequence on the model, set up for `settings` (xsflib::rip::MeasureLength), with `track_volumes` for its
+// tracks and its output scaled by `volume`. The sound starts by `script`, just like in the player. The measure starts
+// after the lead-in. The counted loops in `endless_loops` loop for ever.
 std::optional<Timing> MeasureSequence(const fsar::SoundArchive& archive, const ArchiveDescriptor& settings,
-                                      uint32_t sound_index,
-                                      const std::set<std::pair<int, uint32_t>>& endless_loops = {})
+                                      const ntdlib::rip::TrackVolumes& track_volumes, const ScriptedStart& script,
+                                      float volume, const ntdlib::nwsnd::CountedLoopSet& endless_loops = {})
 {
     auto model = std::make_unique<atk::ArchiveModel>(archive, EngineOptionsFor(settings));
     atk::Engine& engine = *model->engine;
     AppendEffects(engine, settings.effects);
     engine.SetEndlessLoops(endless_loops);
-    atk::SequenceSoundPlayer* player = engine.StartSequence(sound_index);
+    ScriptRunner runner(script, track_volumes, settings.procedures);
+    if (runner.Apply(engine, 0))
+    {
+        return std::nullopt;
+    }
+
+    for (uint64_t frame = 1; frame <= script.lead_in; ++frame)
+    {
+        engine.RunFrame();
+        if (runner.Apply(engine, frame))
+        {
+            return std::nullopt;
+        }
+    }
+
+    atk::SequenceSoundPlayer* player = runner.Sound();
     if (!player)
     {
         return std::nullopt;
     }
 
-    LengthModel length_model(*model, *player, settings.effects);
+    LengthModel length_model(*model, *player, settings.effects, runner, script.lead_in, volume);
     const xsflib::rip::LengthRules rules = HsfLengthRules();
     const std::optional<Timing> timing = xsflib::rip::MeasureLength(length_model, rules);
 
     // A sequence can repeat its music in a counted loop that the game plays for longer than the limit. When the measure
-    // reaches the limit inside counted loops, it runs again with those loops endless. Their passes then count as loops
-    // of the sequence.
+    // reaches the limit inside counted loops, it runs again with each track's outermost counted loop endless, by the
+    // rule of ntdlib's length analysis. Their passes then count as loops of the sequence. An inner loop that runs at
+    // the limit, such as a fill, still ends, and repeats in each pass of the outer loop as the game plays it.
     if (timing && endless_loops.empty() && length_model.Frames() >= rules.max_frames)
     {
-        const std::set<std::pair<int, uint32_t>> running = CountedLoops(*player);
-        if (!running.empty())
+        if (const auto running = ntdlib::nwsnd::OutermostCountedLoops(*player); !running.empty())
         {
-            return MeasureSequence(archive, settings, sound_index, running);
+            return MeasureSequence(archive, settings, track_volumes, script, volume, running);
         }
     }
 
     return timing;
+}
+
+// What a run of a scripted start shows in its first frames after the lead-in: whether the script's sound made a sound,
+// and whether a sequence drew a random number.
+struct StartProbe
+{
+    bool sounded = false;
+    bool drew = false;
+};
+
+// Runs `script` on the model, set up for `settings`, for its lead-in and at most `window` frames more. The run stops at
+// the first frame after the lead-in whose output is audible. A sequence that draws a number steps nn::atk's random
+// numbers once more than the frames do (atk::Engine::FrameProcess steps them once a frame). The run therefore compares
+// the generator's state with a copy that steps only once a frame.
+StartProbe ProbeStart(const fsar::SoundArchive& archive, const ArchiveDescriptor& settings,
+                      const ntdlib::rip::TrackVolumes& track_volumes, const ScriptedStart& script, uint32_t window)
+{
+    auto model = std::make_unique<atk::ArchiveModel>(archive, EngineOptionsFor(settings));
+    atk::Engine& engine = *model->engine;
+    AppendEffects(engine, settings.effects);
+    ScriptRunner runner(script, track_volumes, settings.procedures);
+    StartProbe probe;
+    if (runner.Apply(engine, 0))
+    {
+        return probe;
+    }
+
+    atk::Random frames_only = engine.Rng();
+    const uint64_t end = uint64_t{script.lead_in} + window;
+    for (uint64_t frame = 1; frame <= end; ++frame)
+    {
+        engine.RunFrame();
+        frames_only.Next();
+        if (frame > script.lead_in && xsflib::rip::Audible(model->renderer.DeviceOutput()))
+        {
+            probe.sounded = true;
+            break;
+        }
+
+        if (runner.Apply(engine, frame))
+        {
+            break;
+        }
+    }
+
+    probe.drew = engine.Rng().State() != frames_only.State();
+
+    return probe;
+}
+
+// `script` with its start delayed by `frames`: a longer lead-in, and each step that many frames later.
+ScriptedStart Delayed(ScriptedStart script, uint32_t frames)
+{
+    script.lead_in += frames;
+    for (ScriptStep& step : script.steps)
+    {
+        step.frame += frames;
+    }
+
+    return script;
 }
 
 } // namespace
@@ -440,11 +534,83 @@ LengthAnalyzer::LengthAnalyzer(fsar::SoundArchive archive, ArchiveDescriptor set
 
 LengthAnalyzer::~LengthAnalyzer() = default;
 
-std::optional<Timing> LengthAnalyzer::Analyze(uint32_t sound_index) const
+std::optional<uint32_t> LengthAnalyzer::FramesUntil(const ScriptedStart& script, int variable, int16_t value,
+                                                    uint32_t limit,
+                                                    std::span<const fsar::SoundArchive* const> addons) const
 {
-    const auto measure = [this, sound_index]
+    if (variable < ScriptStep::kLocalEnd || variable >= ScriptStep::kGlobalEnd)
     {
-        return MeasureSequence(impl_->archive, impl_->settings, sound_index);
+        return std::nullopt;
+    }
+
+    auto model = std::make_unique<atk::ArchiveModel>(impl_->archive, EngineOptionsFor(impl_->settings));
+    atk::Engine& engine = *model->engine;
+    for (const fsar::SoundArchive* addon : addons)
+    {
+        engine.AddArchive(*addon);
+    }
+
+    AppendEffects(engine, impl_->settings.effects);
+    ScriptRunner runner(script, ntdlib::rip::kFullTrackVolumes, impl_->settings.procedures);
+    if (runner.Apply(engine, 0))
+    {
+        return std::nullopt;
+    }
+
+    const auto holds = [&engine, variable, value]
+    {
+        return engine.GlobalVariables()[static_cast<std::size_t>(variable - ScriptStep::kLocalEnd)] == value;
+    };
+    for (uint32_t frame = 1; frame <= limit; ++frame)
+    {
+        engine.RunFrame();
+        if (holds())
+        {
+            return frame;
+        }
+
+        if (runner.Apply(engine, frame))
+        {
+            return std::nullopt;
+        }
+    }
+
+    return std::nullopt;
+}
+
+std::optional<uint32_t> LengthAnalyzer::SoundingDelay(const ScriptedStart& script,
+                                                      const ntdlib::rip::TrackVolumes& track_volumes, uint32_t limit,
+                                                      uint32_t window, const ArchiveDescriptor* settings) const
+{
+    const ArchiveDescriptor& used = settings ? *settings : impl_->settings;
+    const auto probe = [this, &used, &track_volumes, window](const ScriptedStart& start)
+    {
+        return ProbeStart(impl_->archive, used, track_volumes, start, window);
+    };
+    if (!probe(script).drew)
+    {
+        return std::nullopt;
+    }
+
+    for (uint32_t delay = 1; delay <= limit; ++delay)
+    {
+        if (probe(Delayed(script, delay)).sounded)
+        {
+            return delay;
+        }
+    }
+
+    return std::nullopt;
+}
+
+std::optional<Timing> LengthAnalyzer::Analyze(uint32_t sound_index, const ntdlib::rip::TrackVolumes& track_volumes,
+                                              const ScriptedStart* script, const ArchiveDescriptor* settings,
+                                              float volume) const
+{
+    const ScriptedStart start = script ? *script : ScriptedStart::Plain(fsar::ItemId(fsar::kSoundItem, sound_index));
+    const auto measure = [this, &track_volumes, &start, settings, volume]
+    {
+        return MeasureSequence(impl_->archive, settings ? *settings : impl_->settings, track_volumes, start, volume);
     };
     return xsflib::rip::TryMeasure(measure);
 }

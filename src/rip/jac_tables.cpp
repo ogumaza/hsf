@@ -198,10 +198,24 @@ std::map<uint64_t, uint64_t> RelativePointers(const ntdlib::nx::Nso& main)
     return pointers;
 }
 
-std::vector<Cutscene> ReadCutscenes(const ntdlib::nx::Nso& main, const std::map<uint64_t, uint64_t>& pointers)
+const JacBuild* FindJacBuild(std::string_view build_id)
+{
+    for (const JacBuild& build : kJacBuilds)
+    {
+        if (build.build_id == build_id)
+        {
+            return &build;
+        }
+    }
+
+    return nullptr;
+}
+
+std::vector<Cutscene> ReadCutscenes(const ntdlib::nx::Nso& main, const JacTableAddresses& at,
+                                    const std::map<uint64_t, uint64_t>& pointers)
 {
     const std::span<const uint8_t> table =
-        MainBytes(main, kCutscenesAt, kCutscenes * kCutsceneRow, "the cutscenes' table");
+        MainBytes(main, at.cutscenes, kCutscenes * kCutsceneRow, "the cutscenes' table");
     std::vector<Cutscene> cutscenes;
     for (std::size_t i = 0; i < kCutscenes; ++i)
     {
@@ -215,15 +229,15 @@ std::vector<Cutscene> ReadCutscenes(const ntdlib::nx::Nso& main, const std::map<
         cutscene.sequence_flags = row[4];
 
         const std::string what = "the events of cutscene " + std::to_string(i);
-        uint64_t at = PointerAt(main, pointers, kCutscenesAt + i * kCutsceneRow + kEventsAt, what);
-        if (at == 0)
+        uint64_t event_at = PointerAt(main, pointers, at.cutscenes + i * kCutsceneRow + kEventsAt, what);
+        if (event_at == 0)
         {
             continue;
         }
 
-        for (;; at += kEvent)
+        for (;; event_at += kEvent)
         {
-            const std::span<const uint8_t> bytes = MainBytes(main, at, kEvent, what);
+            const std::span<const uint8_t> bytes = MainBytes(main, event_at, kEvent, what);
             const CutsceneEvent event{xsflib::LoadLe16(bytes.data()),
                                       static_cast<int16_t>(xsflib::LoadLe16(bytes.data() + 2))};
             cutscene.events.push_back(event);
@@ -242,6 +256,23 @@ bool WritesPortOne(const Cutscene& cutscene)
     return (cutscene.sequence_flags | 2) == 3;
 }
 
+uint16_t FramesBetween(const Cutscene& cutscene, std::size_t from, std::size_t to)
+{
+    uint16_t reached = 0;
+    for (std::size_t i = 0; i <= from; ++i)
+    {
+        reached = std::max(reached, cutscene.events[i].frame);
+    }
+
+    uint16_t later = reached;
+    for (std::size_t i = from; i <= to; ++i)
+    {
+        later = std::max(later, cutscene.events[i].frame);
+    }
+
+    return static_cast<uint16_t>(later - reached);
+}
+
 uint16_t FramesToFinish(const Cutscene& cutscene, std::size_t index)
 {
     if (cutscene.events.empty() || cutscene.events.back().value != kFinish || index >= cutscene.events.size())
@@ -249,31 +280,20 @@ uint16_t FramesToFinish(const Cutscene& cutscene, std::size_t index)
         return 0;
     }
 
-    uint16_t reached = 0;
-    for (std::size_t i = 0; i <= index; ++i)
-    {
-        reached = std::max(reached, cutscene.events[i].frame);
-    }
-    uint16_t finish = reached;
-    for (std::size_t i = index; i < cutscene.events.size(); ++i)
-    {
-        finish = std::max(finish, cutscene.events[i].frame);
-    }
-
-    return static_cast<uint16_t>(finish - reached);
+    return FramesBetween(cutscene, index, cutscene.events.size() - 1);
 }
 
-EventActions ReadEventActions(const ntdlib::nx::Nso& main)
+EventActions ReadEventActions(const ntdlib::nx::Nso& main, const JacTableAddresses& at)
 {
     EventActions tables;
     const std::span<const uint8_t> first =
-        MainBytes(main, kFirstActionsAt, kEventTypes * 4, "the first actions of the events' types");
+        MainBytes(main, at.first_actions, kEventTypes * 4, "the first actions of the events' types");
     for (std::size_t i = 0; i < kEventTypes; ++i)
     {
         tables.first_actions.push_back(static_cast<int32_t>(xsflib::LoadLe32(first.data() + 4 * i)));
     }
 
-    const std::span<const uint8_t> actions = MainBytes(main, kActionsAt, kActions * kActionRow, "the events' actions");
+    const std::span<const uint8_t> actions = MainBytes(main, at.actions, kActions * kActionRow, "the events' actions");
     for (std::size_t i = 0; i < kActions; ++i)
     {
         const uint8_t* row = actions.data() + i * kActionRow;
@@ -283,16 +303,17 @@ EventActions ReadEventActions(const ntdlib::nx::Nso& main)
     return tables;
 }
 
-std::vector<Effect> ReadEffects(const ntdlib::nx::Nso& main, const std::map<uint64_t, uint64_t>& pointers)
+std::vector<Effect> ReadEffects(const ntdlib::nx::Nso& main, const JacTableAddresses& at,
+                                const std::map<uint64_t, uint64_t>& pointers)
 {
     const std::span<const uint8_t> table =
-        MainBytes(main, kEffectsAt, kEffects * kEffectRow, "the game's table of effects");
+        MainBytes(main, at.effects, kEffects * kEffectRow, "the game's table of effects");
     std::vector<Effect> effects;
     for (std::size_t i = 0; i < kEffects; ++i)
     {
         const uint8_t* row = table.data() + i * kEffectRow;
         const std::string what = "the name of effect " + std::to_string(i);
-        const uint64_t name = RelocatedAt(pointers, kEffectsAt + i * kEffectRow + kNameAt, what);
+        const uint64_t name = RelocatedAt(pointers, at.effects + i * kEffectRow + kNameAt, what);
 
         Effect& effect = effects.emplace_back();
         effect.number = static_cast<int32_t>(xsflib::LoadLe32(row));
@@ -305,9 +326,9 @@ std::vector<Effect> ReadEffects(const ntdlib::nx::Nso& main, const std::map<uint
     return effects;
 }
 
-std::vector<uint8_t> ReadSequenceIndex(const ntdlib::nx::Nso& main)
+std::vector<uint8_t> ReadSequenceIndex(const ntdlib::nx::Nso& main, const JacTableAddresses& at)
 {
-    const std::span<const uint8_t> head = MainBytes(main, kSequenceIndexAt, kIndexEntriesAt, "the sequence index");
+    const std::span<const uint8_t> head = MainBytes(main, at.sequence_index, kIndexEntriesAt, "the sequence index");
     if (std::string_view(reinterpret_cast<const char*>(head.data()), 4) != "BARC")
     {
         throw xsflib::FormatError("main's sequence index doesn't start with BARC");
@@ -315,48 +336,49 @@ std::vector<uint8_t> ReadSequenceIndex(const ntdlib::nx::Nso& main)
 
     const uint32_t count = xsflib::LoadLe32(head.data() + kIndexCountAt);
     const std::span<const uint8_t> index = MainBytes(
-        main, kSequenceIndexAt, kIndexEntriesAt + static_cast<std::size_t>(count) * kIndexEntry, "the sequence index");
+        main, at.sequence_index, kIndexEntriesAt + static_cast<std::size_t>(count) * kIndexEntry, "the sequence index");
     return std::vector<uint8_t>(index.begin(), index.end());
 }
 
-MusicTables ReadMusicTables(const ntdlib::nx::Nso& main, const std::map<uint64_t, uint64_t>& pointers)
+MusicTables ReadMusicTables(const ntdlib::nx::Nso& main, const JacTableAddresses& at,
+                            const std::map<uint64_t, uint64_t>& pointers)
 {
     MusicTables tables;
     for (std::size_t i = 0; i < kPieces; ++i)
     {
         const std::string piece = std::to_string(i + kFirstPieceFile);
         const uint64_t tracks =
-            RelocatedAt(pointers, kPlayingTracksAt + 8 * i, "the child tracks of the piece of file " + piece);
+            RelocatedAt(pointers, at.playing_tracks + 8 * i, "the child tracks of the piece of file " + piece);
         const uint64_t volumes =
-            RelocatedAt(pointers, kTrackVolumesAt + 8 * i, "the volumes of the piece of file " + piece);
+            RelocatedAt(pointers, at.track_volumes + 8 * i, "the volumes of the piece of file " + piece);
         tables.playing_tracks.push_back(
             xsflib::LoadLe16(MainBytes(main, tracks, 2, "the child tracks of the piece of file " + piece).data()));
         tables.track_volumes.push_back(std::bit_cast<float>(
             xsflib::LoadLe32(MainBytes(main, volumes, 4, "the volumes of the piece of file " + piece).data())));
     }
 
-    tables.music_volume = std::bit_cast<float>(Le32(main, kMusicVolumesAt + 4 * kDefaultLevel, "the music's volumes"));
+    tables.music_volume = std::bit_cast<float>(Le32(main, at.music_volumes + 4 * kDefaultLevel, "the music's volumes"));
     tables.cutscene_level = xsflib::LoadLe16(
-        MainBytes(main, kCutsceneLevelsAt + 2 * kDefaultLevel, 2, "the levels of the cutscenes' music").data());
+        MainBytes(main, at.cutscene_levels + 2 * kDefaultLevel, 2, "the levels of the cutscenes' music").data());
     tables.effect_level =
-        xsflib::LoadLe16(MainBytes(main, kEffectLevelsAt + 2 * kDefaultLevel, 2, "the effects' levels").data());
+        xsflib::LoadLe16(MainBytes(main, at.effect_levels + 2 * kDefaultLevel, 2, "the effects' levels").data());
     for (std::size_t i = 0; i < kParts; ++i)
     {
-        tables.part_scenes.push_back(Le32(main, kPartScenesAt + 4 * i, "the scenes of the cutscenes' music"));
+        tables.part_scenes.push_back(Le32(main, at.part_scenes + 4 * i, "the scenes of the cutscenes' music"));
     }
 
     return tables;
 }
 
-std::array<JaudioFxLine, JaudioSettings::kFxLines> ReadFxLines(const ntdlib::nx::Nso& main)
+std::array<JaudioFxLine, JaudioSettings::kFxLines> ReadFxLines(const ntdlib::nx::Nso& main, const JacTableAddresses& at)
 {
-    const std::span<const uint8_t> buses = MainBytes(main, kBusesAt, 2 * kBuses, "the table of the DSP's buses");
+    const std::span<const uint8_t> buses = MainBytes(main, at.buses, 2 * kBuses, "the table of the DSP's buses");
     std::array<JaudioFxLine, JaudioSettings::kFxLines> lines{};
     for (std::size_t i = 0; i < lines.size(); ++i)
     {
         const std::string what = "the settings of FX line " + std::to_string(i);
         const std::span<const uint8_t> settings =
-            MainBytes(main, kFxLinesAt + i * kFxLineSettings, kFxLineSettings, what);
+            MainBytes(main, at.fx_lines + i * kFxLineSettings, kFxLineSettings, what);
         JaudioFxLine& line = lines[i];
         line.flags = settings[0];
         line.subframes = static_cast<uint16_t>(xsflib::LoadLe32(settings.data() + 0xc));

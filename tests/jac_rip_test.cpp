@@ -289,6 +289,24 @@ void TestSelection()
     XSFLIB_CHECK(library.effects[at++] == MakeEffect(JacEffect::kCutscene, 0, 0, 1));
     XSFLIB_CHECK(library.effects[at++] == MakeEffect(JacEffect::kCutscene, 0, 0, 4));
 
+    // Each cutscene's sound gets the later events that queue a value, with the frames from the sound's event and each
+    // event's value. The other effects get none.
+    XSFLIB_CHECK(all.later_events.size() == library.effects.size());
+    const std::size_t sounds = library.effects.size() - 4;
+    for (std::size_t i = 0; i < sounds; ++i)
+    {
+        Check(all.later_events[i].empty(), "effect " + std::to_string(i) + "'s later events");
+    }
+
+    const std::vector<rip::JacLaterEvent>& after_3 = all.later_events[sounds];
+    XSFLIB_CHECK(after_3.size() == 2);
+    XSFLIB_CHECK(after_3[0].frames == 10 && after_3[0].value == 5);
+    XSFLIB_CHECK(after_3[1].frames == 20 && after_3[1].value == 3);
+    const std::vector<rip::JacLaterEvent>& after_5 = all.later_events[sounds + 1];
+    XSFLIB_CHECK(after_5.size() == 1);
+    XSFLIB_CHECK(after_5[0].frames == 10 && after_5[0].value == 3);
+    XSFLIB_CHECK(all.later_events[sounds + 2].empty() && all.later_events[sounds + 3].empty());
+
     const std::string labels = LabelsOf(all);
     XSFLIB_CHECK(
         labels.starts_with("piece4 piece21 parts-1 parts-2 parts-5 parts-8 SYSTEM_5 SYSTEM_CONTAINER "
@@ -323,6 +341,8 @@ void TestSelection()
     XSFLIB_CHECK(LabelsOf(some) == "parts-5 SHIP_0 cutscene-000-03 cutscene-000-05");
     XSFLIB_CHECK(some.library.parts == (std::vector<hsf::JacPart>{{5, {13, 3}}}));
     XSFLIB_CHECK(some.library.effects.size() == 3);
+    XSFLIB_CHECK(some.later_events.size() == 3 && some.later_events[0].empty() && some.later_events[1].size() == 2 &&
+                 some.later_events[2].size() == 1);
     XSFLIB_CHECK(some.jobs[1].id == JaudioLibrary3::kEffectSection &&
                  some.jobs[3].id == (JaudioLibrary3::kEffectSection | 2));
 }

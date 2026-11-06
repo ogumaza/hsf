@@ -148,6 +148,10 @@ struct Channel
     // The channel moved to the global manager or to another track's while it played or released
     // (FixReleaseChannelAll and FixMoveChannelAll). UpdateJcToDSP then writes only the mixers' targets and the pitch.
     bool moved = false;
+
+    // Set only by the length analysis (the game has no such field): whether the channel's note is unheard
+    // (Track::unheard). The mixers of an unheard note get a level of 0.
+    bool unheard = false;
 };
 
 // A DSP channel (one of dspdriver's 64), by the game's fields.

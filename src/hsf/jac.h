@@ -2,7 +2,8 @@
 
 // What a library 3 descriptor sets up on the model of the C JAudio (src/jac): the engine's settings, the files, the
 // game's start-up and the start of a sound. The player and the ripper's length analysis both set the model up with
-// these functions. A rip's length then comes from the sound that the player plays.
+// these functions. A rip's length then comes from the sound that the player plays. The length analysis also queues a
+// cutscene's later events that make no sound alone (rip/jac_rip.h). The player leaves them out.
 
 #pragma once
 

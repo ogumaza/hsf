@@ -60,6 +60,25 @@ void AddTrackStates(JaudioSettings& s, std::span<const std::pair<uint32_t, std::
     }
 }
 
+// A later state of a piece of music that has a setting: the piece's index in group 0 of section 1, the states of its
+// setting that give it, and its track states as the game's table holds them.
+struct LaterState
+{
+    uint32_t index = 0;
+    std::string_view states;
+    std::array<uint8_t, 8> packed{};
+};
+
+// A variant of each piece in `states`, named after the states that give it.
+void AddVariants(JaudioGame& game, std::span<const LaterState> states)
+{
+    for (const LaterState& state : states)
+    {
+        game.variants.push_back(
+            {States(uint32_t{kMusicSection} << 24 | state.index, state.packed), std::string(state.states)});
+    }
+}
+
 // Super Mario Galaxy's code in the Switch release's `main`.
 JaudioGame Galaxy()
 {
@@ -116,6 +135,37 @@ JaudioGame Galaxy()
         {99, kTracks1To10},
     }};
     AddTrackStates(s, kStates);
+
+    // The later states of AudBgmSetting: each setting holds 8 states of 10 bytes, from cMuteState. A piece takes other
+    // states as the game goes on. The BGM manager then fades each track to the state's level (0x1b27b8). Each state
+    // below differs from the piece's first state. A state that fades out every track is left out.
+    //
+    // A track state of 7 keeps the track's level where the state before left it (0x1b2ba0). States 1 to 4 of piece
+    // 0x38 keep track 1, the only track that any state plays. They leave it as the first state or state 6 left it, and
+    // add nothing. The Comet Observatory's three pieces (0x25, 0x3b and 0x60) start with no track. Each of their states
+    // 3 to 6 sets one of two layers and keeps the other: state 4 plays tracks 1 to 3 and state 3 fades them out. State
+    // 6 plays tracks 4 and 5 and state 5 fades them out. States 1 and 2 keep every track. Each layer gets a variant on
+    // its own, from the first state. Both layers at once may be a state that the game never plays, as in Pikmin 2.
+    const std::array<LaterState, 17> kLaterStates = {{
+        {0x05, "state 3", {0x21, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+        {0x0f, "states 4 and 6", {0x21, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+        {0x25, "state 4", {0x21, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+        {0x25, "state 6", {0x20, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00}},
+        {0x38, "state 6", {0x21, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+        {0x3b, "state 4", {0x21, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+        {0x3b, "state 6", {0x20, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00}},
+        {0x3c, "state 2", {0x20, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+        {0x3c, "state 3", {0x21, 0x11, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00}},
+        {0x3c, "state 4", {0x20, 0x01, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00}},
+        {0x4b, "state 1", {0x20, 0x00, 0x00, 0x00, 0x00, 0x01, 0x10, 0x00}},
+        {0x4b, "states 3 and 4", {0x21, 0x11, 0x11, 0x11, 0x11, 0x10, 0x00, 0x10}},
+        {0x4f, "state 3", {0x21, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+        {0x60, "state 4", {0x21, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+        {0x60, "state 6", {0x20, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00}},
+        {0x63, "state 1", {0x20, 0x00, 0x00, 0x00, 0x00, 0x01, 0x10, 0x00}},
+        {0x63, "states 3 and 4", {0x21, 0x11, 0x11, 0x11, 0x11, 0x10, 0x00, 0x10}},
+    }};
+    AddVariants(game, kLaterStates);
 
     // The sounds of group 1 of section 1. AudMultiBgm plays each as a piece of music of group 0 and a stream
     // (cMultiBgmSet).
@@ -201,6 +251,45 @@ JaudioGame Galaxy2()
         {0x7b, kNoTracks},
     }};
     AddTrackStates(s, kStates);
+
+    // The later states of AudBgmSetting (getMuteState, 0x1254f0): each setting holds 11 states of 10 bytes. A piece
+    // takes other states as the game goes on. The BGM manager then fades each track to the state's level
+    // (changeTrackMuteState, 0x12216c). Each state below differs from the piece's first state. A state that fades out
+    // every track is left out. In most of the pieces, states 8 to 10 add track 15. The last 2 bytes of a state are the
+    // levels of a piece's stream (0x122fd4). HSF plays no streams.
+    const std::array<LaterState, 30> kLaterStates = {{
+        {0x08, "states 8 to 10", {0x21, 0x11, 0x11, 0x11, 0x10, 0x10, 0x00, 0x01}},
+        {0x09, "state 1", {0x20, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00}},
+        {0x09, "states 3 and 4", {0x21, 0x11, 0x11, 0x11, 0x11, 0x10, 0x00, 0x10}},
+        {0x0a, "state 1", {0x20, 0x00, 0x00, 0x00, 0x00, 0x01, 0x11, 0x00}},
+        {0x17, "state 8", {0x21, 0x11, 0x10, 0x01, 0x10, 0x00, 0x00, 0x01}},
+        {0x17, "states 9 and 10", {0x21, 0x11, 0x11, 0x11, 0x10, 0x00, 0x00, 0x01}},
+        {0x1e, "state 2", {0x21, 0x11, 0x11, 0x11, 0x00, 0x11, 0x11, 0x11}},
+        {0x23, "state 8", {0x20, 0x00, 0x10, 0x01, 0x10, 0x00, 0x00, 0x01}},
+        {0x23, "states 9 and 10", {0x20, 0x00, 0x11, 0x11, 0x10, 0x00, 0x00, 0x01}},
+        {0x25, "states 8 to 10", {0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},
+        {0x29, "state 8", {0x20, 0x00, 0x10, 0x01, 0x10, 0x00, 0x00, 0x01}},
+        {0x29, "states 9 and 10", {0x20, 0x00, 0x11, 0x11, 0x10, 0x00, 0x00, 0x01}},
+        {0x2c, "states 8 to 10", {0x21, 0x11, 0x11, 0x11, 0x11, 0x11, 0x10, 0x01}},
+        {0x2d, "states 8 to 10", {0x21, 0x10, 0x00, 0x01, 0x00, 0x11, 0x10, 0x01}},
+        {0x35, "states 8 to 10", {0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},
+        {0x39, "states 8 to 10", {0x21, 0x11, 0x11, 0x00, 0x00, 0x00, 0x00, 0x01}},
+        {0x3a, "state 8", {0x20, 0x00, 0x10, 0x01, 0x10, 0x00, 0x00, 0x01}},
+        {0x3a, "states 9 and 10", {0x20, 0x00, 0x11, 0x11, 0x10, 0x00, 0x00, 0x01}},
+        {0x45, "state 6", {0x21, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+        {0x47, "states 8 to 10", {0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},
+        {0x58, "states 4 and 6", {0x21, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+        {0x58, "states 8 to 10", {0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},
+        {0x5a, "states 8 to 10", {0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},
+        {0x65, "states 8 to 10", {0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},
+        {0x70, "states 8 to 10", {0x21, 0x11, 0x11, 0x00, 0x00, 0x00, 0x00, 0x01}},
+        {0x72, "states 8 to 10", {0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},
+        {0x73, "states 8 to 10", {0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},
+        {0x76, "states 8 to 10", {0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},
+        {0x77, "states 8 to 10", {0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},
+        {0x78, "states 8 to 10", {0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},
+    }};
+    AddVariants(game, kLaterStates);
 
     // As in the first game, AudBgmMgr::start (0x121140) plays a sound with bit 16 of its ID set beside a stream.
     game.replaced_groups = {1 << 8 | 1};
@@ -418,20 +507,65 @@ std::vector<JaudioJob> SelectJaudioSounds(const jaudio::SoundFiles& files, const
             continue;
         }
 
-        const std::string label = JaudioLabel(sound);
-        if (!std::regex_search(label, only))
+        JaudioJob job;
+        job.index = static_cast<uint32_t>(i);
+        job.label = JaudioLabel(sound);
+        job.id = sound.Id();
+        if (std::regex_search(job.label, only))
+        {
+            jobs.push_back(job);
+        }
+
+        if (game == nullptr)
         {
             continue;
         }
 
-        JaudioJob job;
-        job.index = static_cast<uint32_t>(i);
-        job.label = label;
-        job.id = sound.Id();
-        jobs.push_back(std::move(job));
+        for (const JaudioVariant& variant : game->variants)
+        {
+            JaudioJob variant_job = job;
+            variant_job.label = job.label + " " + variant.name;
+            variant_job.track_states = variant.states;
+            if (variant.states.sound == job.id && std::regex_search(variant_job.label, only))
+            {
+                jobs.push_back(std::move(variant_job));
+            }
+        }
     }
 
     return jobs;
+}
+
+ArchiveDescriptor JobDescriptor(ArchiveDescriptor descriptor, const JaudioJob& job)
+{
+    std::vector<JaudioPiece>& pieces = descriptor.jaudio.library2.pieces;
+    const uint32_t place = job.id & 0xffff;
+    if (job.muted_tracks && (job.id & 0xc0000000u) == JaudioLibrary2::kPieceSection && place < pieces.size())
+    {
+        pieces[place].muted_tracks = *job.muted_tracks;
+    }
+
+    if (!job.track_states)
+    {
+        return descriptor;
+    }
+
+    std::vector<JaudioTrackStates>& states = descriptor.jaudio.track_states;
+    const auto same_sound = [&job](const JaudioTrackStates& entry)
+    {
+        return entry.sound == job.track_states->sound;
+    };
+    const auto entry = std::find_if(states.begin(), states.end(), same_sound);
+    if (entry != states.end())
+    {
+        *entry = *job.track_states;
+    }
+    else
+    {
+        states.push_back(*job.track_states);
+    }
+
+    return descriptor;
 }
 
 std::vector<uint8_t> BuildJaudioLibrary(const FileChunk& startup, const std::optional<FileChunk>& sequences,
@@ -452,13 +586,16 @@ std::vector<uint8_t> BuildJaudioLibrary(const FileChunk& startup, const std::opt
     return program.WritePsf(kPsfVersionHsf, descriptor.Serialize(), tags);
 }
 
-std::vector<uint8_t> BuildJaudioMini(uint32_t id, const std::string& lib_name, xsflib::psf::Tags tags)
+std::vector<uint8_t> BuildJaudioMini(const JaudioJob& job, const ArchiveDescriptor& descriptor,
+                                     const std::string& lib_name, xsflib::psf::Tags tags)
 {
     ProgramBuilder program;
-    program.AddSound(id);
+    program.AddSound(job.id);
     tags["_lib"] = lib_name;
+    const std::vector<uint8_t> reserved =
+        IsVariant(job) ? JobDescriptor(descriptor, job).Serialize() : std::vector<uint8_t>();
 
-    return program.WritePsf(kPsfVersionHsf, {}, tags);
+    return program.WritePsf(kPsfVersionHsf, reserved, tags);
 }
 
 } // namespace hsf::rip

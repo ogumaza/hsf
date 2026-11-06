@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <regex>
@@ -53,6 +54,10 @@ constexpr std::size_t kSeqW = 3;
 // The game reads at most this many maps of a track map file (BgmTrackMapFile::readTrackMap).
 constexpr std::size_t kMostTrackMaps = 32;
 
+// The layers of a track map, after its basic tracks, by the names of their directors in the game's code.
+// DirectorMgr_Scene makes the directors eventD, OtakaraD, kehaiD, battleD and GroundD at 0x3b9cc.
+constexpr std::array<std::string_view, 5> kLayerNames = {"event", "treasure", "enemies nearby", "battle", "ground"};
+
 // The pieces' classes (jaudio1::PieceSettings::Kind).
 constexpr uint8_t kPlain = 0;
 constexpr uint8_t kDirected = 1;
@@ -64,8 +69,35 @@ constexpr uint8_t kConducted = JaudioPiece::kConducted;
 constexpr uint8_t kAllLevels = 0x1f;
 constexpr uint8_t kNoLevels = 0;
 
+// A layer that one of the game's directors brings in, where the game's code gives the director its tracks: the
+// layer's name and its tracks.
+struct CodeLayer
+{
+    std::string_view name;
+    uint16_t tracks = 0;
+};
+
+// DirectorMgr_Battle's two directors for the bosses' music (0x3c300). pikatkD (0x303ec) takes track 10, and tentionD
+// (0x30434) takes track 11. A virtual call at 0x3c330 picks tracks 14 and 15 instead, for l_boss.
+constexpr std::array<CodeLayer, 2> kMiddleBossLayers = {{{"Pikmin attack", 0x0400}, {"tension", 0x0800}}};
+constexpr std::array<CodeLayer, 2> kFinalBossLayers = {{{"Pikmin attack", 0x4000}, {"tension", 0x8000}}};
+
+// DirectorMgr_2PBattle's eight directors (0x3c46c), each with one track from track 8. Each layer has its director's
+// name. The first three match the scenes' directors.
+constexpr std::array<CodeLayer, 8> kBattleLayers = {{
+    {"event", 0x0100},
+    {"enemies nearby", 0x0200},
+    {"battle", 0x0400},
+    {"OriBeedaD", 0x0800},
+    {"RugBeedaD", 0x1000},
+    {"OriIchouD", 0x2000},
+    {"RouIchouD", 0x4000},
+    {"PikBattlD", 0x8000},
+}};
+
 // What the game's code sets up for a piece. `muted` holds the tracks that the piece's directors mute, or nothing for
-// a piece whose directors take the track maps. A piece of class 3 plays with `conductor`.
+// a piece whose directors take the track maps. `layers` holds the layers of the directors that take tracks given in
+// the code. A piece of class 3 plays with `conductor`.
 struct PieceCode
 {
     std::string_view file;
@@ -74,6 +106,7 @@ struct PieceCode
     uint16_t beat_interval = 60;
     uint16_t start_point = 0;
     std::optional<uint16_t> muted = uint16_t{0};
+    std::span<const CodeLayer> layers;
     std::string_view conductor;
 };
 
@@ -112,24 +145,39 @@ constexpr PieceCode Overworld(std::string_view file, uint16_t beat_interval)
     return piece;
 }
 
-constexpr PieceCode Boss(std::string_view file, uint16_t start_point, uint16_t muted)
+// The tracks of all of `layers`.
+constexpr uint16_t TracksOf(std::span<const CodeLayer> layers)
+{
+    uint16_t tracks = 0;
+    for (const CodeLayer& layer : layers)
+    {
+        tracks |= layer.tracks;
+    }
+
+    return tracks;
+}
+
+// A boss's piece: its directors mute their layers as it starts.
+constexpr PieceCode Boss(std::string_view file, uint16_t start_point, std::span<const CodeLayer> layers)
 {
     PieceCode piece;
     piece.file = file;
     piece.kind = kJump;
     piece.kept_levels = kNoLevels;
     piece.start_point = start_point;
-    piece.muted = muted;
+    piece.muted = TracksOf(layers);
+    piece.layers = layers;
 
     return piece;
 }
 
-constexpr PieceCode Battle(std::string_view file)
+constexpr PieceCode Battle(std::string_view file, std::span<const CodeLayer> layers = {})
 {
     PieceCode piece;
     piece.file = file;
     piece.kind = kDirected;
     piece.muted = 0xff00;
+    piece.layers = layers;
 
     return piece;
 }
@@ -157,7 +205,7 @@ constexpr PieceCode Borrowing(std::string_view file, std::string_view conductor)
 constexpr std::array<PieceCode, 29> kPieces = {
     Battle("2pbattle.bms"),
     Borrowing("a_zawinul01.bms", "iron.cnd"),
-    Battle("battle_t.bms"),
+    Battle("battle_t.bms", kBattleLayers),
     Plain("book.bms"),
     Plain("comp_result.bms"),
     Plain("c_menu.bms"),
@@ -175,8 +223,8 @@ constexpr std::array<PieceCode, 29> kPieces = {
     Plain("kuro_post.bms", kNoLevels),
     Plain("kuro_pre.bms"),
     Overworld("last.bms", 30),
-    Boss("l_boss.bms", 1, 0xc000),
-    Boss("m_boss.bms", 9, 0x0c00),
+    Boss("l_boss.bms", 1, kFinalBossLayers),
+    Boss("m_boss.bms", 9, kMiddleBossLayers),
     Overworld("n_tutorial.bms", 60),
     Plain("n_tutorial_1stday.bms", kNoLevels),
     Plain("result.bms"),
@@ -572,6 +620,19 @@ uint16_t MutedTracks(const TrackCounts& counts)
     return static_cast<uint16_t>((counts[0] >= 32 ? 0 : mask << counts[0]) & 0xffff);
 }
 
+uint16_t LayerTracks(const TrackCounts& counts, std::size_t layer)
+{
+    uint32_t first = 0;
+    for (std::size_t i = 0; i < layer && i < counts.size(); ++i)
+    {
+        first += counts[i];
+    }
+
+    const uint32_t tracks = layer < counts.size() ? counts[layer] : 0;
+    const uint32_t mask = tracks >= 32 ? ~0u : (1u << tracks) - 1;
+    return first >= 16 ? uint16_t{0} : static_cast<uint16_t>((mask << first) & 0xffff);
+}
+
 std::optional<std::string> ReadJaudio1GameText(const Jaudio1Paths& paths, const ReadGameFile& read,
                                                Jaudio1GameText& text)
 {
@@ -649,17 +710,56 @@ Jaudio1Selection SelectJaudio1Sounds(const Jaudio1Files& files, const Jaudio1Gam
         selection.jobs.push_back(std::move(job));
     };
 
-    const auto muted_from_maps = [&](const std::string& piece, const std::string& conductor) -> uint16_t
+    const auto map_of = [&](const std::string& piece, const std::string& conductor) -> const TrackCounts*
     {
         const auto [file, name] = TrackMapOf(piece, conductor);
         const auto map = text.track_maps[file].find(name);
         if (map == text.track_maps[file].end())
         {
             selection.warnings.push_back(name + " has no track map; its rip plays every track");
-            return 0;
+            return nullptr;
         }
 
-        return MutedTracks(map->second);
+        return &map->second;
+    };
+
+    // A variant of a piece for each layer of its map: the piece with that layer's tracks playing. The directors fade a
+    // layer in to a level of 1. Those of the treasure and the ground take 100 frames (0x2fbb0). The others set the
+    // level from 0 to 1 by how near the event or the enemies are (0x2fc5c and 0x30238). A variant plays its layer at 1
+    // from the start. The variants come after all the other sounds, with their pieces' numbers.
+    std::vector<JaudioJob> variants;
+    const auto add_variants = [&](const TrackCounts& counts)
+    {
+        const JaudioJob& job = selection.jobs.back();
+        const uint16_t muted = library.pieces.back().muted_tracks;
+        for (std::size_t layer = 1; layer <= kLayerNames.size(); ++layer)
+        {
+            JaudioJob variant = job;
+            variant.label = job.label + " " + std::string(kLayerNames[layer - 1]) + " layer";
+            variant.muted_tracks = static_cast<uint16_t>(muted & ~LayerTracks(counts, layer));
+            if (*variant.muted_tracks != muted && std::regex_search(variant.label, only))
+            {
+                variants.push_back(std::move(variant));
+            }
+        }
+    };
+
+    // The same for a piece whose directors take tracks that the game's code gives them: the bosses' music and battle_t.
+    // Their directors fade a layer in as the scene's do.
+    const auto add_code_variants = [&](std::span<const CodeLayer> layers)
+    {
+        const JaudioJob& job = selection.jobs.back();
+        const uint16_t muted = library.pieces.back().muted_tracks;
+        for (const CodeLayer& layer : layers)
+        {
+            JaudioJob variant = job;
+            variant.label = job.label + " " + std::string(layer.name) + " layer";
+            variant.muted_tracks = static_cast<uint16_t>(muted & ~layer.tracks);
+            if (std::regex_search(variant.label, only))
+            {
+                variants.push_back(std::move(variant));
+            }
+        }
     };
 
     const auto volume_of = [&](const std::string& piece) -> uint8_t
@@ -693,7 +793,8 @@ Jaudio1Selection SelectJaudio1Sounds(const Jaudio1Files& files, const Jaudio1Gam
             piece.beat_interval = code->beat_interval;
             piece.start_point = code->start_point;
             piece.conductor = code->conductor;
-            piece.muted_tracks = code->muted ? *code->muted : muted_from_maps(file.name, piece.conductor);
+            const TrackCounts* counts = code->muted ? nullptr : map_of(file.name, piece.conductor);
+            piece.muted_tracks = code->muted ? *code->muted : counts ? MutedTracks(*counts) : uint16_t{0};
             if (piece.kind == kConducted && !files.conductors.contains(piece.conductor))
             {
                 selection.warnings.push_back(file.name + "'s conductor " + piece.conductor +
@@ -702,6 +803,12 @@ Jaudio1Selection SelectJaudio1Sounds(const Jaudio1Files& files, const Jaudio1Gam
             }
 
             add_piece(WithoutExtension(file.name), piece);
+            if (counts)
+            {
+                add_variants(*counts);
+            }
+
+            add_code_variants(code->layers);
             continue;
         }
 
@@ -719,14 +826,20 @@ Jaudio1Selection SelectJaudio1Sounds(const Jaudio1Files& files, const Jaudio1Gam
             piece.kind = kConducted;
             piece.volume = volume_of(file.name);
             piece.kept_levels = kAllLevels;
-            piece.muted_tracks = muted_from_maps(file.name, conductor);
+            const TrackCounts* counts = map_of(file.name, conductor);
+            piece.muted_tracks = counts ? MutedTracks(*counts) : uint16_t{0};
             piece.conductor = conductor;
             add_piece(WithoutExtension(conductor), piece);
+            if (counts)
+            {
+                add_variants(*counts);
+            }
         }
     }
 
     if (bgm)
     {
+        std::move(variants.begin(), variants.end(), std::back_inserter(selection.jobs));
         return selection;
     }
 
@@ -764,6 +877,7 @@ Jaudio1Selection SelectJaudio1Sounds(const Jaudio1Files& files, const Jaudio1Gam
         }
     }
 
+    std::move(variants.begin(), variants.end(), std::back_inserter(selection.jobs));
     return selection;
 }
 

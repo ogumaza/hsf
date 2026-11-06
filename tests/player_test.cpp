@@ -4,19 +4,22 @@
 // output must be the model's output. A tagged length and fade must be kept. A set without a length must end half a
 // second after its sound. A seek must land where a straight render does, from a snapshot of the model too. The volume
 // tag must apply. A group file outside the archive must be found. A reverb on an aux bus must play as the model plays
-// it. So must a delay, whose output never returns to 0, and a set without a length must still end. A set that can't
-// play must report why.
+// it. So must a delay, whose output never returns to 0, and a set without a length must still end. Track volumes in a
+// mini's descriptor must reach the sound's tracks. A scripted start in a mini's descriptor must start the sound as it
+// says, with each kind of sequence variable. A set that can't play must report why.
 
 #include "hsf/player.h"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <map>
 #include <memory>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ntdlib/nx/atk/effect.h"
@@ -38,11 +41,14 @@ using namespace xsflib::testing;
 namespace
 {
 
-// The archive's sounds: a note of 24 ticks that ends, the same note played over and over, and the note sent only to aux
-// bus A.
+// The archive's sounds: a note of 24 ticks that ends, the same note played over and over, the note sent only to aux
+// bus A, the note played only when three variables hold 5, and the note played in each tick in which user procedure 2
+// writes -1 to variable 14.
 constexpr uint32_t kNote = 0x01000000;
 constexpr uint32_t kLoop = 0x01000001;
 constexpr uint32_t kSent = 0x01000002;
+constexpr uint32_t kGated = 0x01000003;
+constexpr uint32_t kAsks = 0x01000004;
 
 // A frame of the model: 5 ms, 240 stereo pairs.
 constexpr std::size_t kFrame = 240;
@@ -57,15 +63,27 @@ struct TestArchive
 TestArchive MakeArchive(bool grouped)
 {
     // Timebase 48 and tempo 120, with the Switch's little-endian arguments: the note at offset 5 lasts 250 ms. The
-    // third sound sends it only to aux bus A (a main send of 0 and a send to A of 127).
-    const std::vector<uint8_t> kBytecode = {0xB0, 48,   0xE1, 120,  0x00, 60,   127,  24,   0xFF, 0xB0, 48,   0xE1,
-                                            120,  0x00, 60,   127,  24,   0x89, 0x0E, 0x00, 0x00, 0xFF, 0xB0, 48,
-                                            0xE1, 120,  0x00, 0xDB, 0,    0xD9, 127,  60,   127,  24,   0xFF};
+    // third sound sends it only to aux bus A (a main send of 0 and a send to A of 127). The fourth sound ends at its
+    // first tick (0xA2 0xFF) unless its variable 0, the global variable 20 and track 0's variable 32 all hold 5
+    // (0xF0 0x95: true when the variable isn't the value). The fifth sound runs 200 ticks with its notes' waits off
+    // (0xC7 0). In each tick it sets its variable 14 to 4 (0xF0 0x80), calls user procedure 2 (0xF0 0xE0), and plays
+    // the note when variable 14 then holds -1 (0xF0 0x90, then the note behind 0xA2).
+    const std::vector<uint8_t> kBytecode = {
+        0xB0, 48,   0xE1, 120,  0x00, 60,   127,  24,   0xFF, 0xB0, 48,   0xE1, 120,  0x00, 60,   127,
+        24,   0x89, 0x0E, 0x00, 0x00, 0xFF, 0xB0, 48,   0xE1, 120,  0x00, 0xDB, 0,    0xD9, 127,  60,
+        127,  24,   0xFF, 0xB0, 48,   0xE1, 120,  0x00, 0xF0, 0x95, 0,    5,    0x00, 0xA2, 0xFF, 0xF0,
+        0x95, 20,   5,    0x00, 0xA2, 0xFF, 0xF0, 0x95, 32,   5,    0x00, 0xA2, 0xFF, 60,   127,  24,
+        0xFF, 0xB0, 48,   0xE1, 120,  0x00, 0xC7, 0x00, 0xD4, 200,  0xF0, 0x80, 14,   0x04, 0x00, 0xF0,
+        0xE0, 0x02, 0x00, 0xF0, 0x90, 14,   0xFF, 0xFF, 0xA2, 60,   127,  24,   0x80, 0x01, 0xFC, 0xFF};
     sar_files::ArchiveSpec spec;
-    for (const uint32_t start : {0u, 9u, 22u})
+    for (const uint32_t start : {0u, 9u, 22u, 35u, 65u})
     {
         sar_files::SoundSpec sound;
-        sound.name = start == 0 ? "SEQ_NOTE" : start == 9 ? "SEQ_LOOP" : "SEQ_SENT";
+        sound.name = start == 0    ? "SEQ_NOTE"
+                     : start == 9  ? "SEQ_LOOP"
+                     : start == 22 ? "SEQ_SENT"
+                     : start == 35 ? "SEQ_GATED"
+                                   : "SEQ_ASKS";
         sound.volume = 127;
         sound.banks = {0};
         sound.start_offset = start;
@@ -118,6 +136,22 @@ std::string WriteMini(const std::string& name, const std::string& library, uint3
     tags["_lib"] = std::filesystem::path(library).filename().string();
     const std::string path = "sets/" + name + ".minihsf";
     files[path] = hsf::WritePsf(hsf::kPsfVersionHsf, {}, b.Data(), tags);
+
+    return path;
+}
+
+// Writes a .minihsf like WriteMini's, with `descriptor` in its reserved area. The descriptor names the archive of a
+// library that WriteLibrary wrote without a group file. The set loads it last. It therefore takes the place of the
+// library's.
+std::string WriteMiniWithDescriptor(const std::string& name, const std::string& library, uint32_t sound,
+                                    hsf::ArchiveDescriptor descriptor)
+{
+    hsf::ProgramBuilder b;
+    b.AddSound(sound);
+    descriptor.archive_path = "content/sound/test.bfsar";
+    const std::string path = "sets/" + name + ".minihsf";
+    const hsf::Tags tags = {{"_lib", std::filesystem::path(library).filename().string()}};
+    files[path] = hsf::WritePsf(hsf::kPsfVersionHsf, descriptor.Serialize(), b.Data(), tags);
 
     return path;
 }
@@ -344,8 +378,309 @@ void TestDelay()
     Check(same, "a seek back into the delay's echoes, from a snapshot, ends where the straight render does");
 }
 
+// The renderer's reverb on aux bus A, on 4 channels with no dry part, plays as the model plays it. A set without a
+// length ends half a second after the effects stop ringing, 110 frames after the last audible frame. The reverb's tail
+// differs from what went in.
+void TestReverb()
+{
+    const TestArchive square = SquareArchive();
+    hsf::AuxEffect reverb;
+    reverb.type = hsf::AuxEffect::kReverb;
+    reverb.parameters = {2.0f, 0.7f, 15000.0f, 1.0f, 0.7f, 1500000.0f, 0.8f, 0.7f, 0.4f, 1.0f, 0.0f, 2.0f};
+    hsf::ArchiveDescriptor descriptor;
+    descriptor.effects = {reverb};
+    const std::string mini = WriteMini("reverb", WriteLibrary("reverb", square, descriptor), 0x01000000, {});
+
+    // The model's output for 20 s and its last audible frame, then the same without the reverb.
+    const hsf::fsar::SoundArchive archive = hsf::fsar::SoundArchive::Load(square.archive, hsf::kSarOptions);
+    const auto render = [&archive](const std::vector<hsf::AuxEffect>& effects, std::size_t& last_audible)
+    {
+        hsf::atk::ArchiveModel model(archive);
+        hsf::AppendEffects(*model.engine, effects);
+        model.engine->StartSequence(0);
+        std::vector<int16_t> out;
+        for (std::size_t frame = 1; frame <= 4000; ++frame)
+        {
+            model.engine->RunFrame();
+            const std::span<const int16_t> output = model.renderer.DeviceOutput();
+            out.insert(out.end(), output.begin(), output.end());
+            last_audible = xsflib::rip::Audible(output) ? frame : last_audible;
+        }
+
+        return out;
+    };
+
+    std::size_t last_audible = 0;
+    std::size_t last_dry = 0;
+    const std::vector<int16_t> wet = render(descriptor.effects, last_audible);
+    const std::vector<int16_t> dry = render({}, last_dry);
+
+    const std::vector<int16_t> played = RenderAll(mini);
+    Check(last_audible > last_dry + 20 && last_audible < 3000, "the reverb's tail rings on, then dies away");
+    CheckEnd(played, wet, (last_audible + 110) * kFrame, 24000);
+}
+
 // Sets that can't play: a group file the set doesn't hold, a sound the archive doesn't have, an item that isn't a
 // sound, and a descriptor's voice count beyond the most a player has.
+// The largest size of a sample in `samples`.
+int Peak(const std::vector<int16_t>& samples)
+{
+    int peak = 0;
+    for (const int16_t sample : samples)
+    {
+        peak = std::max(peak, std::abs(static_cast<int>(sample)));
+    }
+
+    return peak;
+}
+
+// Track volumes in a mini's descriptor (docs/hsf.md, "Track volumes"). The sound's note plays on track 0. A volume of 0
+// for track 0 silences it, and 0.5 halves its level. The volumes of another sound leave the sound as it is.
+void TestTrackVolumes(const std::string& library)
+{
+    const std::vector<int16_t> full = RenderAll(WriteMini("full", library, kNote, {}));
+    const auto with_volume = [&library](const std::string& name, uint32_t listed, float volume)
+    {
+        hsf::SoundTrackVolumes entry;
+        entry.sound = listed;
+        entry.volumes[0] = volume;
+        hsf::ArchiveDescriptor descriptor;
+        descriptor.flags = hsf::ArchiveDescriptor::kFlagTrackVolumes;
+        descriptor.track_volumes = {entry};
+
+        return RenderAll(WriteMiniWithDescriptor(name, library, kNote, descriptor));
+    };
+
+    const std::vector<int16_t> silenced = with_volume("silenced", kNote, 0.0f);
+    const std::vector<int16_t> half = with_volume("half", kNote, 0.5f);
+    const int peak = Peak(full);
+    Check(peak > 1000 && !silenced.empty() && Peak(silenced) == 0, "a track volume of 0 silences the track");
+    Check(half.size() == full.size() && std::abs(2 * Peak(half) - peak) <= 2,
+          "a track volume of 0.5 halves the track's level: a peak of " + std::to_string(Peak(half)) + " for " +
+              std::to_string(peak));
+    Check(with_volume("other", kLoop, 0.0f) == full, "the track volumes of another sound leave the sound as it is");
+}
+
+// Scripted starts in a mini's descriptor (docs/hsf.md, "Scripted starts"). The gated sound plays the note only when
+// its variable 0, the global variable 20 and track 0's variable 32 all hold 5 at its first tick. It then plays as the
+// plain note does. Without any one of them, or with another value, it ends at its first tick. So it does with a script
+// of another sound, and with a write 20 frames after the start. A lead-in of 10 frames leaves the note's first 10
+// frames out of the output. With a start at the end of the lead-in, the output is the note's. A sound that the script
+// starts beside the set's sound plays with it, and the set plays on until the script's last step. Seeks land there as
+// a straight render does.
+void TestScriptedStarts(const std::string& library)
+{
+    using hsf::ScriptStep;
+    const std::vector<int16_t> note = RenderAll(WriteMini("note", library, kNote, {}));
+    const auto with_script = [&library](const std::string& name, uint32_t sound, const hsf::ScriptedStart& script)
+    {
+        hsf::ArchiveDescriptor descriptor;
+        descriptor.flags = hsf::ArchiveDescriptor::kFlagScripts;
+        descriptor.scripts = {script};
+
+        return WriteMiniWithDescriptor(name, library, sound, descriptor);
+    };
+
+    const auto gated = [&with_script](const std::string& name, std::vector<ScriptStep> steps)
+    {
+        return RenderAll(with_script(name, kGated, {kGated, 0, std::move(steps)}));
+    };
+
+    const auto silent = [](const std::vector<int16_t>& samples)
+    {
+        return !samples.empty() && Peak(samples) == 0;
+    };
+
+    const ScriptStep global = ScriptStep::Write(0, 20, 5);
+    const ScriptStep start = ScriptStep::Start(0, kGated);
+    const ScriptStep local = ScriptStep::Write(0, 0, 5, kGated);
+    const ScriptStep track = ScriptStep::Write(0, 32, 5, kGated, 0);
+    Check(Peak(note) > 1000 && gated("gated", {global, start, local, track}) == note,
+          "a sound's variable, a global variable and a track's variable reach the sequence");
+    Check(silent(gated("no local", {global, start, track})), "without its variable 0, the sound ends");
+    Check(silent(gated("no global", {start, local, track})), "without the global variable, the sound ends");
+    Check(silent(gated("no track", {global, start, local})), "without track 0's variable, the sound ends");
+    Check(silent(gated("other value", {global, start, local, ScriptStep::Write(0, 32, 4, kGated, 0)})),
+          "a variable of another value ends the sound");
+    Check(silent(gated("other track", {global, start, local, ScriptStep::Write(0, 32, 5, kGated, 1)})),
+          "another track's variable ends the sound");
+    Check(silent(gated("late write", {global, start, local, ScriptStep::Write(20, 32, 5, kGated, 0)})),
+          "a write after the sound's first tick comes too late");
+    const hsf::ScriptedStart of_note = {kNote,
+                                        0,
+                                        {global, ScriptStep::Start(0, kNote), ScriptStep::Write(0, 0, 5, kNote),
+                                         ScriptStep::Write(0, 32, 5, kNote, 0)}};
+    Check(silent(RenderAll(with_script("other sound", kGated, of_note))),
+          "another sound's script leaves the sound out");
+
+    // The lead-in.
+    constexpr uint32_t kLeadIn = 10;
+    const std::vector<int16_t> late =
+        RenderAll(with_script("lead-in", kNote, {kNote, kLeadIn, {ScriptStep::Start(0, kNote)}}));
+    Check(
+        note.size() > 2 * kFrame * kLeadIn &&
+            late == std::vector<int16_t>(note.begin() + static_cast<std::ptrdiff_t>(2 * kFrame * kLeadIn), note.end()),
+        "a lead-in leaves its frames out of the output");
+    Check(RenderAll(with_script("start at the end", kNote, {kNote, kLeadIn, {ScriptStep::Start(kLeadIn, kNote)}})) ==
+              note,
+          "a start at the end of the lead-in plays from the output's start");
+
+    // A sound beside the set's sound, and a later start that holds the set open. The gated sound plays the note again
+    // after the first note's output has ended.
+    Check(gated("beside", {ScriptStep::Start(0, kNote), start}) == note, "a sound that the script starts plays too");
+    const auto later = static_cast<uint32_t>(note.size() / (2 * kFrame) + 100);
+    const hsf::ScriptedStart again = {
+        kNote,
+        0,
+        {ScriptStep::Start(0, kNote), ScriptStep::Write(later, 20, 5), ScriptStep::Start(later, kGated),
+         ScriptStep::Write(later, 0, 5, kGated), ScriptStep::Write(later, 32, 5, kGated, 0)}};
+    const std::string twice = with_script("twice", kNote, again);
+    const std::vector<int16_t> played = RenderAll(twice);
+    const std::size_t at = 2 * kFrame * later;
+    const auto part = [&played](std::size_t from, std::size_t to)
+    {
+        return std::vector<int16_t>(played.begin() + static_cast<std::ptrdiff_t>(from),
+                                    played.begin() + static_cast<std::ptrdiff_t>(to));
+    };
+    Check(played.size() == at + note.size() && part(0, note.size()) == note && Peak(part(note.size(), at)) == 0 &&
+              part(at, played.size()) == note,
+          "a start after the sound has ended plays, and the set waits for it");
+    CheckSnapshotSeeks(twice, played, 2000, {at / 2 + 333, 2345, at / 2 - 1500, 2777});
+}
+
+// The frames of a render that hold an audible sample, from the first to the last, or (-1, -1) for none.
+std::pair<int64_t, int64_t> AudibleFrames(const std::vector<int16_t>& samples)
+{
+    int64_t first = -1;
+    int64_t last = -1;
+    for (std::size_t i = 0; i < samples.size(); ++i)
+    {
+        if (samples[i] != 0)
+        {
+            const auto frame = static_cast<int64_t>(i / (2 * kFrame));
+            first = first < 0 ? frame : first;
+            last = frame;
+        }
+    }
+
+    return {first, last};
+}
+
+// Writes of kind 2 in a mini's descriptor (docs/hsf.md, "Scripted starts"). The sound plays its note in a tick only
+// when user procedure 2 has written -1 to its variable 14 in that tick. A tick comes every 2.08 frames. A write of
+// kind 2 from frame 100 takes effect in the first call from then on, and the note plays from that tick for its 250 ms
+// (50 frames). The next tick sets the variable to 4 again, and the note doesn't come back. A second write from frame
+// 300 plays the note again. A write of kind 1 at frame 100 comes between ticks. The next tick sets the variable to 4
+// before its test, and the note never plays. A write of kind 2 for a procedure that the sound never calls never takes
+// effect. Nor does one for a sound beside it whose sequence calls no procedure. Seeks land where a straight render
+// does, before and after the writes.
+void TestWritesInProcedures(const std::string& library)
+{
+    using hsf::ScriptStep;
+    const auto asks = [&library](const std::string& name, std::vector<ScriptStep> steps)
+    {
+        hsf::ArchiveDescriptor descriptor;
+        descriptor.flags = hsf::ArchiveDescriptor::kFlagScripts;
+        descriptor.scripts = {{kAsks, 0, std::move(steps)}};
+
+        return WriteMiniWithDescriptor(name, library, kAsks, descriptor);
+    };
+
+    const ScriptStep start = ScriptStep::Start(0, kAsks);
+
+    const std::vector<int16_t> once =
+        RenderAll(asks("in procedure", {start, ScriptStep::WriteInProcedure(100, 2, 14, -1, kAsks)}));
+    const auto [first, last] = AudibleFrames(once);
+    Check(first >= 100 && first <= 104 && last >= first + 45 && last <= first + 60,
+          "a write of kind 2 plays the note from the first call after its frame: frames " + std::to_string(first) +
+              " to " + std::to_string(last));
+
+    const std::string twice = asks("in procedure twice", {start, ScriptStep::WriteInProcedure(100, 2, 14, -1, kAsks),
+                                                          ScriptStep::WriteInProcedure(300, 2, 14, -1, kAsks)});
+    const std::vector<int16_t> played = RenderAll(twice);
+    const std::size_t at = 2 * kFrame * 300;
+    const auto [again, end] =
+        AudibleFrames(std::vector<int16_t>(played.begin() + static_cast<std::ptrdiff_t>(at), played.end()));
+    Check(played.size() == once.size() &&
+              std::equal(once.begin(), once.begin() + static_cast<std::ptrdiff_t>(at), played.begin()) && again >= 0 &&
+              again <= 4 && end >= again + 45 && end <= again + 60,
+          "a second write of kind 2 plays the note again from its frame: frames " + std::to_string(300 + again) +
+              " to " + std::to_string(300 + end));
+
+    const auto silent = [](const std::vector<int16_t>& samples)
+    {
+        return !samples.empty() && AudibleFrames(samples).first < 0;
+    };
+    Check(silent(RenderAll(asks("timed write", {start, ScriptStep::Write(100, 14, -1, kAsks)}))),
+          "a write of kind 1 comes too late for the test");
+    Check(silent(RenderAll(asks("other procedure", {start, ScriptStep::WriteInProcedure(100, 3, 14, -1, kAsks)}))),
+          "a write for another procedure never takes effect");
+    const std::vector<int16_t> note = RenderAll(WriteMini("note alone", library, kNote, {}));
+    const std::vector<int16_t> beside = RenderAll(
+        asks("other sound", {start, ScriptStep::Start(0, kNote), ScriptStep::WriteInProcedure(100, 2, 14, -1, kNote)}));
+    Check(AudibleFrames(beside).second == AudibleFrames(note).second,
+          "a write for another sound leaves the sound silent: only the other sound's note plays");
+
+    CheckSnapshotSeeks(twice, played, 2000, {30000, 10000, 49000, 73000, 47000});
+}
+
+// The game's handler of user procedures (docs/hsf.md, "User procedures"). The sound runs 200 ticks with its notes'
+// waits off. In each tick it sets track variables 14 and 15 to slot 5 and a count of 3, calls user procedure 0, and
+// plays the note when variable 14 then holds 1. From the constructor's state, Jamboree's handler draws 1, 0, 2, 0, 1,
+// 2, 0, 2 there, as fn_103b80 does in a run of the game's code. The note therefore plays from the first tick. Without
+// the handler, variable 14 keeps the slot, and the sound is silent. Superstars' handler reads the sound's variables 14
+// and 15, at -1, and changes nothing. Seeks land where a straight render does: the snapshots hold the handler's state.
+void TestUserProcedures()
+{
+    const std::vector<uint8_t> kBytecode = {0xB0, 48,   0xE1, 120,  0x00, 0xC7, 0x00, 0xD4, 200,  0xF0, 0x80, 0x2E,
+                                            0x05, 0x00, 0xF0, 0x80, 0x2F, 0x03, 0x00, 0xF0, 0xE0, 0x00, 0x00, 0xF0,
+                                            0x90, 0x2E, 0x01, 0x00, 0xA2, 60,   127,  24,   0x80, 0x01, 0xFC, 0xFF};
+    sar_files::ArchiveSpec spec;
+    sar_files::SoundSpec sound;
+    sound.name = "SEQ_DRAWS";
+    sound.volume = 127;
+    sound.banks = {0};
+    spec.sounds = {sound};
+    spec.banks = {{"BANK", 1}};
+    spec.wave_archives = {{"WARC", 2}};
+    spec.players = {{"PLAYER", 2}};
+    const std::vector<uint8_t> waves =
+        sar_files::WaveArchive(false, {sar_files::Wave(false, sar_files::ConstantWave(false))});
+    spec.files = {{sar_files::Sequence(false, kBytecode, {{"Start", 0}}), "", false},
+                  {sar_files::Bank(false, sar_files::OneRegionBank()), "", false},
+                  {waves, "", false}};
+    const TestArchive draws = {sar_files::Archive(false, spec), {}};
+    const auto with_handler = [&draws](const std::string& name, uint32_t handler)
+    {
+        hsf::ArchiveDescriptor descriptor;
+        if (handler != hsf::UserProcedureHandler::kNone)
+        {
+            descriptor.flags = hsf::ArchiveDescriptor::kFlagProcedures;
+            descriptor.procedures.handler = handler;
+        }
+
+        return WriteMini(name, WriteLibrary(name, draws, descriptor), kNote, {});
+    };
+
+    const std::string jamboree = with_handler("draws jamboree", hsf::UserProcedureHandler::kJamboree);
+    const std::vector<int16_t> played = RenderAll(jamboree);
+    const auto [first, last] = AudibleFrames(played);
+    Check(first >= 0 && first <= 2 && last >= 400,
+          "Jamboree's handler draws 1 in the first call, and the note plays from the first tick: frames " +
+              std::to_string(first) + " to " + std::to_string(last));
+
+    const auto silent = [](const std::vector<int16_t>& samples)
+    {
+        return !samples.empty() && AudibleFrames(samples).first < 0;
+    };
+    Check(silent(RenderAll(with_handler("draws none", hsf::UserProcedureHandler::kNone))),
+          "without a handler, the variable keeps the slot, and the sound is silent");
+    Check(silent(RenderAll(with_handler("draws superstars", hsf::UserProcedureHandler::kSuperstars))),
+          "Superstars' handler reads the sound's variables and changes nothing");
+
+    CheckSnapshotSeeks(jamboree, played, 2000, {30000, 10000, 49000, 73000, 47000});
+}
+
 void TestRefusals(const TestArchive& plain, const std::string& library)
 {
     const TestArchive grouped = MakeArchive(true);
@@ -360,11 +695,19 @@ void TestRefusals(const TestArchive& plain, const std::string& library)
     many.voice_count = 97;
     const std::string many_library = WriteLibrary("many", plain, many);
 
+    hsf::ArchiveDescriptor flagged;
+    flagged.flags = 0x80000000;
+    hsf::ArchiveDescriptor absent_companion;
+    absent_companion.flags = hsf::ArchiveDescriptor::kFlagScripts;
+    absent_companion.scripts = {{kNote, 0, {hsf::ScriptStep::Start(0, 0x01000005), hsf::ScriptStep::Start(0, kNote)}}};
+
     const std::map<std::string, std::string> refusals = {
         {WriteMini("missing", "sets/missing.hsflib", kNote, {}), "the set has no file content/sound/GROUP_ELSEWHERE"},
         {WriteMini("absent", library, 0x01000005, {}), "isn't a sequence"},
         {WriteMini("bank", library, 0x05000000, {}), "isn't a sequence"},
-        {WriteMini("many", many_library, kNote, {}), "voice count is 97"}};
+        {WriteMini("many", many_library, kNote, {}), "voice count is 97"},
+        {WriteMiniWithDescriptor("flagged", library, kNote, flagged), "version 1 has only bits 0"},
+        {WriteMiniWithDescriptor("absent companion", library, kNote, absent_companion), "isn't a sequence"}};
     CheckRefusals<hsf::Playback>(refusals, kReader);
 }
 
@@ -379,6 +722,11 @@ int main()
     TestUntagged(plain, library);
     TestReverb(plain);
     TestDelay();
+    TestReverb();
+    TestTrackVolumes(library);
+    TestScriptedStarts(library);
+    TestWritesInProcedures(library);
+    TestUserProcedures();
     TestRefusals(plain, library);
 
     return xsflib::testing::Summary("player");

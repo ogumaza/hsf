@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 
 // The tables in the main of Pikmin's Switch release (src/rip/jac_tables.*), read from a synthetic module. Its three
-// segments sit at the release's addresses. The text segment holds a MOD0 header, a dynamic section and the
-// relocations. The read-only segment holds the first actions, the actions and the effects' names. The data segment
-// holds the game's table of effects, the cutscenes' table and the cutscenes' events. A second module adds the
-// sequence index, the music's tables and the FX lines. The test then damages the modules in each way that the readers
-// refuse.
+// segments sit at the addresses of version 1.0.0's main, and it holds the tables where that build holds them. The text
+// segment holds a MOD0 header, a dynamic section and the relocations. The read-only segment holds the first actions,
+// the actions and the effects' names. The data segment holds the game's table of effects, the cutscenes' table and the
+// cutscenes' events. A second module adds the sequence index, the music's tables and the FX lines. The test then
+// damages the modules in each way that the readers refuse. It also finds each build of main by its build ID, and reads
+// two tables from other addresses.
 
 #include "rip/jac_tables.h"
 
@@ -29,6 +30,9 @@ namespace
 {
 
 namespace rip = hsf::rip;
+
+// Where the synthetic modules hold the tables.
+constexpr rip::JacTableAddresses kAt = rip::kJacBuild100.at;
 
 // The synthetic module's layout.
 constexpr uint64_t kMod0At = 0x10;
@@ -164,14 +168,14 @@ Module GoodModule()
 
     for (std::size_t i = 0; i < kFirstActions.size(); ++i)
     {
-        Put32(module, rip::kFirstActionsAt + 4 * i, static_cast<uint32_t>(kFirstActions[i]));
+        Put32(module, kAt.first_actions + 4 * i, static_cast<uint32_t>(kFirstActions[i]));
     }
 
     // Each action's fourth byte isn't one of its values.
     for (std::size_t i = 0; i < rip::kActions; ++i)
     {
         const rip::EventAction action = ActionOf(i);
-        uint8_t* row = At(module, rip::kActionsAt + rip::kActionRow * i);
+        uint8_t* row = At(module, kAt.actions + rip::kActionRow * i);
         row[0] = action.flags;
         row[1] = action.priority;
         row[2] = action.group;
@@ -181,7 +185,7 @@ Module GoodModule()
 
     for (std::size_t i = 0; i < rip::kEffects; ++i)
     {
-        const uint64_t row = rip::kEffectsAt + rip::kEffectRow * i;
+        const uint64_t row = kAt.effects + rip::kEffectRow * i;
         const std::string name = NameOf(i);
         std::copy(name.begin(), name.end(), At(module, kNamesAt + kName * i));
         Put32(module, row, static_cast<uint32_t>(i));
@@ -194,7 +198,7 @@ Module GoodModule()
     for (std::size_t i = 0; i < rip::kCutscenes; ++i)
     {
         const rip::Cutscene cutscene = CutsceneOf(i);
-        uint8_t* row = At(module, rip::kCutscenesAt + rip::kCutsceneRow * i);
+        uint8_t* row = At(module, kAt.cutscenes + rip::kCutsceneRow * i);
         row[0] = cutscene.start_effect;
         row[1] = cutscene.music_fade;
         row[2] = cutscene.game_sounds;
@@ -206,7 +210,7 @@ Module GoodModule()
     uint64_t at = kEventsAt;
     for (std::size_t i = 0; i < kEvents.size(); ++i)
     {
-        module.relocations.push_back({rip::kCutscenesAt + rip::kCutsceneRow * (i + 1) + 8, kRelative, at});
+        module.relocations.push_back({kAt.cutscenes + rip::kCutsceneRow * (i + 1) + 8, kRelative, at});
         for (const rip::CutsceneEvent& event : kEvents[i])
         {
             Put16(module, at, event.frame);
@@ -258,7 +262,7 @@ void TestRelocations()
     Check(pointers.size() == rip::kEffects + kEvents.size(),
           "the relative relocations, " + std::to_string(pointers.size()));
     Check(pointers.count(kDataAt) == 0, "a relocation of another type is left out");
-    const auto name = pointers.find(rip::kEffectsAt + rip::kEffectRow * 5 + 8);
+    const auto name = pointers.find(kAt.effects + rip::kEffectRow * 5 + 8);
     Check(name != pointers.end() && name->second == kNamesAt + kName * 5, "effect 5's name");
 }
 
@@ -266,7 +270,7 @@ void TestCutscenes()
 {
     const Module module = GoodModule();
 
-    const std::vector<rip::Cutscene> cutscenes = rip::ReadCutscenes(module.nso, rip::RelativePointers(module.nso));
+    const std::vector<rip::Cutscene> cutscenes = rip::ReadCutscenes(module.nso, kAt, rip::RelativePointers(module.nso));
 
     XSFLIB_CHECK(cutscenes.size() == rip::kCutscenes);
     for (std::size_t i = 0; i < cutscenes.size(); ++i)
@@ -305,11 +309,67 @@ void TestFramesToFinish()
     XSFLIB_CHECK(rip::FramesToFinish(cutscene, 0) == 0);
 }
 
+// The frames between two events, each from the frame in which Jac_DemoFrame reaches it.
+void TestFramesBetween()
+{
+    rip::Cutscene cutscene;
+    cutscene.events = {{5, -6}, {2, 0}, {100, 1}, {80, 2}, {700, -2}};
+
+    XSFLIB_CHECK(rip::FramesBetween(cutscene, 0, 1) == 0);
+    XSFLIB_CHECK(rip::FramesBetween(cutscene, 1, 2) == 95);
+    XSFLIB_CHECK(rip::FramesBetween(cutscene, 1, 3) == 95);
+    XSFLIB_CHECK(rip::FramesBetween(cutscene, 2, 3) == 0);
+    XSFLIB_CHECK(rip::FramesBetween(cutscene, 3, 4) == 600);
+    XSFLIB_CHECK(rip::FramesBetween(cutscene, 2, 2) == 0);
+}
+
+// Each build that hsfrip reads, found by its build ID, and IDs that no build has.
+void TestBuilds()
+{
+    for (const rip::JacBuild& build : rip::kJacBuilds)
+    {
+        const rip::JacBuild* found = rip::FindJacBuild(build.build_id);
+        Check(found == &build, "version " + std::string(build.version));
+    }
+
+    const rip::JacBuild* first = rip::FindJacBuild("342a165cc42e997edf15023143252e9f7e5c1a8d");
+    XSFLIB_CHECK(first != nullptr && first->version == "1.0.0");
+    const rip::JacBuild* update = rip::FindJacBuild("3a8e744d8f65cdeadaa1ca6782c4a12d6faa8195");
+    XSFLIB_CHECK(update != nullptr && update->version == "1.1.0");
+    XSFLIB_CHECK(rip::FindJacBuild("342a165cc42e997edf15023143252e9f7e5c1a8e") == nullptr);
+    XSFLIB_CHECK(rip::FindJacBuild("") == nullptr);
+}
+
+// The readers take the tables from the addresses that they're given: the events' tables, copied to free places of the
+// read-only segment.
+void TestOtherAddresses()
+{
+    Module module = GoodModule();
+    rip::JacTableAddresses moved = kAt;
+    moved.first_actions = kRodataAt + 0x3000;
+    moved.actions = kRodataAt + 0x4000;
+    std::copy_n(At(module, kAt.first_actions), rip::kEventTypes * 4, At(module, moved.first_actions));
+    std::copy_n(At(module, kAt.actions), rip::kActions * rip::kActionRow, At(module, moved.actions));
+    std::fill_n(At(module, kAt.first_actions), rip::kEventTypes * 4, uint8_t{0});
+
+    const rip::EventActions tables = rip::ReadEventActions(module.nso, moved);
+    const rip::EventActions old_places = rip::ReadEventActions(module.nso, kAt);
+
+    XSFLIB_CHECK(tables.first_actions == kFirstActions);
+    XSFLIB_CHECK(tables.actions.size() == rip::kActions);
+    for (std::size_t i = 0; i < tables.actions.size(); ++i)
+    {
+        Check(SameAction(tables.actions[i], ActionOf(i)), "moved action " + std::to_string(i));
+    }
+
+    XSFLIB_CHECK(old_places.first_actions == std::vector<int32_t>(rip::kEventTypes, 0));
+}
+
 void TestActions()
 {
     const Module module = GoodModule();
 
-    const rip::EventActions tables = rip::ReadEventActions(module.nso);
+    const rip::EventActions tables = rip::ReadEventActions(module.nso, kAt);
 
     XSFLIB_CHECK(tables.first_actions == kFirstActions);
     XSFLIB_CHECK(tables.actions.size() == rip::kActions);
@@ -323,7 +383,7 @@ void TestEffects()
 {
     const Module module = GoodModule();
 
-    const std::vector<rip::Effect> effects = rip::ReadEffects(module.nso, rip::RelativePointers(module.nso));
+    const std::vector<rip::Effect> effects = rip::ReadEffects(module.nso, kAt, rip::RelativePointers(module.nso));
 
     XSFLIB_CHECK(effects.size() == rip::kEffects);
     for (std::size_t i = 0; i < effects.size(); ++i)
@@ -361,9 +421,9 @@ std::string ErrorAfter(Damage damage)
     const auto read = [&]
     {
         const std::map<uint64_t, uint64_t> pointers = rip::RelativePointers(module.nso);
-        rip::ReadCutscenes(module.nso, pointers);
-        rip::ReadEventActions(module.nso);
-        rip::ReadEffects(module.nso, pointers);
+        rip::ReadCutscenes(module.nso, kAt, pointers);
+        rip::ReadEventActions(module.nso, kAt);
+        rip::ReadEffects(module.nso, kAt, pointers);
     };
 
     return ErrorOf<xsflib::FormatError>(read);
@@ -382,9 +442,9 @@ void TestDamage()
     XSFLIB_CHECK(ErrorAfter([](Module& m) { Finish(m, 24 * 1000); }) == "main's segments don't hold the relocations");
 
     // The tables, cut short.
-    XSFLIB_CHECK(ErrorAfter([](Module& m) { m.nso.data.bytes.resize(rip::kCutscenesAt + 0x700 - kDataAt); }) ==
+    XSFLIB_CHECK(ErrorAfter([](Module& m) { m.nso.data.bytes.resize(kAt.cutscenes + 0x700 - kDataAt); }) ==
                  "main's segments don't hold the cutscenes' table");
-    XSFLIB_CHECK(ErrorAfter([](Module& m) { m.nso.rodata.bytes.resize(rip::kActionsAt + 0x100 - kRodataAt); }) ==
+    XSFLIB_CHECK(ErrorAfter([](Module& m) { m.nso.rodata.bytes.resize(kAt.actions + 0x100 - kRodataAt); }) ==
                  "main's segments don't hold the events' actions");
     XSFLIB_CHECK(ErrorAfter([](Module& m) { m.nso.rodata.bytes.resize(0x400); }) ==
                  "main's segments don't hold the first actions of the events' types");
@@ -399,7 +459,7 @@ void TestDamage()
         }
     };
     XSFLIB_CHECK(ErrorAfter(endless) == "main's segments don't hold the events of cutscene 3");
-    XSFLIB_CHECK(ErrorAfter([](Module& m) { Put64(m, rip::kCutscenesAt + rip::kCutsceneRow * 4 + 8, kEventsAt); }) ==
+    XSFLIB_CHECK(ErrorAfter([](Module& m) { Put64(m, kAt.cutscenes + rip::kCutsceneRow * 4 + 8, kEventsAt); }) ==
                  "the pointer to the events of cutscene 4 isn't relocated");
 
     // An effect whose name has a relocation of another type, and a name without its NUL at the read-only segment's
@@ -506,14 +566,14 @@ Module MusicModule()
 
     // The sequence index, then a byte that the reader mustn't take.
     const std::vector<uint8_t> index = IndexBytes();
-    std::copy(index.begin(), index.end(), At(module, rip::kSequenceIndexAt));
-    *At(module, rip::kSequenceIndexAt + index.size()) = 0x55;
+    std::copy(index.begin(), index.end(), At(module, kAt.sequence_index));
+    *At(module, kAt.sequence_index + index.size()) = 0x55;
 
     // Each piece's pointers, with a set and a volume of another mode after the first.
     for (std::size_t i = 0; i < rip::kPieces; ++i)
     {
-        module.relocations.push_back({rip::kPlayingTracksAt + 8 * i, kRelative, kTrackSetsAt + 8 * i});
-        module.relocations.push_back({rip::kTrackVolumesAt + 8 * i, kRelative, kVolumePairsAt + 8 * i});
+        module.relocations.push_back({kAt.playing_tracks + 8 * i, kRelative, kTrackSetsAt + 8 * i});
+        module.relocations.push_back({kAt.track_volumes + 8 * i, kRelative, kVolumePairsAt + 8 * i});
         Put16(module, kTrackSetsAt + 8 * i, TracksOf(i));
         Put16(module, kTrackSetsAt + 8 * i + 2, 0x1111);
         Put32(module, kVolumePairsAt + 8 * i, std::bit_cast<uint32_t>(VolumeOf(i)));
@@ -522,23 +582,23 @@ Module MusicModule()
 
     for (std::size_t level = 0; level < rip::kLevels; ++level)
     {
-        Put32(module, rip::kMusicVolumesAt + 4 * level, std::bit_cast<uint32_t>(MusicVolumeOf(level)));
-        Put16(module, rip::kCutsceneLevelsAt + 2 * level, CutsceneLevelOf(level));
-        Put16(module, rip::kEffectLevelsAt + 2 * level, EffectLevelOf(level));
+        Put32(module, kAt.music_volumes + 4 * level, std::bit_cast<uint32_t>(MusicVolumeOf(level)));
+        Put16(module, kAt.cutscene_levels + 2 * level, CutsceneLevelOf(level));
+        Put16(module, kAt.effect_levels + 2 * level, EffectLevelOf(level));
     }
     for (std::size_t i = 0; i < rip::kParts; ++i)
     {
-        Put32(module, rip::kPartScenesAt + 4 * i, PartSceneOf(i));
+        Put32(module, kAt.part_scenes + 4 * i, PartSceneOf(i));
     }
 
     // The table of buses and the FX lines' settings. Each line's second byte isn't one of its values.
     for (std::size_t place = 0; place < rip::kBuses; ++place)
     {
-        Put16(module, rip::kBusesAt + 2 * place, BusOf(place));
+        Put16(module, kAt.buses + 2 * place, BusOf(place));
     }
     for (std::size_t i = 0; i < hsf::JaudioSettings::kFxLines; ++i)
     {
-        const uint64_t line = rip::kFxLinesAt + rip::kFxLineSettings * i;
+        const uint64_t line = kAt.fx_lines + rip::kFxLineSettings * i;
         const hsf::JaudioFxLine settings = LineOf(i);
         *At(module, line) = static_cast<uint8_t>(settings.flags);
         *At(module, line + 1) = 0xee;
@@ -562,14 +622,14 @@ void TestSequenceIndex()
 {
     const Module module = MusicModule();
 
-    XSFLIB_CHECK(rip::ReadSequenceIndex(module.nso) == IndexBytes());
+    XSFLIB_CHECK(rip::ReadSequenceIndex(module.nso, kAt) == IndexBytes());
 }
 
 void TestMusicTables()
 {
     const Module module = MusicModule();
 
-    const rip::MusicTables tables = rip::ReadMusicTables(module.nso, rip::RelativePointers(module.nso));
+    const rip::MusicTables tables = rip::ReadMusicTables(module.nso, kAt, rip::RelativePointers(module.nso));
 
     XSFLIB_CHECK(tables.playing_tracks.size() == rip::kPieces && tables.track_volumes.size() == rip::kPieces);
     for (std::size_t i = 0; i < rip::kPieces && i < tables.playing_tracks.size() && i < tables.track_volumes.size();
@@ -591,7 +651,7 @@ void TestFxLines()
 {
     const Module module = MusicModule();
 
-    const std::array<hsf::JaudioFxLine, hsf::JaudioSettings::kFxLines> lines = rip::ReadFxLines(module.nso);
+    const std::array<hsf::JaudioFxLine, hsf::JaudioSettings::kFxLines> lines = rip::ReadFxLines(module.nso, kAt);
 
     for (std::size_t i = 0; i < lines.size(); ++i)
     {
@@ -608,9 +668,9 @@ std::string MusicErrorAfter(Damage damage)
 
     const auto read = [&]
     {
-        rip::ReadSequenceIndex(module.nso);
-        rip::ReadMusicTables(module.nso, rip::RelativePointers(module.nso));
-        rip::ReadFxLines(module.nso);
+        rip::ReadSequenceIndex(module.nso, kAt);
+        rip::ReadMusicTables(module.nso, kAt, rip::RelativePointers(module.nso));
+        rip::ReadFxLines(module.nso, kAt);
     };
 
     return ErrorOf<xsflib::FormatError>(read);
@@ -629,21 +689,21 @@ void TestMusicDamage()
     XSFLIB_CHECK(MusicErrorAfter([](Module&) {}).empty());
 
     // The sequence index without its tag, and with more sequences than the data segment holds.
-    XSFLIB_CHECK(MusicErrorAfter([](Module& m) { *At(m, rip::kSequenceIndexAt) = 'b'; }) ==
+    XSFLIB_CHECK(MusicErrorAfter([](Module& m) { *At(m, kAt.sequence_index) = 'b'; }) ==
                  "main's sequence index doesn't start with BARC");
-    XSFLIB_CHECK(MusicErrorAfter([](Module& m) { Put32(m, rip::kSequenceIndexAt + rip::kIndexCountAt, 1000); }) ==
+    XSFLIB_CHECK(MusicErrorAfter([](Module& m) { Put32(m, kAt.sequence_index + rip::kIndexCountAt, 1000); }) ==
                  "main's segments don't hold the sequence index");
 
     // A pointer of the music's tables without its relocation, null or not, and a table past the read-only segment.
-    XSFLIB_CHECK(MusicErrorAfter([](Module& m) { Unrelocate(m, rip::kTrackVolumesAt + 8 * 5, kVolumePairsAt); }) ==
+    XSFLIB_CHECK(MusicErrorAfter([](Module& m) { Unrelocate(m, kAt.track_volumes + 8 * 5, kVolumePairsAt); }) ==
                  "the pointer to the volumes of the piece of file 7 isn't relocated");
-    XSFLIB_CHECK(MusicErrorAfter([](Module& m) { Unrelocate(m, rip::kPlayingTracksAt + 8 * 2, 0); }) ==
+    XSFLIB_CHECK(MusicErrorAfter([](Module& m) { Unrelocate(m, kAt.playing_tracks + 8 * 2, 0); }) ==
                  "the pointer to the child tracks of the piece of file 4 isn't relocated");
     const auto far = [](Module& m)
     {
         for (Relocation& relocation : m.relocations)
         {
-            if (relocation.at == rip::kPlayingTracksAt + 8 * 3)
+            if (relocation.at == kAt.playing_tracks + 8 * 3)
             {
                 relocation.target = kRodataAt + kLongRodataSize - 1;
             }
@@ -653,15 +713,15 @@ void TestMusicDamage()
     XSFLIB_CHECK(MusicErrorAfter(far) == "main's segments don't hold the child tracks of the piece of file 5");
 
     // An FX line that names a bus past the table's end, the table of buses cut short and the FX lines cut short.
-    XSFLIB_CHECK(MusicErrorAfter([](Module& m) { Put16(m, rip::kFxLinesAt + rip::kFxLineSettings * 2 + 6, 12); }) ==
+    XSFLIB_CHECK(MusicErrorAfter([](Module& m) { Put16(m, kAt.fx_lines + rip::kFxLineSettings * 2 + 6, 12); }) ==
                  "the settings of FX line 2 name a bus past the table's end");
-    XSFLIB_CHECK(MusicErrorAfter([](Module& m) { m.nso.rodata.bytes.resize(rip::kBusesAt + 4 - kRodataAt); }) ==
+    XSFLIB_CHECK(MusicErrorAfter([](Module& m) { m.nso.rodata.bytes.resize(kAt.buses + 4 - kRodataAt); }) ==
                  "main's segments don't hold the table of the DSP's buses");
 
     // The data segment cut in FX line 3's settings. The sequence index lies past them.
     Module cut = MusicModule();
-    cut.nso.data.bytes.resize(rip::kFxLinesAt + rip::kFxLineSettings * 3 + 4 - kDataAt);
-    XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { rip::ReadFxLines(cut.nso); }) ==
+    cut.nso.data.bytes.resize(kAt.fx_lines + rip::kFxLineSettings * 3 + 4 - kDataAt);
+    XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { rip::ReadFxLines(cut.nso, kAt); }) ==
                  "main's segments don't hold the settings of FX line 3");
 }
 
@@ -674,7 +734,10 @@ int main()
         TestRelocations();
         TestCutscenes();
         TestFramesToFinish();
+        TestFramesBetween();
+        TestBuilds();
         TestActions();
+        TestOtherAddresses();
         TestEffects();
         TestBounds();
         TestDamage();

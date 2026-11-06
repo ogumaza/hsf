@@ -15,6 +15,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -36,6 +37,7 @@ namespace fs = std::filesystem;
 constexpr char kBoot[] = "boot.lua";
 constexpr char kVoiceSetting[] = "SetVoiceCountMax(";
 constexpr char kEffectList[] = "Data/SheetBin/SoundEffectList.elf";
+constexpr std::string_view kSheets = "Data/SheetBin";
 
 // The presets that the games put on the aux buses (StartupEffects), and an I3DL2 reverb's type as an aux effect.
 constexpr char kDefaultReverb[] = "I3DL2_Default";
@@ -102,6 +104,32 @@ std::optional<int> VoiceCount(const std::vector<uint8_t>& text)
     }
 
     return std::nullopt;
+}
+
+// Whether `path`, a file's path among a game's files or in a Bezel Engine archive, is a sound sheet in Data/SheetBin.
+bool IsSoundSheetPath(std::string_view path)
+{
+    const std::size_t slash = path.rfind('/');
+    if (slash == std::string_view::npos)
+    {
+        return false;
+    }
+
+    const std::string_view folder = path.substr(0, slash);
+    const bool in_sheets = folder.ends_with(kSheets) &&
+                           (folder.size() == kSheets.size() || folder[folder.size() - kSheets.size() - 1] == '/');
+
+    return in_sheets && ntdlib::bezel::IsSoundSheet(path.substr(slash + 1));
+}
+
+// Adds the records of a sound sheet to `out`. A sheet that doesn't parse adds none.
+void AddSoundSheet(std::vector<uint8_t> bytes, GameFiles& out)
+{
+    Sheet sheet;
+    if (!Sheet::Parse(std::move(bytes), sheet))
+    {
+        out.sound_levels.AddSheet(sheet);
+    }
 }
 
 // Adds the effects of a sound effect list to `out`. The list has WarioWare: Get It Together!'s form or WarioWare: Move
@@ -171,6 +199,10 @@ void AddArchive(const fs::path& path, const std::string& prefix, GameFiles& out,
         {
             AddEffectList(std::move(sheet_bytes), out);
         }
+        else if (IsSoundSheetPath(asset.name) && BeaArchive::Read(data, asset, sheet_bytes))
+        {
+            AddSoundSheet(std::move(sheet_bytes), out);
+        }
     }
 }
 
@@ -234,6 +266,15 @@ std::optional<std::string> LoadFolder(const fs::path& input, GameFiles& out)
             if (xsflib::ReadFile(path, sheet_bytes))
             {
                 AddEffectList(std::move(sheet_bytes), out);
+            }
+        }
+        else if (IsSoundSheetPath(name))
+        {
+            // A sound sheet in a Bezel Engine archive that was unpacked into a folder.
+            std::vector<uint8_t> sheet_bytes;
+            if (xsflib::ReadFile(path, sheet_bytes))
+            {
+                AddSoundSheet(std::move(sheet_bytes), out);
             }
         }
         else if (path.filename() == kBoot)
@@ -342,6 +383,23 @@ std::vector<BusEffect> StartupEffects(const GameFiles& game)
     }
 
     return effects;
+}
+
+std::vector<std::string> SarcsBeside(const GameFiles& game, const std::string& archive_path)
+{
+    const std::string folder = archive_path.substr(0, archive_path.rfind('/') + 1);
+    std::vector<std::string> sarcs;
+    for (const std::string& path : game.files)
+    {
+        if (path.starts_with(folder) && path.find('/', folder.size()) == std::string::npos && path.ends_with(".sarc"))
+        {
+            sarcs.push_back(path);
+        }
+    }
+
+    std::ranges::sort(sarcs);
+
+    return sarcs;
 }
 
 std::optional<std::string> EncryptedKind(const fs::path& path)

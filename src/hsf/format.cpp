@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -17,6 +18,7 @@
 #include "xsflib/bytes.h"
 #include "xsflib/psf/descriptor.h"
 #include "xsflib/psf/psf.h"
+#include "xsflib/text.h"
 
 namespace hsf
 {
@@ -32,6 +34,25 @@ using xsflib::psf::Put32;
 constexpr std::size_t kJaudioBytes = 4 + 4 + 8 + 4 * JaudioSettings::kCategories + 28 * JaudioSettings::kFxLines + 4;
 constexpr std::size_t kTrackStatesBytes = 12;
 constexpr std::size_t kSoundVolumeBytes = 8;
+
+// Version 1's track volumes, after the paths: the count of the sounds, then each sound's item ID and its 16 volumes.
+constexpr std::size_t kSoundTrackVolumesBytes = 4 + 4 * SoundTrackVolumes::kTracks;
+
+// Version 1's scripted starts, after the track volumes: the count of the sounds, then each sound's item ID, its lead-in
+// and the count of its steps, then each step's frame, kind, procedure, variable, track, value and item ID.
+constexpr std::size_t kScriptBytes = 12;
+constexpr std::size_t kScriptStepBytes = 16;
+
+// Version 1's user procedures, after the scripted starts: the handler and the count of its tables, then each table's
+// number and its 128 values.
+constexpr std::size_t kProceduresBytes = 8;
+constexpr std::size_t kProcedureTableBytes = 4 + 2 * UserProcedureTable::kValues;
+
+// The longest a sound plays after its lead-in's last step: the length analysis's limit of 600 s, in frames of 5 ms.
+constexpr uint64_t kMaxScriptFrames = 120000;
+
+// The type of a sound in the top byte of its nn::atk item ID (ntdlib's sar::kSoundItem).
+constexpr uint32_t kSoundItemType = 0x01;
 
 // Library 2's fields after version 2's: the effect sequence's file and volume, the conductor archive's path, the
 // pieces of music and the sounds that start after draws. Each piece takes 12 bytes before its conductor's name. Its
@@ -725,6 +746,473 @@ std::optional<std::string> CheckJaudio(const ArchiveDescriptor& d)
     return std::nullopt;
 }
 
+// Writes version 1's track volumes (kFlagTrackVolumes).
+void PutTrackVolumes(std::vector<uint8_t>& v, const std::vector<SoundTrackVolumes>& sounds)
+{
+    Put32(v, static_cast<uint32_t>(sounds.size()));
+    for (const SoundTrackVolumes& sound : sounds)
+    {
+        Put32(v, sound.sound);
+        for (const float volume : sound.volumes)
+        {
+            Put32(v, std::bit_cast<uint32_t>(volume));
+        }
+    }
+}
+
+// Reads version 1's track volumes after the paths' padding, from `pos`, the end of the last path, and moves `pos` past
+// them. False if `data` ends first.
+bool ReadTrackVolumes(const std::vector<uint8_t>& data, std::size_t& pos, std::vector<SoundTrackVolumes>& sounds)
+{
+    pos = (pos + 3) & ~std::size_t{3};
+    if (pos > data.size() || data.size() - pos < 4)
+    {
+        return false;
+    }
+
+    const uint32_t count = xsflib::LoadLe32(&data[pos]);
+    pos += 4;
+    if (count > (data.size() - pos) / kSoundTrackVolumesBytes)
+    {
+        return false;
+    }
+
+    sounds.resize(count);
+    for (SoundTrackVolumes& sound : sounds)
+    {
+        sound.sound = xsflib::LoadLe32(&data[pos]);
+        for (std::size_t t = 0; t < SoundTrackVolumes::kTracks; ++t)
+        {
+            sound.volumes[t] = std::bit_cast<float>(xsflib::LoadLe32(&data[pos + 4 + 4 * t]));
+        }
+        pos += kSoundTrackVolumesBytes;
+    }
+
+    return true;
+}
+
+// Writes version 1's scripted starts and add-on archives (kFlagScripts).
+void PutScripts(std::vector<uint8_t>& v, const std::vector<ScriptedStart>& scripts,
+                const std::vector<AddonArchive>& addons)
+{
+    Put32(v, static_cast<uint32_t>(scripts.size()));
+    for (const ScriptedStart& script : scripts)
+    {
+        Put32(v, script.sound);
+        Put32(v, script.lead_in);
+        Put32(v, static_cast<uint32_t>(script.steps.size()));
+        for (const ScriptStep& step : script.steps)
+        {
+            Put32(v, step.frame);
+            v.push_back(step.kind);
+            v.push_back(step.procedure);
+            Put16(v, step.variable);
+            Put16(v, step.track);
+            Put16(v, static_cast<uint16_t>(step.value));
+            Put32(v, step.sound);
+        }
+    }
+
+    Put32(v, static_cast<uint32_t>(addons.size()));
+    for (const AddonArchive& addon : addons)
+    {
+        xsflib::psf::PutArchivePaths(v, addon);
+    }
+}
+
+// Reads version 1's scripted starts and add-on archives from `pos`, the end of the paths or of the track volumes, after
+// the padding, and moves `pos` past them. False if `data` ends first.
+bool ReadScripts(const std::vector<uint8_t>& data, std::size_t& pos, std::vector<ScriptedStart>& scripts,
+                 std::vector<AddonArchive>& addons)
+{
+    pos = (pos + 3) & ~std::size_t{3};
+    if (pos > data.size() || data.size() - pos < 4)
+    {
+        return false;
+    }
+
+    const uint32_t count = xsflib::LoadLe32(&data[pos]);
+    pos += 4;
+    if (count > (data.size() - pos) / kScriptBytes)
+    {
+        return false;
+    }
+
+    scripts.resize(count);
+    for (ScriptedStart& script : scripts)
+    {
+        if (data.size() - pos < kScriptBytes)
+        {
+            return false;
+        }
+
+        script.sound = xsflib::LoadLe32(&data[pos]);
+        script.lead_in = xsflib::LoadLe32(&data[pos + 4]);
+        const uint32_t steps = xsflib::LoadLe32(&data[pos + 8]);
+        pos += kScriptBytes;
+        if (steps > (data.size() - pos) / kScriptStepBytes)
+        {
+            return false;
+        }
+
+        script.steps.resize(steps);
+        for (ScriptStep& step : script.steps)
+        {
+            step.frame = xsflib::LoadLe32(&data[pos]);
+            step.kind = data[pos + 4];
+            step.procedure = data[pos + 5];
+            step.variable = xsflib::LoadLe16(&data[pos + 6]);
+            step.track = xsflib::LoadLe16(&data[pos + 8]);
+            step.value = static_cast<int16_t>(xsflib::LoadLe16(&data[pos + 10]));
+            step.sound = xsflib::LoadLe32(&data[pos + 12]);
+            pos += kScriptStepBytes;
+        }
+    }
+
+    if (data.size() - pos < 4)
+    {
+        return false;
+    }
+
+    const uint32_t addon_count = xsflib::LoadLe32(&data[pos]);
+    pos += 4;
+    if (addon_count > (data.size() - pos) / 4)
+    {
+        return false;
+    }
+
+    addons.resize(addon_count);
+    for (AddonArchive& addon : addons)
+    {
+        pos = (pos + 3) & ~std::size_t{3};
+        if (pos > data.size() || !xsflib::psf::ReadArchivePaths(data, pos, addon))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// Writes version 1's user procedures (kFlagProcedures).
+void PutProcedures(std::vector<uint8_t>& v, const UserProcedureHandler& procedures)
+{
+    Put32(v, procedures.handler);
+    Put32(v, static_cast<uint32_t>(procedures.tables.size()));
+    for (const UserProcedureTable& table : procedures.tables)
+    {
+        Put32(v, table.number);
+        for (const int16_t value : table.values)
+        {
+            Put16(v, static_cast<uint16_t>(value));
+        }
+    }
+}
+
+// Reads version 1's user procedures from `pos`, the end of the blocks before them, after the padding. False if `data`
+// ends first.
+bool ReadProcedures(const std::vector<uint8_t>& data, std::size_t pos, UserProcedureHandler& procedures)
+{
+    pos = (pos + 3) & ~std::size_t{3};
+    if (pos > data.size() || data.size() - pos < kProceduresBytes)
+    {
+        return false;
+    }
+
+    procedures.handler = xsflib::LoadLe32(&data[pos]);
+    const uint32_t count = xsflib::LoadLe32(&data[pos + 4]);
+    pos += kProceduresBytes;
+    if (count > (data.size() - pos) / kProcedureTableBytes)
+    {
+        return false;
+    }
+
+    procedures.tables.resize(count);
+    for (UserProcedureTable& table : procedures.tables)
+    {
+        table.number = xsflib::LoadLe32(&data[pos]);
+        for (std::size_t i = 0; i < UserProcedureTable::kValues; ++i)
+        {
+            table.values[i] = static_cast<int16_t>(xsflib::LoadLe16(&data[pos + 4 + 2 * i]));
+        }
+        pos += kProcedureTableBytes;
+    }
+
+    return true;
+}
+
+// Why a version 1 player can't play a descriptor's flags and track volumes, or nothing. The flags are
+// kFlagTrackVolumes, kFlagScripts and kFlagProcedures. With the first, each sound is listed once, with 16 volumes that
+// are finite numbers of 0 or more.
+std::optional<std::string> CheckTrackVolumes(const ArchiveDescriptor& d)
+{
+    constexpr uint32_t kFlags =
+        ArchiveDescriptor::kFlagTrackVolumes | ArchiveDescriptor::kFlagScripts | ArchiveDescriptor::kFlagProcedures;
+    if ((d.flags & ~kFlags) != 0)
+    {
+        return "the archive descriptor's flags are " + xsflib::Hex(d.flags) +
+               "; version 1 has only bits 0 (track volumes), 1 (scripted starts) and 2 (user procedures)";
+    }
+
+    if ((d.flags & ArchiveDescriptor::kFlagTrackVolumes) == 0 && !d.track_volumes.empty())
+    {
+        return std::string("the archive descriptor lists track volumes without its flag for them (bit 0)");
+    }
+
+    for (std::size_t i = 0; i < d.track_volumes.size(); ++i)
+    {
+        const SoundTrackVolumes& sound = d.track_volumes[i];
+        const auto same_sound = [&sound](const SoundTrackVolumes& other)
+        {
+            return other.sound == sound.sound;
+        };
+        if (std::any_of(d.track_volumes.begin() + static_cast<std::ptrdiff_t>(i) + 1, d.track_volumes.end(),
+                        same_sound))
+        {
+            return "the archive descriptor lists the track volumes of sound " + xsflib::Hex(sound.sound, 8) +
+                   " more than once";
+        }
+
+        const auto volume_ok = [](float volume)
+        {
+            return std::isfinite(volume) && volume >= 0.0f;
+        };
+        if (!std::all_of(sound.volumes.begin(), sound.volumes.end(), volume_ok))
+        {
+            return "a track volume of sound " + xsflib::Hex(sound.sound, 8) +
+                   " in the archive descriptor isn't a finite number of 0 or more";
+        }
+    }
+
+    return std::nullopt;
+}
+
+// Why a version 1 player can't play a step of `script`, the step at `i`, or nothing. A start starts a sound, once, from
+// the set's archive or from one of `addons` add-on archives, and sets no variable. A write sets a variable below 48, of
+// a sound that an earlier step starts, of the global variables or of a track from 0 to 15 of such a sound. A write of
+// kind 2 waits for a procedure call of a sound that an earlier step starts. No other write of the same kind and
+// procedure in the same frame sets the same variable. Only a write of kind 2 names a procedure.
+std::optional<std::string> CheckStep(const ScriptedStart& script, std::size_t i, std::size_t addons)
+{
+    const ScriptStep& step = script.steps[i];
+    const std::string where = "step " + std::to_string(i) + " of sound " + xsflib::Hex(script.sound, 8) + "'s script";
+    const auto before = std::span(script.steps).first(i);
+    const auto starts = [&before](uint32_t sound)
+    {
+        return std::any_of(before.begin(), before.end(),
+                           [sound](const ScriptStep& s) { return s.kind == ScriptStep::kStart && s.sound == sound; });
+    };
+
+    if (i > 0 && step.frame < script.steps[i - 1].frame)
+    {
+        return "the archive descriptor's " + where + " comes at frame " + std::to_string(step.frame) +
+               ", before the step ahead of it";
+    }
+
+    if (step.kind > ScriptStep::kWriteInProcedure)
+    {
+        return "the archive descriptor's " + where + " is of kind " + std::to_string(step.kind) +
+               "; version 1 has only 0 (a start), 1 (a write) and 2 (a write in a user procedure)";
+    }
+
+    const bool in_procedure = step.kind == ScriptStep::kWriteInProcedure;
+    if (!in_procedure && step.procedure != 0)
+    {
+        return "the archive descriptor's " + where + " names user procedure " + std::to_string(step.procedure) +
+               "; only a write of kind 2 names one";
+    }
+
+    if (step.kind == ScriptStep::kStart)
+    {
+        if (step.sound >> 24 != kSoundItemType)
+        {
+            return "the archive descriptor's " + where + " starts item " + xsflib::Hex(step.sound, 8) +
+                   "; the item isn't a sound";
+        }
+
+        if (step.variable != ScriptStep::kNone && step.variable >= addons)
+        {
+            return "the archive descriptor's " + where + " starts a sound of add-on archive " +
+                   std::to_string(step.variable) + "; it lists " + std::to_string(addons) + " add-on archives";
+        }
+
+        if (step.track != ScriptStep::kNone || step.value != 0)
+        {
+            return "the archive descriptor's " + where + " starts a sound and sets a variable";
+        }
+
+        if (starts(step.sound))
+        {
+            return "the archive descriptor's " + where + " starts sound " + xsflib::Hex(step.sound, 8) + " again";
+        }
+
+        return std::nullopt;
+    }
+
+    const std::string name = "variable " + std::to_string(step.variable);
+    if (step.variable >= ScriptStep::kTrackEnd)
+    {
+        return "the archive descriptor's " + where + " sets " + name + "; the sequence variables are 0 to 47";
+    }
+
+    const bool global = step.variable >= ScriptStep::kLocalEnd && step.variable < ScriptStep::kGlobalEnd;
+    const bool track_variable = step.variable >= ScriptStep::kGlobalEnd;
+    if (track_variable && step.track >= SoundTrackVolumes::kTracks)
+    {
+        return "the archive descriptor's " + where + " sets " + name + " on track " + std::to_string(step.track) +
+               "; a track's variable is on track 0 to 15";
+    }
+
+    if (!track_variable && step.track != ScriptStep::kNone)
+    {
+        return "the archive descriptor's " + where + " sets " + name + " on track " + std::to_string(step.track) +
+               "; only variables 32 to 47 are a track's";
+    }
+
+    if (global && !in_procedure && step.sound != 0)
+    {
+        return "the archive descriptor's " + where + " sets the global " + name + " of sound " +
+               xsflib::Hex(step.sound, 8) + "; a global variable is no sound's";
+    }
+
+    if ((!global || in_procedure) && !starts(step.sound))
+    {
+        return "the archive descriptor's " + where + " sets " + name + " of sound " + xsflib::Hex(step.sound, 8) +
+               "; no step before it starts that sound";
+    }
+
+    const auto same = [&step](const ScriptStep& other)
+    {
+        return other.kind == step.kind && other.procedure == step.procedure && other.frame == step.frame &&
+               other.variable == step.variable && other.track == step.track && other.sound == step.sound;
+    };
+    if (std::any_of(before.begin(), before.end(), same))
+    {
+        return "the archive descriptor's " + where + " sets " + name + " a second time in frame " +
+               std::to_string(step.frame) +
+               (in_procedure ? " for user procedure " + std::to_string(step.procedure) : std::string());
+    }
+
+    return std::nullopt;
+}
+
+// Why a version 1 player can't play a descriptor's scripted starts, or nothing. Each sound is listed once, by a sound's
+// item ID. Its steps come in frame order, and one of them starts the sound from the set's archive by the end of the
+// lead-in. The lead-in ends at most 600 s after the last step.
+std::optional<std::string> CheckScripts(const ArchiveDescriptor& d)
+{
+    if ((d.flags & ArchiveDescriptor::kFlagScripts) == 0 && (!d.scripts.empty() || !d.addons.empty()))
+    {
+        return std::string("the archive descriptor lists scripted starts without its flag for them (bit 1)");
+    }
+
+    for (std::size_t i = 0; i < d.scripts.size(); ++i)
+    {
+        const ScriptedStart& script = d.scripts[i];
+        const std::string name = "sound " + xsflib::Hex(script.sound, 8);
+        const auto same_sound = [&script](const ScriptedStart& other)
+        {
+            return other.sound == script.sound;
+        };
+        if (std::any_of(d.scripts.begin() + static_cast<std::ptrdiff_t>(i) + 1, d.scripts.end(), same_sound))
+        {
+            return "the archive descriptor lists the scripted start of " + name + " more than once";
+        }
+
+        if (script.sound >> 24 != kSoundItemType)
+        {
+            return "the archive descriptor lists a scripted start for item " + xsflib::Hex(script.sound, 8) +
+                   "; the item isn't a sound";
+        }
+
+        for (std::size_t k = 0; k < script.steps.size(); ++k)
+        {
+            if (auto err = CheckStep(script, k, d.addons.size()))
+            {
+                return err;
+            }
+        }
+
+        const auto starts_sound = [&script](const ScriptStep& s)
+        {
+            return s.kind == ScriptStep::kStart && s.sound == script.sound && s.variable == ScriptStep::kNone;
+        };
+        const auto start = std::find_if(script.steps.begin(), script.steps.end(), starts_sound);
+        if (start == script.steps.end())
+        {
+            return "the archive descriptor's script of " + name + " never starts the sound from the set's archive";
+        }
+
+        if (start->frame > script.lead_in)
+        {
+            return "the archive descriptor's script of " + name + " starts the sound at frame " +
+                   std::to_string(start->frame) + ", after the lead-in of " + std::to_string(script.lead_in) +
+                   " frames";
+        }
+
+        const uint64_t last = script.steps.back().frame;
+        if (script.lead_in > last + kMaxScriptFrames)
+        {
+            return "the archive descriptor's script of " + name + " has a lead-in of " +
+                   std::to_string(script.lead_in) + " frames; it ends at most 120000 frames after the last step";
+        }
+    }
+
+    return std::nullopt;
+}
+
+// Why a version 1 player can't play a descriptor's user procedures, or nothing. The handler is Jamboree's or
+// Superstars'. Only Jamboree's handler reads tables. Each table's number is below 16, and the descriptor lists it once.
+std::optional<std::string> CheckProcedures(const ArchiveDescriptor& d)
+{
+    const UserProcedureHandler& procedures = d.procedures;
+    if ((d.flags & ArchiveDescriptor::kFlagProcedures) == 0)
+    {
+        if (procedures != UserProcedureHandler{})
+        {
+            return std::string("the archive descriptor names user procedures without its flag for them (bit 2)");
+        }
+
+        return std::nullopt;
+    }
+
+    if (procedures.handler != UserProcedureHandler::kJamboree &&
+        procedures.handler != UserProcedureHandler::kSuperstars)
+    {
+        return "the archive descriptor names handler " + std::to_string(procedures.handler) +
+               " of user procedures; version 1 has only 1 (Super Mario Party Jamboree's) and 2 (Mario Party "
+               "Superstars')";
+    }
+
+    if (procedures.handler != UserProcedureHandler::kJamboree && !procedures.tables.empty())
+    {
+        return std::string("the archive descriptor gives tables to a handler of user procedures that reads none");
+    }
+
+    for (std::size_t i = 0; i < procedures.tables.size(); ++i)
+    {
+        const uint32_t number = procedures.tables[i].number;
+        if (number >= UserProcedureTable::kTables)
+        {
+            return "the archive descriptor lists table " + std::to_string(number) +
+                   " of its user procedures; the tables are 0 to 15";
+        }
+
+        const auto same_number = [number](const UserProcedureTable& other)
+        {
+            return other.number == number;
+        };
+        if (std::any_of(procedures.tables.begin() + static_cast<std::ptrdiff_t>(i) + 1, procedures.tables.end(),
+                        same_number))
+        {
+            return "the archive descriptor lists table " + std::to_string(number) +
+                   " of its user procedures more than once";
+        }
+    }
+
+    return std::nullopt;
+}
+
 // Why a version 1 player can't play a delay or a light limiter, or nothing. Each has 8 finite parameters. A delay's
 // first 2 and a light limiter's first 4 are times, each a whole number of microseconds from 0 to 10 s. The last is the
 // channel mode, 0 to 3.
@@ -760,6 +1248,49 @@ std::optional<std::string> CheckRendererEffect(const AuxEffect& effect)
     return std::nullopt;
 }
 
+// Why a version 1 player can't play a reverb, or nothing. A reverb has 12 finite parameters. Its pre-delay is a whole
+// number of microseconds from 0 to 300 ms, and its decay time one from 100 ms to 20 s. Its modes are 0 to 4, and its
+// channel mode 0 to 3.
+std::optional<std::string> CheckReverb(const AuxEffect& effect)
+{
+    const std::vector<float>& p = effect.parameters;
+    if (p.size() != AuxEffect::kReverbParameters)
+    {
+        return "a reverb has " + std::to_string(p.size()) + " parameters; it has 12";
+    }
+
+    if (!std::all_of(p.begin(), p.end(), [](float parameter) { return std::isfinite(parameter); }))
+    {
+        return std::string("a reverb's parameter isn't a finite number");
+    }
+
+    const auto whole = [](float value, float least, float most)
+    {
+        return value >= least && value <= most && value == std::trunc(value);
+    };
+    if (!whole(p[kReverbPredelay], 0.0f, AuxEffect::kMostPredelay))
+    {
+        return std::string("a reverb's pre-delay isn't a whole number of microseconds from 0 to 300 ms");
+    }
+
+    if (!whole(p[kReverbDecay], AuxEffect::kLeastDecay, AuxEffect::kMostDecay))
+    {
+        return std::string("a reverb's decay time isn't a whole number of microseconds from 100 ms to 20 s");
+    }
+
+    if (!whole(p[kReverbEarlyMode], 0.0f, 4.0f) || !whole(p[kReverbLateMode], 0.0f, 4.0f))
+    {
+        return std::string("a reverb's early or late mode isn't 0, 1, 2, 3 or 4");
+    }
+
+    if (!whole(p[kReverbChannelMode], 0.0f, 3.0f))
+    {
+        return std::string("a reverb's channel mode isn't 0, 1, 2 or 3");
+    }
+
+    return std::nullopt;
+}
+
 } // namespace
 
 ArchiveDescriptor ArchiveDescriptor::Jaudio(const JaudioSettings& settings)
@@ -770,6 +1301,71 @@ ArchiveDescriptor ArchiveDescriptor::Jaudio(const JaudioSettings& settings)
     d.jaudio = settings;
 
     return d;
+}
+
+ScriptStep ScriptStep::Start(uint32_t frame, uint32_t sound, uint16_t archive)
+{
+    ScriptStep step;
+    step.frame = frame;
+    step.kind = kStart;
+    step.variable = archive;
+    step.sound = sound;
+
+    return step;
+}
+
+ScriptStep ScriptStep::Write(uint32_t frame, uint16_t variable, int16_t value, uint32_t sound, uint16_t track)
+{
+    ScriptStep step;
+    step.frame = frame;
+    step.kind = kWrite;
+    step.variable = variable;
+    step.track = track;
+    step.value = value;
+    step.sound = sound;
+
+    return step;
+}
+
+ScriptStep ScriptStep::WriteInProcedure(uint32_t frame, uint8_t procedure, uint16_t variable, int16_t value,
+                                        uint32_t sound, uint16_t track)
+{
+    ScriptStep step = Write(frame, variable, value, sound, track);
+    step.kind = kWriteInProcedure;
+    step.procedure = procedure;
+
+    return step;
+}
+
+ScriptedStart ScriptedStart::Plain(uint32_t sound)
+{
+    return {sound, 0, {ScriptStep::Start(0, sound)}};
+}
+
+const ScriptedStart* ArchiveDescriptor::ScriptOf(uint32_t sound) const
+{
+    for (const ScriptedStart& entry : scripts)
+    {
+        if (entry.sound == sound)
+        {
+            return &entry;
+        }
+    }
+
+    return nullptr;
+}
+
+const SoundTrackVolumes* ArchiveDescriptor::TrackVolumesOf(uint32_t sound) const
+{
+    for (const SoundTrackVolumes& entry : track_volumes)
+    {
+        if (entry.sound == sound)
+        {
+            return &entry;
+        }
+    }
+
+    return nullptr;
 }
 
 std::vector<uint8_t> ArchiveDescriptor::Serialize() const
@@ -790,10 +1386,30 @@ std::vector<uint8_t> ArchiveDescriptor::Serialize() const
     }
     xsflib::psf::PutArchivePaths(v, *this);
 
-    // Version 2 keeps version 1's layout up to here. A version 1 player then reads the version, and refuses it.
+    // Version 2 keeps version 1's layout up to here. A version 1 player then reads the version, and refuses it. A
+    // version 1 descriptor's track volumes follow the paths, with their flag, and its scripted starts follow those,
+    // with theirs. Its user procedures come last, with their flag. A player that doesn't know a flag refuses the
+    // descriptor.
     if (version == kJaudioVersion)
     {
         PutJaudio(v, jaudio);
+    }
+    else if (version == kVersion)
+    {
+        if ((flags & kFlagTrackVolumes) != 0)
+        {
+            PutTrackVolumes(v, track_volumes);
+        }
+
+        if ((flags & kFlagScripts) != 0)
+        {
+            PutScripts(v, scripts, addons);
+        }
+
+        if ((flags & kFlagProcedures) != 0)
+        {
+            PutProcedures(v, procedures);
+        }
     }
 
     return v;
@@ -845,6 +1461,21 @@ std::optional<ArchiveDescriptor> ArchiveDescriptor::Parse(const std::vector<uint
         return std::nullopt;
     }
 
+    if (d.version == kVersion && (d.flags & kFlagTrackVolumes) != 0 && !ReadTrackVolumes(data, pos, d.track_volumes))
+    {
+        return std::nullopt;
+    }
+
+    if (d.version == kVersion && (d.flags & kFlagScripts) != 0 && !ReadScripts(data, pos, d.scripts, d.addons))
+    {
+        return std::nullopt;
+    }
+
+    if (d.version == kVersion && (d.flags & kFlagProcedures) != 0 && !ReadProcedures(data, pos, d.procedures))
+    {
+        return std::nullopt;
+    }
+
     return d;
 }
 
@@ -860,7 +1491,25 @@ std::optional<std::string> ArchiveDescriptor::Check() const
         return "archive descriptor version " + std::to_string(version) + "; this player supports versions 1 and 2";
     }
 
-    if (auto err = xsflib::psf::CheckArchiveStart(*this, kDefaultVoices))
+    // The archive's start, with the flags that version 1 has (CheckTrackVolumes) left out of xsflib's check of them.
+    ArchiveDescriptor start = *this;
+    start.flags = 0;
+    if (auto err = xsflib::psf::CheckArchiveStart(start, kDefaultVoices))
+    {
+        return err;
+    }
+
+    if (auto err = CheckTrackVolumes(*this))
+    {
+        return err;
+    }
+
+    if (auto err = CheckScripts(*this))
+    {
+        return err;
+    }
+
+    if (auto err = CheckProcedures(*this))
     {
         return err;
     }
@@ -882,10 +1531,20 @@ std::optional<std::string> ArchiveDescriptor::Check() const
             continue;
         }
 
+        if (effect.type == AuxEffect::kReverb)
+        {
+            if (auto err = CheckReverb(effect))
+            {
+                return err;
+            }
+
+            continue;
+        }
+
         if (effect.type != AuxEffect::kI3dl2Reverb)
         {
             return "an aux effect's type is " + std::to_string(effect.type) +
-                   "; version 1 supports the I3DL2 reverb (1), the delay (2) and the light limiter (3)";
+                   "; version 1 supports the I3DL2 reverb (1), the delay (2), the light limiter (3) and the reverb (4)";
         }
 
         if (effect.parameters.size() != AuxEffect::kI3dl2Parameters)

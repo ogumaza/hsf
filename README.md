@@ -31,8 +31,9 @@ HSF comes with a ripper (`hsfrip`), a command-line renderer (`hsfplay`), a fooba
 in it. Games on Bezel Engine keep nearly all their files, sound archives included, in `.bea` archives. `hsfrip` reads
 the files inside them. For a Bezel Engine game, `hsfrip` also takes what the game's files set for its sound: the voice
 count in `boot.lua`, and the effects that the game puts on the aux buses. WarioWare: Get It Together! puts a reverb on
-aux bus A. WarioWare: Move It! puts a delay on aux bus A, a reverb on aux bus B and a light limiter on aux bus C. A game
-comes as an NSP or an XCI file. Such a file holds the game's files encrypted, and `hsfrip` doesn't read it.
+aux bus A. WarioWare: Move It! puts a delay on aux bus A, a reverb on aux bus B and a light limiter on aux bus C. Both
+games keep each sound's level in their sound sheets, outside the sound archive. `hsfrip` writes it as the mini's `volume`
+tag. A game comes as an NSP or an XCI file. Such a file holds the game's files encrypted, and `hsfrip` doesn't read it.
 
 WarioWare: Move It! shortens its delay when the game speeds up: it divides the delay by the game's speed. A rip has the
 delay at the game's normal speed. The game also turns its output down on a TV. It plays at half of full scale there,
@@ -40,10 +41,37 @@ and at full scale on the console's speaker, on headphones and on a USB device. T
 the game's mix. A rip plays the mix at full scale. It plays about 6 dB louder than the game on a TV. HSF 1.2.0 and
 earlier players refuse the game's rips with a message: they don't have the delay or the light limiter.
 
+Some of WarioWare: Get It Together!'s microgames turn tracks of their music up and down as the microgame goes on: the
+guitar, the three spotlight dances, the windmill and its success music, the dance, and Super Wario Co's results. A rip
+of such a piece plays it as the game starts it. Each later state gets a rip too. Its name is the piece's, followed by
+the state, such as `BGM_P_Guitar 60 percent`. `docs/hsf.md` lists the states. The state's tracks play from the start.
+HSF 1.3.0 and earlier players refuse the rips that turn tracks down, with a message. They can't set a track's volume.
+Without the volumes, they would play every track at full volume. The game never plays those pieces that way.
+
+Each of WarioWare: Get It Together!'s microgames also puts a reverb on aux bus B, and the reverb stays there until the
+stage ends. A microgame's rips play with its reverb on bus B. The stages' music and the game's other sequences that send
+to bus B get three rips each: one with bus B empty, and one with each of the two reverbs, such as
+`BGM_T_Sport_SpeedUp Hall reverb`. `docs/hsf.md` says more.
+
+Clubhouse Games: 51 Worldwide Classics puts the sound library's reverb on aux bus B in two of its games, the piano and
+bowling. The rips of their sounds play with that reverb.
+
+Super Mario Party Jamboree's rhythm mode and Super Mario Party's Sound Stage play each piece beside a controller. That
+sequence hands over to the piece at the end of a bar, and under some pieces it plays a kick drum on each beat. A rip of
+such a piece starts the controller and the piece as the game does. Jamboree's star melody plays over a board's music and
+follows its beats and chords. It gets a rip over each of the boards' streams, named after both, such as
+`SQ_BGM_STAR_MELODY SM_BGM_BD01_MAIN_JMP`. The stream itself isn't part of the rip. Some sounds of Jamboree and of Mario
+Party Superstars pick a variant at random through the game's code. The player runs that code, but the game seeds it from
+its clock. A rip can't know that seed and plays the same variant every time. Some sound effects stay silent unless the
+game gives them a value as it starts them, such as the surface under a footstep. Their rips start them with a value that
+the game gives. `docs/hsf.md` says more. HSF 1.3.0 and earlier players refuse these rips with a message.
+
 Some games keep groups of their sounds in group files (`.bfgrp`) outside the sound archive. The archive lists those
 group files by name. `hsfrip` looks for them by those names among the game's files. For a sound archive given on its
-own, `hsfrip` looks in the archive's folder and the folders below it. Sequences whose banks or waves are in a group file
-that isn't found are skipped.
+own, `hsfrip` looks in the archive's folder and the folders below it. A game can also keep its group files in SARC
+archives (`.sarc`) under other names, as Super Mario 3D World + Bowser's Fury does. While a group is still missing,
+`hsfrip` reads the group files in the SARC archives in the sound archive's folder too. Sequences whose banks or waves
+are in a group file that isn't found are skipped.
 
 For Super Mario Galaxy and Super Mario Galaxy 2, give `hsfrip` the game's RomFS folder. `hsfrip` finds the game's
 JAudio files in its `AudioRes` folder. It rips each sound that plays a sequence, the music and the sound effects, into
@@ -56,7 +84,12 @@ another JAudio2 game, `hsfrip` warns and takes JAudio2's defaults. Some things d
   that starts silent is skipped.
 - The game changes some settings as it goes on: the levels of a scene, the effects of some of Super Mario Galaxy 2's
   stages, and the tracks that a piece of music plays. A rip has the settings that the game sets up as it starts and
-  as each piece starts.
+  as each piece starts. In both games, a piece of music that plays other tracks in a later state also gets a rip of
+  each such state. The rip's name is the piece's, followed by the numbers of the states in the game's table, such as
+  `states 8 to 10`. The state's tracks play from the start. A state can keep some tracks at the levels that the state
+  before left. In Super Mario Galaxy's three Comet Observatory pieces, such states bring in one of two layers and keep
+  the other. Each layer gets a rip of its own, named after the state that brings it in. The two layers together get no
+  rip. The game may never play them together.
 - Sounds that play notes on banks that the game doesn't load are listed and skipped.
 - The games turn their output down on the console. Super Mario Galaxy plays at 0.355 of full scale on a TV, and at
   0.71 on the console's speaker, on headphones and on a USB device. Super Mario Galaxy 2 plays at 0.376 and 0.752. The
@@ -80,7 +113,11 @@ from the game:
   lacks. It makes no sound. With `--no-length`, the rip holds it, silent. No track map names `a_zawinul01` or the
   pieces that `caveboss` and `iron` play. Their rips play every track.
 - The game fades some tracks of a piece in and out as it goes on: the layers for events, treasure, enemies nearby,
-  battles and the ground. A rip plays those layers muted, as each piece starts in the game.
+  battles and the ground. The bosses' music has layers for the Pikmin's attack and for the tension, and the two players'
+  battle has eight layers. A rip plays those layers muted, as each piece starts in the game. Each piece with layers also
+  gets a rip of each layer, named after the piece and the layer, such as `forest battle layer`. That rip plays the layer
+  from the start, at the highest level that the game gives it. Five of the battle's layers take the names of their
+  directors in the game's code, such as `battle_t OriBeedaD layer`.
 - The game plays most effects at a place in its world, and moves their levels as the camera and the sound's source move.
   A rip plays each effect at the listener, with no place in the game's world. Some effects play until the game stops
   them. Their rips loop, then fade.
@@ -94,7 +131,8 @@ For Pikmin, give `hsfrip` a folder that holds the game's RomFS and ExeFS, as `ro
 game's sound files in the RomFS's `SndData` folder: the bank file, `Banks/pikibank.bx`, the wave archives beside it and
 the sequence archive, `Seqs/pikiseq.arc`. The game keeps the rest of its sound settings in its code, the ExeFS's `main`:
 the sequence archive's index, the settings of the music and the effects, the FX lines and the cutscenes' table.
-`hsfrip` reads them from the `main` of the game's version 1.0.0. For another build of `main`, or without it, `hsfrip`
+`hsfrip` reads them from the `main` of the game's version 1.0.0 or of its update, version 1.1.0. The two builds hold the
+same settings. The update leaves the sound files as they are. For another build of `main`, or without it, `hsfrip`
 stops with a message. `hsfrip` rips each piece of music, each piece of the cutscenes' music and each sound effect into
 one folder. `--bgm` rips the music. Some things differ from the game:
 
@@ -109,8 +147,8 @@ one folder. `--bgm` rips the music. Some things differ from the game:
   holds a silent `.minihsf` for each of them: `SYSSE_JUNGLE` and the crowd's 29 sizes, `crowd-01` to `crowd-29`.
 - A cutscene plays its sounds at the points of its timeline. Each sound of a cutscene gets a rip of its own, such as
   `cutscene-004-01` for sound 1 of cutscene 4.
-- A cutscene can stop one of its sounds with a later event. The rip of such a sound plays on until the cutscene
-  finishes.
+- A cutscene can stop one of its sounds with a later event. The rip of the stopped sound fades out over the time that
+  the game's sound takes to stop, and ends with the game's sound.
 - The game turns its output down on the console: to 0.3 of full scale on a TV, and to 0.6 on the console's speaker, on
   headphones and on a USB device. A rip plays the mix at full scale. It plays about 10.5 dB louder than the game on a
   TV, and 4.4 dB louder than on the console's speaker.
@@ -175,9 +213,10 @@ The models of the sound library and the renderer are in ntdlib's `nx` module, wi
 The format test (`tests/format_test.cpp`) checks the descriptor and the loading of libraries. The player test
 (`tests/player_test.cpp`) plays sets made from a small archive and checks lengths, fades, seeks, volume, group files, a
 reverb's tail and a delay's echoes. The ripper's test (`tests/rip_test.cpp`) measures a sequence of each kind that the
-length analysis distinguishes. The game test (`tests/game_test.cpp`) builds a Bezel Engine archive, a data sheet with a
-sound effect list and a `boot.lua`. It checks what `hsfrip` finds in a folder of them, in the archive alone and in a
-title's folder that holds the archive unpacked. The test also checks that the readers refuse damaged files.
+length analysis distinguishes. The game test (`tests/game_test.cpp`) builds a Bezel Engine archive, data sheets with a
+sound effect list and sounds' levels, and a `boot.lua`. It checks what `hsfrip` finds in a folder of them, in the
+archive alone and in a title's folder that holds the archive unpacked. The test also checks that the readers refuse
+damaged files.
 
 ## Layout
 

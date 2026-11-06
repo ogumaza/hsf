@@ -14,6 +14,8 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/bezel/sound_levels.h"
+
 #include "game/sheet.h"
 
 namespace hsf::game
@@ -39,6 +41,9 @@ struct GameFiles
     std::optional<int> voice_count;
     std::map<std::string, I3dl2Preset> i3dl2_presets;
     std::map<std::string, RendererPreset> renderer_presets;
+
+    // The levels that a Bezel Engine game's sound sheets give its sounds.
+    ntdlib::bezel::SoundLevels sound_levels;
 };
 
 // An effect that a Bezel Engine game's code puts on an aux bus: the bus (0 to 2 for A to C), the preset's name, and the
@@ -56,6 +61,11 @@ struct BusEffect
 // starts (0xc7c1ac in its main). A list with those three presets gets them. Otherwise, a list with I3DL2_Default gets
 // that reverb on bus A. WarioWare: Get It Together!'s scenes put it there unless one names another.
 std::vector<BusEffect> StartupEffects(const GameFiles& game);
+
+// The SARC archives among a game's files in the folder of the sound archive at `archive_path`, in the order of their
+// paths' UTF-8 bytes. A game can keep the sound archive's group files in them, under other names. Super Mario 3D World
+// + Bowser's Fury keeps those of `SoundData/SeData.bfsar` in `SoundData/SeResource*.sarc`.
+std::vector<std::string> SarcsBeside(const GameFiles& game, const std::string& archive_path);
 
 // Whether a file is one of the encrypted forms a game comes in: an NSP, an XCI or an NCA. Returns its kind's name, or
 // nothing.

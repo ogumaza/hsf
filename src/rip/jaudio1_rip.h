@@ -64,6 +64,9 @@ std::map<std::string, TrackCounts> ReadTrackMaps(std::span<const uint8_t> text);
 // The tracks that the directors mute as a piece starts: every layer of the map, a bit for each.
 uint16_t MutedTracks(const TrackCounts& counts);
 
+// The tracks of layer `layer` of the map, 1 to 5, a bit for each.
+uint16_t LayerTracks(const TrackCounts& counts, std::size_t layer);
+
 // What a rip of Pikmin 2 takes from the game's files besides its sound files: the music's volumes, the four track map
 // files' maps (trackMap_Cond_T.txt, trackMap_Seq_T.txt, trackMap_Cond_W.txt and trackMap_Seq_W.txt, in that order)
 // and the sounds' names by their IDs.
@@ -92,7 +95,8 @@ struct Jaudio1Selection
 // each of its conductors. With `bgm`, only the music. A piece's ID is section 2 and its place in the descriptor's list.
 // An effect's ID is the sound table's, with bit 11 set (the game keeps the effect until it ends). A piece is named
 // after its file, a piece of the cave music after its conductor, and an effect as the name file names it, or after
-// its category and index.
+// its category and index. Each layer of a piece with a track map gives a variant of the piece, named after the piece
+// and the layer, if both names match `only`. The variants come last.
 Jaudio1Selection SelectJaudio1Sounds(const Jaudio1Files& files, const Jaudio1GameText& text, const std::regex& only,
                                      bool bgm);
 

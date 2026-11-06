@@ -57,9 +57,34 @@ public:
 
     // A looping sequence gets two loops and a 10 s fade. Any other sequence runs to its end, or to where it falls
     // silent for good, its effects' tails included. No sequence runs for more than 600 s. A sequence that never makes a
-    // sound is marked silent, and gets the 0.5 s that follows a sequence's last sound. Returns nullopt when the length
+    // sound is marked silent, and gets the 0.5 s that follows a sequence's last sound. The sequence's tracks play at
+    // `track_volumes`. The game's code sets those volumes as it starts the sound. The sound starts by `script`
+    // (docs/hsf.md, "Scripted starts"), or at once with no variables set. The script's sound has to be `sound_index`'s.
+    // The length counts from the end of the script's lead-in. `settings`, when given, take the place of the analyzer's:
+    // a sound with a reverb on aux bus B rings longer (rip/sound_states.h). The player scales the output by the mini's
+    // volume tag. `volume` scales the output that the analysis judges in the same way. Returns nullopt when the length
     // can't be worked out (and then no length tag is written). Throws std::bad_alloc when memory runs out.
-    std::optional<Timing> Analyze(uint32_t sound_index) const;
+    std::optional<Timing> Analyze(uint32_t sound_index,
+                                  const ntdlib::rip::TrackVolumes& track_volumes = ntdlib::rip::kFullTrackVolumes,
+                                  const ScriptedStart* script = nullptr, const ArchiveDescriptor* settings = nullptr,
+                                  float volume = 1.0f) const;
+
+    // The frames that the model runs, with the sounds that `script` starts, until the global variable `variable` (16
+    // to 31) holds `value`. The model plays `addons` as the script's add-on archives, in order. The steps of each frame
+    // take effect as the player applies them, and the lead-in is ignored. Returns nothing when a start fails or when
+    // the variable doesn't take the value within `limit` frames.
+    std::optional<uint32_t> FramesUntil(const ScriptedStart& script, int variable, int16_t value, uint32_t limit,
+                                        std::span<const fsar::SoundArchive* const> addons = {}) const;
+
+    // The shortest delay of `script`, from 1 to `limit` frames, after which the script's sound makes a sound within
+    // `window` frames of its lead-in's end. A delay adds its frames to the lead-in and to each step's frame. nn::atk's
+    // random numbers step once a frame (atk::Engine). A sound whose sequence draws a number therefore draws another
+    // one when the game starts the sound later. Returns nothing when the sound's sequence draws no number in the
+    // window without a delay, or when no delay up to `limit` makes the sound sound. The sound's tracks play at
+    // `track_volumes`. `settings`, when given, take the place of the analyzer's, as in Analyze.
+    std::optional<uint32_t> SoundingDelay(const ScriptedStart& script, const ntdlib::rip::TrackVolumes& track_volumes,
+                                          uint32_t limit, uint32_t window,
+                                          const ArchiveDescriptor* settings = nullptr) const;
 
 private:
     struct Impl;

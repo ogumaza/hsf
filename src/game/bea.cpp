@@ -19,9 +19,22 @@ namespace hsf::game
 namespace
 {
 
-// An asset's header: "ASST", then the compression at +0x10, the stored size at +0x14, the size at +0x18, the data's
-// offset at +0x20 and the name's offset at +0x28 (a 16-bit length, then the name).
+// The header's +0x28 gives the offset of the asset table, in one of two layouts. Each asset has a header that starts
+// with "ASST", with the compression at +0x10 and the stored size at +0x14. A name is a 16-bit length, then the name.
+//
+// In WarioWare: Get It Together!'s and WarioWare: Move It!'s archives (bytes 8 to 11 of the header 00 01 01 00), the
+// table holds the 64-bit offsets of the assets' headers. Such a header has the size at +0x18 (64 bits), the data's
+// offset at +0x20 and the name's offset at +0x28.
 constexpr std::size_t kAssetHeader = 0x30;
+
+// In Super Mario Party Jamboree's archives (00 00 06 00), the table holds the headers themselves. Such a header has the
+// size at +0x18 (32 bits), a tag at +0x1C, a hash at +0x28, the data's offset at +0x38 and the name's offset at +0x40.
+constexpr std::size_t kInlineAssetHeader = 0x48;
+
+bool IsAssetHeader(std::span<const uint8_t> data, uint64_t offset)
+{
+    return data[offset] == 'A' && data[offset + 1] == 'S' && data[offset + 2] == 'S' && data[offset + 3] == 'T';
+}
 
 bool Fits(std::span<const uint8_t> data, uint64_t offset, uint64_t size)
 {
@@ -46,16 +59,19 @@ std::optional<std::string> BeaArchive::Parse(std::span<const uint8_t> data, BeaA
 
     const uint32_t count = xsflib::LoadLe32(&data[0x20]);
     const uint64_t table = xsflib::LoadLe64(&data[0x28]);
-    if (!Fits(data, table, uint64_t{8} * count))
+
+    // A table of offsets can't start with "ASST" unless its first asset lies past 1.4 GB.
+    const bool inline_headers = count != 0 && Fits(data, table, 4) && IsAssetHeader(data, table);
+    const uint64_t stride = inline_headers ? kInlineAssetHeader : 8;
+    if (!Fits(data, table, stride * count))
     {
         return std::string("its asset table runs past its end");
     }
 
     for (uint32_t i = 0; i < count; ++i)
     {
-        const uint64_t entry = xsflib::LoadLe64(&data[table + 8 * i]);
-        if (!Fits(data, entry, kAssetHeader) || data[entry] != 'A' || data[entry + 1] != 'S' ||
-            data[entry + 2] != 'S' || data[entry + 3] != 'T')
+        const uint64_t entry = inline_headers ? table + stride * i : xsflib::LoadLe64(&data[table + 8 * i]);
+        if (!Fits(data, entry, inline_headers ? kInlineAssetHeader : kAssetHeader) || !IsAssetHeader(data, entry))
         {
             return "asset " + std::to_string(i) + " has no ASST header";
         }
@@ -63,9 +79,9 @@ std::optional<std::string> BeaArchive::Parse(std::span<const uint8_t> data, BeaA
         Asset asset;
         asset.compression = data[entry + 0x10];
         asset.stored_size = xsflib::LoadLe32(&data[entry + 0x14]);
-        asset.size = xsflib::LoadLe64(&data[entry + 0x18]);
-        asset.offset = xsflib::LoadLe64(&data[entry + 0x20]);
-        const uint64_t name = xsflib::LoadLe64(&data[entry + 0x28]);
+        asset.size = inline_headers ? xsflib::LoadLe32(&data[entry + 0x18]) : xsflib::LoadLe64(&data[entry + 0x18]);
+        asset.offset = xsflib::LoadLe64(&data[entry + (inline_headers ? 0x38 : 0x20)]);
+        const uint64_t name = xsflib::LoadLe64(&data[entry + (inline_headers ? 0x40 : 0x28)]);
         if (!Fits(data, name, 2) || !Fits(data, name + 2, xsflib::LoadLe16(&data[name])) ||
             !Fits(data, asset.offset, asset.compression == Asset::kStored ? asset.size : asset.stored_size))
         {

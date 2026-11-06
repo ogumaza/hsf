@@ -47,12 +47,8 @@ struct JacPaths
 // exefs. The case of the names doesn't count.
 std::optional<JacPaths> FindJacFiles(const std::vector<std::string>& files);
 
-// The build of main whose tables hsfrip reads: the release's version 1.0.0, with this build ID.
-inline constexpr std::string_view kJacMainVersion = "1.0.0";
-inline constexpr std::string_view kJacMainBuildId = "342a165cc42e997edf15023143252e9f7e5c1a8d";
-
 // An NSO's build ID in hex: the first 20 bytes of the module's ID, at 0x40 in the header. Empty if `file` doesn't start
-// as an NSO.
+// as an NSO. FindJacBuild (jac_tables.h) finds the build of main that has the ID.
 std::string NsoBuildId(std::span<const uint8_t> file);
 
 // What a rip takes from main: the sequence index, the music's tables, the FX lines, the cutscenes' table, the events'
@@ -65,6 +61,8 @@ struct JacGameCode
     std::vector<Cutscene> cutscenes;
     EventActions actions;
     std::vector<Effect> effects;
+
+    bool operator==(const JacGameCode&) const = default;
 };
 
 // The FILE chunk of a rip that holds the sequence index. No file of a RomFS can have its path.
@@ -73,19 +71,30 @@ inline constexpr std::string_view kJacSequenceIndexPath = "exefs/pikiseq.hed";
 // The DSP's level that the game gives the DSP's mixer as it starts (Jac_Start, 0x266f5c): 1.5, in 4.12.
 inline constexpr uint32_t kJacDspLevel = 6144;
 
-// Reads what a rip takes from main, the build whose ID is kJacMainBuildId. Throws xsflib::FormatError if main is
+// Reads what a rip takes from main, a build that holds the tables at `at`. Throws xsflib::FormatError if main is
 // damaged or one of the tables runs out of main's segments.
-JacGameCode ReadJacGameCode(const ntdlib::nx::Nso& main);
+JacGameCode ReadJacGameCode(const ntdlib::nx::Nso& main, const JacTableAddresses& at);
 
 // The JAudio settings of a rip of Pikmin, from the game's code: library 3, the DSP's level and the FX lines. The
 // managers' and the categories' volumes stay at 1.
 JaudioSettings JacSettings(const JacGameCode& code);
 
-// The sounds of a rip of Pikmin, and the descriptor's lists of what they play.
+// A timed event of a cutscene that comes after one of the cutscene's sounds: the game's frames from the sound's event
+// to this one, and the value that Jac_DemoFrame queues for this one.
+struct JacLaterEvent
+{
+    uint16_t frames = 0;
+    uint16_t value = 0;
+};
+
+// The sounds of a rip of Pikmin, and the descriptor's lists of what they play. For each of the library's effects, in
+// their order, `later_events` holds the later events of a cutscene's sound: the cutscene's events after the sound's
+// that queue a value, in their order. It holds none for the other effects.
 struct JacSelection
 {
     std::vector<JaudioJob> jobs;
     JaudioLibrary3 library;
+    std::vector<std::vector<JacLaterEvent>> later_events;
     std::vector<std::string> warnings;
 };
 
@@ -118,16 +127,24 @@ JacSelection SelectJacSounds(const JacGameCode& code, const std::vector<ntdlib::
 class JacLengthAnalyzer
 {
 public:
-    // `files` must outlive the analyzer.
-    JacLengthAnalyzer(const jac::SoundFiles& files, ArchiveDescriptor settings);
+    // `files` must outlive the analyzer. `later_events` are the selection's (JacSelection::later_events).
+    JacLengthAnalyzer(const jac::SoundFiles& files, ArchiveDescriptor settings,
+                      std::vector<std::vector<JacLaterEvent>> later_events);
 
     // As JaudioLengthAnalyzer::Analyze does, for the sound with ID `sound`. Pikmin plays no piece through a conductor.
-    // Every loop therefore counts. The timing is empty when the sound can't start.
+    // Every loop therefore counts. The timing is empty when the sound can't start. A cutscene's sound plays with its
+    // later events, each queued in the frame in which the game queues it. A later event can stop the sound. A rip's
+    // effect record has no room for the events, and the player leaves them out. The analysis queues them unheard
+    // (jac::Engine::QueueDemoEvents). The length is that of the sound alone. A second run without the events finds the
+    // sounds that an event stops. Such a sound plays on in a rip. The timing of such a sound gives a fade from the
+    // first frame in which the game's sound differs from the rip's. The fade ends where the game's sound ends, with no
+    // tail.
     JaudioTiming Analyze(uint32_t sound) const;
 
 private:
     const jac::SoundFiles& files_;
     ArchiveDescriptor settings_;
+    std::vector<std::vector<JacLaterEvent>> later_events_;
 };
 
 } // namespace hsf::rip

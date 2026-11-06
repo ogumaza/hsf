@@ -81,7 +81,9 @@ takes effect. The loaded files must select a sound with a `SND ` chunk.
 ```
 0x00  u32  magic "HSFA"
 0x04  u32  descriptor version (1, or 2 for JAudio: see "Version 2's descriptor")
-0x08  u32  flags: version 1 has none (0)
+0x08  u32  flags: bit 0 for the track volumes after the paths (see "Track volumes"), bit 1 for the scripted starts
+           after them (see "Scripted starts"), bit 2 for the user procedures after those (see "User procedures"), or
+           none (0)
 0x0C  u32  output mode: 1 stereo (version 1 plays stereo only)
 0x10  u32  nn::atk's voice count, 1 to 96: its voices and channels (96 unless the game changes it)
 0x14  u32  the game's SDK version as major × 10,000 + minor × 100 + micro (100401 for 10.4.1), or 0 if unknown
@@ -92,17 +94,164 @@ takes effect. The loaded files must select a sound with a `SND ` chunk.
       u16  length of the sound archive's path, then the path (UTF-8)
       u16  G: the number of group files, then for each its path's u16 length and the path (UTF-8)
       zeros to a multiple of 4
+      with flag bit 0, the track volumes:
+      u32  T: the number of sounds, then for each:
+           u32  the sound's nn::atk item id
+           16 × f32  the volumes of the sound's tracks, track 0 first
+      with flag bit 1, the scripted starts:
+      u32  S: the number of sounds, then for each:
+           u32  the sound's nn::atk item id
+           u32  L: the lead-in, in frames of the model (5 ms)
+           u32  N: the number of steps, then for each, in frame order:
+                u32  the frame, from 0, before which the step takes effect, or from which a write of kind 2 waits
+                u8   the kind: 0 for a start of a sound, 1 for a write of a variable, 2 for a write of a variable in
+                     a call of a user procedure
+                u8   the user procedure that a write of kind 2 waits for, or 0 for the other kinds
+                u16  a write's variable, by its number in the sequence commands (0 to 47), or a start's archive
+                     (0xFFFF for the set's archive, 0 to n-1 for the listed add-ons)
+                u16  the track, 0 to 15, for variables 32 to 47, or 0xFFFF for the others
+                s16  a write's value, or 0 for a start
+                u32  the nn::atk item id of the sound that a start starts, in its archive, or of the sound whose
+                     variable or track's variable a write sets, or whose call a write of kind 2 waits for, or 0 for a
+                     write of kind 1 of a global variable
+      u32  n: the number of add-on archives, then for each:
+           u16  length of the add-on archive's path, then the path (UTF-8)
+           u16  the number of its group files, then for each its path's u16 length and the path (UTF-8)
+           zeros to a multiple of 4
+      with flag bit 2, the user procedures:
+      u32  the game's handler: 1 for Super Mario Party Jamboree's, 2 for Mario Party Superstars'
+      u32  T: the number of tables, 0 for handler 2, then for each:
+           u32  the table's number, 0 to 15
+           128 × s16  the table's values
 ```
 
 The paths identify `FILE` chunks containing the sound archive and the group files (`.bfgrp`) that the game keeps outside
 it. The archive lists the files in those groups without data. A version 1 player rejects descriptors with a different
-version, flags other than 0, an output mode other than 1, a voice count outside 1 to 96, or an effect on a bus past 2,
-of a type other than 1 to 3, or with parameters that don't fit its type (see "Aux effects"). Output modes 0 (mono) and 2
-(surround) are left for a later version.
+version, any flag but bits 0 to 2, an output mode other than 1, a voice count outside 1 to 96, or an effect on a bus
+past 2, of a type other than 1 to 4, or with parameters that don't fit its type (see "Aux effects"). It also rejects
+track volumes that list a sound twice, or that hold a volume that isn't a finite number of 0 or more. It rejects the
+scripted starts that "Scripted starts" doesn't allow, and the user procedures that "User procedures" doesn't allow.
+Output modes 0 (mono) and 2 (surround) are left for a later version.
 
 Types 2 and 3 came with the release after HSF 1.2.0. HSF 1.2.0 and earlier players refuse a descriptor with either of
 them: "an aux effect's type is 2; version 1 supports only the I3DL2 reverb (1)". A descriptor without them is the same
-as before, byte for byte.
+as before, byte for byte. Type 4 came after HSF 1.3.0. HSF 1.3.0 and earlier players refuse a descriptor with it: "an
+aux effect's type is 4; version 1 supports the I3DL2 reverb (1), the delay (2) and the light limiter (3)". A descriptor
+without it is the same as before, byte for byte.
+
+Flag bit 0 came with the release after HSF 1.3.0. HSF 1.3.0 and earlier players refuse a descriptor with it: "the
+archive descriptor's flags are 0x1; version 1 has none". Such a player can't set a track's volume. Without the volumes,
+it would play every track of the piece at full volume. The game never plays the piece that way. A descriptor without
+the flag is the same as before, byte for byte.
+
+Flag bit 1 came with the release after HSF 1.3.0 too. HSF 1.3.0 and earlier players refuse a descriptor with it: "the
+archive descriptor's flags are 0x2; version 1 has none". Such a player can't set a sequence's variables or start a
+second sound. Without them, a piece that waits for a value from the game plays nothing, or plays another path. A
+descriptor without the flag is the same as before, byte for byte.
+
+Flag bit 2 came with the release after HSF 1.3.0 as well. HSF 1.3.0 and earlier players refuse a descriptor with it:
+"the archive descriptor's flags are 0x4; version 1 has none". Such a player can't run the game's user procedures.
+Without them, a sound that picks a variant plays the note past its variants, or plays nothing. A descriptor without the
+flag is the same as before, byte for byte.
+
+### Track volumes
+
+A game's code can set the volume of each track of a sequence through the sound's handle (`nn::atk`'s `SetTrackVolume`).
+A version 1 descriptor with flag bit 0 lists such volumes. Each sound appears at most once, by its `nn::atk` item id,
+with a volume for each of its 16 tracks. A track's volume multiplies into the volume of the track's channels, as
+`SetTrackVolume`'s does. 1 leaves a track as the sequence plays it, and 0 silences it. The player gives the selected
+sound's tracks their volumes as the sound starts, before the sequence's first tick. The game's code does the same as it
+starts the sound. A sound that the list leaves out plays every track at 1. The ripper writes such a descriptor only into
+a `.minihsf` (see "Ripping").
+
+### Scripted starts
+
+A game's code can set a sequence's variables as it starts the sound, and later. It sets the sound's variables through
+the sound's handle (`nn::atk`'s `WriteVariable`), the global variables that every sequence shares
+(`SetGlobalVariable`), and a track's variables (`WriteTrackVariable`). It can start other sounds beside the sound, such
+as a part that plays under the piece. Such a sound can come from an add-on archive: a sound archive that the game
+plays in the same `nn::atk` sound system, with the same global variables. A version 1 descriptor with flag bit 1 lists
+such scripts, and the add-on archives after them. Each sound appears at most once, by its `nn::atk` item id.
+
+A script is a lead-in and a list of steps. Each step takes effect before a frame of the model, its frame. The steps of a
+frame take effect in their order. A start starts a sequence sound from the set's archive or from an add-on archive, like
+`nn::atk`'s `StartSound`. A script starts each item id once. An item id therefore names one sound, whichever archive
+holds it. The script's sound starts from the set's archive. The track volumes of the script's sound take effect at its
+start (see "Track volumes"). A write sets a variable by the number that the sequence commands give it. Numbers 0 to 15
+are a sound's variables, 16 to 31 the global ones, and 32 to 47 a track's. A track's variable has the track's number
+beside it. A write of a sound's variable or of a track's variable names the sound. An earlier step has to start that
+sound. A track's variable that a write sets before the sequence allocates the track takes effect when it does. Every
+variable starts at -1.
+
+A game's code can also write a sequence's variables inside a user procedure: a function of the game that the sequence
+calls with the command 0xF0E0 and a number (`nn::atk`'s `SequenceUserProcCallback`). The procedure's writes take effect
+before the track's next command. A sequence can set a variable, call the procedure and test the variable in one tick.
+A write of kind 1 can't reach that variable between the set and the test. A write of kind 2 can. It names a user
+procedure and a sound that an earlier step starts. From its frame, it waits for the next call of that procedure by the
+sound's sequence, on any track. It takes effect inside that call. Writes that wait for the same call take effect in
+their order. A write of kind 2 can write a global variable too. It then names the sound whose call it waits for. A
+procedure that the sequence never calls again leaves the write waiting, and the write never takes effect.
+
+The model runs the lead-in's frames before the output starts. Nobody hears them, and the length and the fade count
+from the end of the lead-in. The set plays on until the last step has taken effect. A sound without a script starts at
+frame 0 with every variable at -1. Its script is a start of the sound at frame 0, with a lead-in of 0. A script that
+only sets the variables that the game gives a sound as it starts the sound has the writes of the global variables at
+frame 0, then the sound's start, then the writes of the sound's variables, all at frame 0, and a lead-in of 0.
+
+A version 1 player rejects a script:
+
+- of an item that isn't a sound, or of a sound that the list holds twice
+- whose steps aren't in frame order
+- with a kind other than 0, 1 or 2, or with a user procedure other than 0 for kinds 0 and 1
+- with a start of an item that isn't a sound, of a sound that an earlier step started, from an add-on archive past
+  the list, or that sets a variable
+- with a write of a variable of 48 or more, of a track's variable on a track past 15, or of another variable on a track
+- with a write of kind 1 of a global variable that names a sound, or with any other write whose sound no earlier step
+  starts
+- with two writes of the same kind, user procedure and variable at the same frame
+- that never starts its sound from the set's archive, or starts it after the lead-in
+- whose lead-in ends more than 120,000 frames (600 s) after its last step
+
+A version 1 player also refuses add-on archives without the flag. It refuses a set that doesn't hold an add-on archive
+or one of its group files. It stops with a message when a start's sound isn't a sequence whose files the set holds.
+The ripper writes such a descriptor only into a `.minihsf` (see "Ripping").
+
+### User procedures
+
+Some games' code handles the user procedures that their sequences call (see "Scripted starts"). Super Mario Party
+Jamboree's and Mario Party Superstars' sounds pick a variant through one. Such a sound sets one variable to a slot and
+another to a count, and calls the procedure. The procedure draws a number below the count and writes it over the slot.
+The sound then transposes its note by that number. Its variants lie on consecutive keys. A version 1 descriptor with
+flag bit 2 names the game's handler. The player runs the handler in every call by every sound of the set, as the game's
+code does. The handler's writes take effect inside the call. The writes of kind 2 that wait for the same call take
+effect after them.
+
+Each handler has random generators. A generator holds a 32-bit state, 1 at the start. A draw multiplies the state by
+48,271, keeps the low 32 bits, and takes the remainder by 2,147,483,647. The result is the new state's remainder by the
+count. A result equal to the generator's last one is drawn again. The last result starts at -1. No draw gives -1.
+
+- Handler 1, Super Mario Party Jamboree's (libbexsound's code in the game's `main`): procedures 0 and 1 each have 512
+  generators. The slot is track variable 14 of the calling track, read unsigned. A slot of 512 or more takes generator
+  0. The count is track variable 15. A state of 0 counts as 1. A draw stops after 64 tries. A count of 2 gives 1 minus
+  the last result's low bit, and a count below 2 gives 0. Either way that result becomes the last one. Procedure 5
+  writes entry x of table t over track variable 14, where x is track variable 14 and t is track variable 15. An entry
+  past a table's end reads on into the next table. A table that the descriptor doesn't list leaves the variable as it
+  is. Procedure 6 has 64 counters, picked by track variable 14 in the same way as the generators. It writes the
+  counter over track variable 14. The counter then goes up by 1, back to 0 once it would pass track variable 15. The
+  game loads table 0 from `audio/userproc/conv/00.msgpack`. Procedures 2 to 4 read the music sync, and the player
+  leaves them to the script's writes of kind 2 (see "Ripping").
+- Handler 2, Mario Party Superstars': procedure 0 has 32 generators. The slot is the sound's variable 14, and the count
+  its variable 15. A slot outside 0 to 31 leaves the variables as they are. The game draws until the result differs.
+  A player stops after 64 tries, like Jamboree's handler. A count of 2 draws and gives the new state's low bit, and a
+  count below 2 gives 0. The other procedures change nothing.
+
+Both games reseed every generator with one value as some of their scenes start. The value comes from the game's
+clock, and a rip can't know it. The player starts every set from the state that the handler's constructor gives it.
+A sound's first draw for a slot and a count is therefore the same in every rip. In the game it changes from play to
+play. The player's snapshots hold the handler's state. A seek therefore plays the same draws as the first play.
+
+A version 1 player rejects user procedures with a handler other than 1 or 2, with tables for handler 2, or with a table
+numbered 16 or more or listed twice. It refuses user procedures without the flag.
 
 ### Version 2's descriptor
 
@@ -188,6 +337,17 @@ A player refuses a delay or a light limiter unless it has 8 parameters, each a f
 numbers of microseconds from 0 to 10 s: a delay's first 2 parameters and a light limiter's first 4. The channel mode
 must be 0, 1, 2 or 3.
 
+**Type 4: the renderer's reverb.** `nn::atk`'s reverb (`EffectReverb`). The renderer runs it on the bus. Clubhouse
+Games: 51 Worldwide Classics puts one on aux bus B in two of its games. Its 12 parameters, in order: the early
+reflections' mode and gain; the pre-delay, in microseconds; the late reverb's mode and gain; the decay time, in
+microseconds; the decay ratio at high frequencies; the coloration; the reverb's gain, the out gain and the dry gain;
+and the channel mode. The early mode picks a room, a chamber, a hall, a cathedral or no early reflections (0 to 4).
+The late mode picks a room, a hall, a plate, a cathedral or the longest lines (0 to 4). The channel mode works as a
+delay's does. Like `nn::atk`, a player holds each gain and the coloration to 0 to 1, and the ratio to 0.1 to 1. A
+player refuses a reverb unless it has 12 parameters, each a finite number. The pre-delay must be a whole number of
+microseconds from 0 to 300 ms, and the decay time one from 100 ms to 20 s. The modes must be 0 to 4, and the channel
+mode 0 to 3.
+
 ## The model
 
 A version 1 player provides:
@@ -209,8 +369,9 @@ A version 1 player provides:
 HSF's implementation (ntdlib's `nx` module, on ntdlib's model of the sequence player) follows a study of the code
 of WarioWare: Get It Together!, and of the build of the renderer for the CPU that the game's `sdk` module holds. The
 game links `nn::atk` from SDK 10.4.1. The delay and the light limiter follow a study of the code of WarioWare: Move
-It! and of its `sdk` module. That game links SDK 14.3. Other games may use other versions of the library, or another
-number of voices. Rips of them are close but not guaranteed exact.
+It! and of its `sdk` module. That game links SDK 14.3. The reverb follows the renderer in Move It!'s `sdk`, and
+`nn::atk`'s reverb in the code of Clubhouse Games: 51 Worldwide Classics. That game links SDK 9.3.1. Other games may
+use other versions of the library, or another number of voices. Rips of them are close but not guaranteed exact.
 
 Version 1 plays sequence sounds only. A sound's files come from the archive, or from the group files that the descriptor
 names. The ripper skips sequences whose files aren't there. The output starts with the first frame. The sound has
@@ -220,7 +381,11 @@ line holds a negative sample, its output stays at -1 or so for ever. With a dela
 frame has had a sample louder than 8 (see "Ripping") for the delay's time, in whole frames rounded up, and one frame
 more. The delay's time is its second parameter, held to its first, the longest delay. With more than one delay, the one
 with the most frames counts. A delay's feedback is less than 1. Once the output has been quiet for a whole delay, the
-echoes of what it played stay quiet.
+echoes of what it played stay quiet. The renderer's reverb rounds its products down too. With a reverb, the effects
+ring until no frame has had a sample louder than 8 for 109 frames, and one frame more. 109 frames hold the reverb's
+lines at their longest, one after another: the pre-delay line (350 ms), the longest feedback line (171 ms), its
+all-pass (17 ms) and the centre line (5 ms). Each sample in the reverb reaches the output within that time. The
+reverb's feedback is less than 1.
 
 ## Version 2: JAudio
 
@@ -465,7 +630,10 @@ and the game finds a track by its ID. The effect's kind gives the track and the 
   A cutscene of type 1 gets its number on port 1 too. The game then queues the value for port 2 of that track. The
   value is the sound's number among the cutscene's sounds. The cutscene's table of timed events gives the frame of the
   cutscene's finish. There, the game writes 0 to port 0 of that track. A player leaves out the game's other work at
-  the finish: the music's fade, the events' pause, the formation's reset and the stop of the cutscene's stream.
+  the finish: the music's fade, the events' pause, the formation's reset and the stop of the cutscene's stream. None
+  of that work acts on track 0x1000F or the tracks that it opens. A player also leaves out the values that the game
+  queues for the cutscene's later events. Such a value can stop the sound. The rip's tags then give a fade from the
+  point where the game's sound first differs from the rip's to the end of the game's sound.
 
 A queued value reaches its port once the track has read the value before it.
 
@@ -522,6 +690,14 @@ puts the delay `Delay_Waltz` on aux bus A, the I3DL2 reverb `I3DL2_Waltz` on aux
 `Limiter_Waltz` on aux bus C. `hsfrip` puts those three on every rip from a game whose list has them. `--voices` and
 `--no-effects` override these settings.
 
+A Bezel Engine game also keeps its sounds' levels in its data, outside the sound archive: in its sound sheets
+(`Data/SheetBin/SoundVoice_*.elf`). WarioWare: Get It Together! and WarioWare: Move It! multiply each sound by the level
+that its record gives. `hsfrip` reads the sheets, and gives each mini the level as its `volume` tag. The record named
+after the sound gives the level. A sound without one takes the level that most of the records that play it give, and
+the higher one on a tie. The game can add a random change to the level on each play. A rip takes the middle of its
+range. A sound without a record has no tag. A rip of a loose sound archive has none either. A player scales its output
+by the tag. The length analysis judges the output at that level.
+
 `--only` takes the sequences whose labels match a regular expression. `--bgm` takes the music: the sequences whose
 labels have BGM in them (in any case), and those that play on a music player. A music player's name has BGM, MUSIC, SONG
 or FANFARE among the words that underscores separate (allowing digits after the word), and SE isn't among them.
@@ -529,9 +705,30 @@ or FANFARE among the words that underscores separate (allowing digits after the 
 The ripper lists and skips the sequences that make no sound. Some have a volume of 0 in the archive. The sound library
 multiplies that volume into everything they play. The game can't make them heard. The length analysis finds the others
 that never sound. The skipped sequences are placeholders, sequences that only set variables for the game, muted copies
-of other sounds, and sequences that play only on paths that depend on what the game sets or on random numbers. A rip of
-such a sequence would always take the same path. `--no-length` leaves out the analysis. Then only the sequences at a
-volume of 0 are skipped.
+of other sounds, and sequences that play only on paths that depend on what the game sets or on random numbers.
+`--no-length` leaves out the analysis. Then only the sequences at a volume of 0 are skipped.
+
+Before it skips a sequence, the length analysis tries the states that the game can give the sound as it starts it. Some
+games' code writes a sound's variables as it starts the sound. ntdlib's rules for a game's archive
+(`ntdlib/sar/game_rules.h`) list such values, cited from the game's code, and the analysis takes the first with which
+the sound sounds. The `.minihsf` then holds a version 1 descriptor with flag bit 1 (see "Scripted starts"). Its script
+writes the values right after the sound's start. A sequence can also draw a number at random and play only on some
+draws. nn::atk keeps one generator for the whole game and steps it once a frame. A sound's draws therefore depend on
+when the game starts it. When a sound that never sounds has drawn a number, the analysis starts it 1 to 400 frames
+later. It takes the first start in which the sound sounds within 10 seconds. The `.minihsf`'s script then has a
+lead-in of that many frames, with the sound's start at its end. The output therefore starts with the sound. A sequence
+that sounds in none of these states is skipped. The rules give states for Super Mario 3D World + Bowser's Fury's
+`SeData.bfsar` and for some of Super Mario Party Jamboree's archives:
+
+| Sounds | State |
+|---|---|
+| 3D World's `SePvSpinAttack`, `SePvSpinAttackAir`, `SeGvSpinAttack` and `SeGvSpinAttackAir` | Local variable 0, the character, at 4: Rosalina |
+| 3D World's `SePvKinotanJumpFail`, `SePvKinotanAppearStage` and `SePvKinotanAppearStageHaunt` | Local variable 0, the character, at 6: Captain Toad |
+| 3D World's `SeOjLanternSwing` | Local variable 0, the swing's volume, at 120 (a swing of 180 degrees) |
+| Jamboree's footsteps (`SQ_SE_FS_*`) | Local variables 6 and 7 at one surface under the whole foot |
+| Jamboree's `SQ_SE_BD03_ITEM00_TRN_LOP` | Local variable 15 at 127, where the roulette's code holds it |
+| Jamboree's `SQ_SE_MG0503_STEAM00_L_LOP` and `_R_LOP`, and `SQ_SE_MG0912_OBJ_ROCK00_ROL_LOP` | Local variable 15, the volume, at 127 |
+| Jamboree's `SQ_SE_MG0703_WTRBIKE_MOV_LOP` and `SQ_SE_MG1703_BOAT_MOV_LOP` | Local variable 15 at the state for moving: 5 for the water bike, 4 for the boat |
 
 A sequence's length comes from playing it on the model, with the descriptor's effects. A looping sequence gets two loops
 plus a 10-second fade. A sequence that ends gets a length up to its last sound, plus half a second. The tails of the
@@ -576,6 +773,83 @@ In `FILE` chunks, the `.hsflib` holds the sound archive and any group files that
 also holds the archive descriptor. Each `.minihsf` selects one sequence with a `SND ` chunk. Sequences whose data isn't
 all there are listed and skipped. Wave sounds aren't ripped.
 
+Some of WarioWare: Get It Together!'s microgames turn the tracks of their music up and down as the microgame goes on.
+The game's code sets the tracks' volumes through the sound's handle. `hsfrip` uses a table of those pieces, with the
+states that the game plays them in. It finds the game's sound archive by the archive's size and SHA-1.
+A piece's `.minihsf` plays the state that the game starts the piece in. Each later state gets a `.minihsf` too.
+Its label is the piece's, a space and the state's name, such as `BGM_P_Guitar 60 percent`. `--only` picks a later state
+by that label. A state's tracks play at the state's volumes from the start. In a state that turns some tracks down, the
+`.minihsf` holds a version 1 descriptor in its reserved area: the library's, with flag bit 0 and the piece's track
+volumes (see "Track volumes"). The set loads that descriptor last. It therefore takes effect. A state with every track
+at 1 needs no track volumes. The length analysis plays each state with its volumes. The states, with the tracks that play
+in each:
+
+| Piece | Start | Later states |
+|---|---|---|
+| `BGM_P_Guitar` | track 0 | `20 percent`: tracks 1 and 2. `60 percent`: 2 and 3. `100 percent`: 2 to 7. |
+| `BGM_P_Spotlight_Male`, `_Ballerina` and `_Female` | tracks 0 to 3 | `success`: every track. |
+| `BGM_P_Windmill` | tracks 0 to 4 | `level 1 turned`: 15 too. `level 2 turned`: 14 and 15 too. `level 3 turned`: every track. |
+| `BGM_P_Windmill_Success` | level 1: every track but 13 and 14 | `level 2`: every track but 13. `level 3`: every track. |
+| `BGM_P_Dance` | every track | `success`: every track but 5 to 7. |
+| `BGM_V_SuperWarioCo_GoalResult` and `_MissResult` | every track | `next`: every track but 3, 7, 11 and 13. |
+
+The guitar microgame changes its tracks when the strums reach a fifth, three fifths and all of the microgame's strums.
+The spotlight microgame plays one of its three pieces on each level. Its other tracks come in at its success. The
+windmill turns up its last tracks as it turns, by level. At the end it plays its success music, with the tracks of the
+microgame's level. Super Wario Co's result turns some tracks down when the player presses Next.
+
+Each of the game's microgames also puts an I3DL2 reverb on aux bus B as it starts. The game's list of microgames
+names the reverb: `I3DL2_Hall` for some microgames and `I3DL2_Default` for the rest. The reverb stays
+on bus B until the stage ends. Before a stage's first microgame, bus B is empty. Another table lists the microgames'
+sequences that send to bus B, with the reverb of each: 35 play with `I3DL2_Hall` and 226 with `I3DL2_Default`. Each
+one's `.minihsf` holds a version 1 descriptor: the library's effects, with that reverb on aux bus B. The game's 183
+other sequences that send to bus B, such as the stages' music, may play with bus B empty or with either reverb there.
+Their `.minihsf` plays them with bus B empty. Two more follow for each, with ` Default reverb` or ` Hall reverb` after
+the label, such as `BGM_T_Sport_SpeedUp Hall reverb`. `I3DL2_Hall` has a dry gain of 0. What a sound sends to bus B
+then comes back only as reverb. `I3DL2_Default` passes a quarter of it on unchanged. ntdlib holds both tables
+(`ntdlib/sar/game_rules.h`). The length analysis plays each rip with its effects. Rips without the game's effects, with
+`--no-effects` or from a loose archive, leave bus B empty too. They have no rips with a reverb on bus B.
+
+Super Mario Party Jamboree's rhythm mode has 134 pieces of music that wait for values from the game. The game writes the
+mode's tempo to the global variable 27. Each piece writes its number to the global variable 29 as it starts. The piece
+then waits until the global variable 28 holds the same number. The mode's controller, `SQ_BGM_RC_MAIN_RHYTHM`, copies 29
+to 28 at the end of a bar. Under 59 of the pieces, the controller also plays a kick drum on each beat. `hsfrip` contains
+a table of the pieces, with each piece's number and tempo. `hsfrip` finds the mode's sound archives by their sizes and
+SHA-1s: one for the controller, one for the rhythm stage and one for each of the mode's ten minigames. A piece's
+`.minihsf` contains a version 1 descriptor with flag bit 1 (see "Scripted starts"). Its script starts the controller and
+the piece as the game does. The lead-in ends as the controller hands over to the piece. The piece therefore plays from
+the start of the output. The `.hsflib` of each of the mode's other archives contains the controller's archive as an
+add-on archive. The game plays a minigame's B pieces once the stage has sped up. The table gives the B pieces a
+tempo of 180 and the others 120. The length analysis plays the piece without the controller.
+
+Super Mario Party's Sound Stage has 129 pieces of the same design: the arena `bdcn001` and its ten minigames,
+`mgcn401` to `mgcn410`. The stage's controller, `SQ_BGM_BDCN001_MAIN_RHYTHM`, is in a separate sub-archive. It uses the
+global variable 26 as two flags. Bit 0 asks it to hand over at the next bar, and bit 1 asks it for a fill. The script
+of a piece's rip sets bit 0 and leaves bit 1 clear. `hsfrip` contains a second table for the stage's pieces. It finds
+the stage's sub-archives by their sizes and SHA-1s: one for the arena, one for the controller and one for each
+minigame. The game gives the round's first three minigames their A piece at 120, and the later ones their B piece at
+180. The table does the same. Under 67 of the pieces, the controller plays a kick drum on each beat. Its code holds a
+four-beat ending, as Jamboree's controller does, but a track of the controller sets the variable that the ending tests
+to a value that skips it. The rips play no ending.
+
+Jamboree's star melody, `SQ_BGM_STAR_MELODY`, follows the board's music. The game
+starts it on a second music player while the board's stream plays on. Each board's main streams hold markers of their
+beats and chords. As such a stream plays, the game's sound library turns its position into a beat and a chord: the music
+sync. The melody calls user procedures 2 to 4 to read them. Procedure 4 gives it the tempo. In each tick it sets its
+variable 14 to 4, calls procedure 2 and tests variable 14. When the beat has moved on, procedure 2 writes -1 to variable
+14, the count of quarter notes in the bar to variable 13 and the chord to variable 12. The melody then plays a phrase for
+that chord and count. Only the streams whose first user parameter has bit 7 set attach the music sync: the main streams
+of the seven boards, with and without the last stretch of the game (`_LS`), and board 5's sale (`TIMESALE`). `hsfrip`
+recognizes the melody's archive by its size and SHA-1, and rips the melody over each of those 15 streams that the game's
+files hold. Its label is the melody's, a space and the stream's, such as `SQ_BGM_STAR_MELODY SM_BGM_BD01_MAIN_JMP`. The
+ripper reads the stream's regions and markers from its file in `stream/`, and the order of its regions from its jump
+setting. It runs a model of the game's music sync over one pass of the regions in that order, then the
+loop once more. The game updates the sync once in each of its frames, 60 a second. A write that a frame of the game
+makes takes effect from the first frame of the model at or after it. The `.minihsf` holds a version 1 descriptor with
+flag bit 1. Its script starts the melody at frame 0, with the stream. The procedures' writes are writes of kind 2 (see
+"Scripted starts"). The length covers the pass and the loop. The 10-second fade follows while the loop plays again. The
+stream itself isn't part of the rip.
+
 The archive in the `.hsflib` holds only the files that the ripped sequences play: each sequence's file, the files of its
 banks, and the wave archives that those banks name. A group's file, in the archive or beside it, stays only when the
 model reads a copy of one of them from it. The archive's header, `STRG` block and `INFO` block keep their bytes, apart
@@ -600,12 +874,22 @@ Super Mario Galaxy and Super Mario Galaxy 2, and recognises each game by its sta
 code also writes the volumes of its music over the sound table's, from a table in `AudioRes/Info/BgmParam.arc`.
 `hsfrip` reads that table and puts the volumes in the descriptor. For another game, it warns and takes JAudio2's
 defaults: a DSP level of 0x4000, for the mixer's level of 1, volumes of 1, no FX lines, no track states and the sound
-table's volumes. Some of a
-game's sounds stand for pairs of other sounds, such as a piece of music and a stream. The game's code plays the pair.
-`hsfrip` leaves those sounds out. The game plays some pieces of music beside a stream. Each is a layer of the stream's
-music. HSF plays no streams. A rip of such a piece holds only the layer. A note on a bank that the start-up archive
-doesn't load makes the game's code read through a null pointer. The length analysis lists and skips the sounds that play
-such a note. The game can play such a sequence only with its tracks muted.
+table's volumes.
+
+A piece of music that the game gives other track states as it goes on gets a `.minihsf` for each of those states too.
+`hsfrip` holds the states for both Galaxy games. The `.minihsf` has the piece's label, a space and the numbers of the
+states in the game's table, such as `states 8 to 10`. Its reserved area holds a version 2 descriptor: the library's,
+with the state's track states in place of the piece's. The set loads that descriptor last. It therefore takes effect
+(see "Reserved area: the archive descriptor"). A state that fades out every track gets no `.minihsf`. A track state of 7
+keeps the track's level where the state before left it. A state with such tracks gets a `.minihsf` only where it brings
+in a layer of its own from the piece's first state. Super Mario Galaxy's three Comet Observatory pieces have two such
+layers, states 4 and 6. Each gets a `.minihsf`, and the two together get none.
+
+Some of a game's sounds stand for pairs of other sounds, such as a piece of music and a stream. The game's code plays
+the pair. `hsfrip` leaves those sounds out. The game plays some pieces of music beside a stream. Each is a layer of the
+stream's music. HSF plays no streams. A rip of such a piece holds only the layer. A note on a bank that the start-up
+archive doesn't load makes the game's code read through a null pointer. The length analysis lists and skips the sounds
+that play such a note. The game can play such a sequence only with its tracks muted.
 
 The lengths follow the rules above, in sub-frames of 2.5 ms, with some differences. A loop is a jump back of the main
 track, outside a subroutine. The main track is the first track, in the order of the sequence's tree, that has started a
@@ -644,7 +928,12 @@ tracks 10 and 11 of `m_boss`, and tracks 14 and 15 of `l_boss`. The battle of tw
 `battle_t`. The directors of the game's other scenes take a piece's tracks from its track map. A track map gives the
 counts of the piece's basic tracks and of its layers: for events, treasure, enemies nearby, battles and the ground. The
 directors mute every layer as the piece starts, and fade the layers in as the game goes on. A rip plays the layers
-muted, as the game starts them.
+muted, as the game starts them. Each piece with a track map also gets a `.minihsf` for each of its layers, named after
+the piece and the layer, such as `forest battle layer`. It plays the piece with that layer's tracks. The directors fade
+a layer in to a level of 1. The directors of treasure and the ground take 100 frames. The others set the level from 0
+to 1 by how near the event or the enemies are. The `.minihsf` plays the layer at 1 from the start. Its reserved area
+holds the library's descriptor, with the piece's muted tracks for the layer, as a JAudio game's variant does (see
+"JAudio games"). The variants follow the effects.
 
 The game plays its cave music with a conductor. It picks a conductor for each floor of a cave from lists of floors. A
 conductor's name gives its piece: the piece whose name starts it (`cavesoil`, `cavemetal`, `caveconc`, `cavetile`,
@@ -680,8 +969,10 @@ louder than 8. The tags are those of the JAudio games.
 `hsfrip` recognises Pikmin's Switch release by its bank file, `pikibank.bx` in a folder named `Banks`. The folder
 `Seqs` beside it holds the sequence archive, `pikiseq.arc`. The folder `Banks` holds the wave archives too. The game's
 code, the ExeFS's `main`, holds the sequence index and the settings. `hsfrip` reads them from the `main` of the game's
-version 1.0.0, whose build ID is `342a165cc42e997edf15023143252e9f7e5c1a8d`. It refuses another build, and an input
-without `main`. The rip goes in a folder with the bank file's name. Its `.hsflib` holds the bank file, the sequence
+version 1.0.0 or of its update, version 1.1.0. It finds the build by its build ID:
+`342a165cc42e997edf15023143252e9f7e5c1a8d` for version 1.0.0 and `3a8e744d8f65cdeadaa1ca6782c4a12d6faa8195` for version
+1.1.0. The two builds hold the same tables at other addresses. `hsfrip` refuses another build, and an input without
+`main`. The rip goes in a folder with the bank file's name. Its `.hsflib` holds the bank file, the sequence
 archive, every wave archive that the wave systems name and the game holds, and the sequence index, with a library 3
 descriptor. Each `.minihsf` selects a piece of music, a piece of the cutscenes' music or an effect. `--bgm` takes the
 two kinds of music.
@@ -702,8 +993,13 @@ left out. The effects that the game's code plays with values of its own follow. 
 value, such as `system-0x19`. Then come the formation's sound with the stick pushed all the way (`formation`), the crowd
 of Pikmin at each of its 29 sizes (`crowd-01` to `crowd-29`) and the captain's footstep (`footstep`). Last come the
 sounds of each cutscene, such as `cutscene-004-01` for sound 1 of cutscene 4. A cutscene's events may end with its
-finish. Each of its sounds then gets the frames from the sound's first event to the finish. An effect that another one
-plays the same way is left out. The lengths follow the rules for the JAudio games. A note whose envelope has no attack
+finish. Each of its sounds then gets the frames from the sound's first event to the finish. As it measures a sound of
+a cutscene, the length analysis queues each of the cutscene's later events in its frame. The game queues them in the
+same frames. Such an event can stop the sound. The analysis plays the events' notes at a level of 0. Only the sound
+itself then counts in the length. The rip's player leaves those events out. A second run without the events finds the
+sounds that an event stops. The rip of such a sound fades out from the first frame in which the game's sound differs
+from the rip's. The fade ends where the game's sound ends. No tail follows. An effect that another one plays the same
+way is left out. The lengths follow the rules for the JAudio games. A note whose envelope has no attack
 table counts as held from its start. The FX lines' tails and the output count as sound while they hold a sample louder
 than 8. The FX lines' feedback can hold quieter values for ever. The main track's jumps back count as loops in a
 subroutine or a counted loop too. Two such jumps are passes of one loop if the levels below them match: each call's

@@ -176,6 +176,12 @@ struct Track
     bool tempo_sync = false;
     bool allocated = false;               // from the pool: it goes back to the free queue as it closes
     std::array<OscState, 2> osc_states{}; // oscillatorParams
+
+    // Set only by the length analysis (the game has no such fields): whether the track's notes are unheard, and whether
+    // the tracks that it opens are (Tracks::SetUnheardOpens). An unheard note plays as the game plays it, at a level
+    // of 0. A track that an unheard track opens is unheard too.
+    bool unheard = false;
+    bool unheard_opens = false;
 };
 
 // For the ripper's length analysis: a track's jump back. The jump's target, and whether the track has started a note
@@ -349,8 +355,15 @@ public:
         return opens_[index];
     }
 
+    // For the length analysis: whether the tracks that track `index` opens from now on are unheard (Track::unheard).
+    // The game's code has no such step.
+    void SetUnheardOpens(uint32_t index, bool unheard)
+    {
+        tracks_[index].unheard_opens = unheard;
+    }
+
     // The notes that asked for a bank or a program that the bank file lacks, or a wave that no current scene holds.
-    // The game's note then doesn't start.
+    // The game's note then doesn't start. Unheard notes don't count.
     uint32_t MissingNotes() const
     {
         return missing_notes_;
