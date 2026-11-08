@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-// What a version 2 archive descriptor sets up on the model of JAudio (src/jaudio): the engine's settings, the track
-// states of a sound, and the files. The player and the ripper's length analysis both set the model up with these
+// What a version 2 archive descriptor sets up on the model of JAudio (ntdlib's jaudio2): the engine's settings, the
+// track states of a sound, and the files. The player and the ripper's length analysis both set the model up with these
 // functions. A rip's length then comes from the sound that the player plays.
 
 #pragma once
@@ -13,8 +13,10 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/jaudio2/engine.h"
+
 #include "hsf/format.h"
-#include "jaudio/engine.h"
+#include "hsf/jaudio_models.h"
 
 namespace hsf
 {

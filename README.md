@@ -2,7 +2,7 @@
 
 HSF is a PSF-family music rip format for Nintendo Switch sequenced audio: the music that Switch games play from
 NintendoWare sound archives (`.bfsar`), and the sequenced sound of the Switch releases of the Super Mario Galaxy games,
-Pikmin and Pikmin 2.
+Pikmin, Pikmin 2 and The Legend of Zelda: Skyward Sword.
 
 A rip holds a game's sound archive. HSF's player plays it with a model of the SDK's sound library (`nn::atk`) and of the
 console's audio renderer. The renderer mixes the sound outside the game, in the system. The model does the same
@@ -15,6 +15,11 @@ files, and the player plays them on a model of JAudio2 and of the emulation. The
 Pikmin 2's Switch release, in Pikmin 1+2, plays its sound the same way with JAudio1, the version of JAudio before
 JAudio2. The player plays its rips on a model of JAudio1. Pikmin's Switch release, also in Pikmin 1+2, plays its sound
 with the C JAudio, the version before JAudio1. The player plays its rips on a model of the C JAudio.
+
+The Legend of Zelda: Skyward Sword HD is the Wii game recompiled for the Switch. It plays its sound with NW4R SND, the
+Wii's sound library, and a layer in its code mixes the Wii's voices on the Switch's audio renderer. A rip of it holds
+part of the game's Wii sound archive, and the player plays it on a model of NW4R SND, of the layer and of the renderer.
+These rips are version 3 of the format.
 
 HSF comes with a ripper (`hsfrip`), a command-line renderer (`hsfplay`), a foobar2000 component and an XMPlay plugin.
 
@@ -155,6 +160,26 @@ one folder. `--bgm` rips the music. Some things differ from the game:
 
 Players without Pikmin's support refuse its rips with a message too.
 
+For The Legend of Zelda: Skyward Sword HD, give `hsfrip` the game's RomFS folder. `hsfrip` finds the game's Wii sound
+archive, `Sound/WZSound.brsar`, and the cutscenes' archives in `Sound/demo`. It rips each sequence of an archive, the
+music and the sound effects, into a folder with the archive's name. `--bgm` rips the music. The library holds only the
+part of the archive that the rip's sequences play. Some things differ from the game:
+
+- The game puts a reverb on each of its two aux buses, and changes the first one's with the scene. A rip plays bus A's
+  reverb for a scene that names no type of room, and bus B's from the game's start-up.
+- The game mixes for 5.1 speakers, in NW4R SND's mode for Dolby Pro Logic II. A rip plays the front pair only, in
+  stereo. It leaves out the rear channels, which hold part of each reverb and the sounds panned behind or past the
+  sides. On a stereo TV, the console mixes the six channels down to two. A rip doesn't.
+- The game plays streams, some of them beside its sequences. HSF plays no streams.
+- The game plays most effects at a place in its world, and moves their levels as the camera and the sound's source
+  move. A rip plays each effect at the listener.
+- The game's code reads a further level for each sound that it starts, a value that acts like an effect send. A rip
+  leaves it out.
+- HSF's model of NW4R SND follows the Wii's builds up to September 2009. Skyward Sword's build is from October 2011.
+  Where the two builds differ, a rip may play differently from the game.
+
+HSF 1.4.0 and earlier players refuse its rips with a message.
+
 HSF's earlier players refuse version 2 rips with a message. In a version 2 rip, a seek back past the audio that the
 foobar2000 component or the XMPlay plugin keeps plays the track again from its start.
 
@@ -208,15 +233,18 @@ ctest --test-dir build -C Release
 --preset release` and `ctest --preset release`). The presets require CMake 3.23 or later. They don't select clang-cl.
 On Windows, use the commands above.
 
-The models of the sound library and the renderer are in ntdlib's `nx` module, with their tests.
+The models of the sound library and the renderer are in ntdlib's `nx` module, with their tests. The models of
+JAudio2, JAudio1 and Jac are in its `jaudio2`, `jaudio1` and `jac` modules. The model of NW4R SND on Skyward Sword HD's
+layer is in its `rvl_nx` module.
 
 The format test (`tests/format_test.cpp`) checks the descriptor and the loading of libraries. The player test
 (`tests/player_test.cpp`) plays sets made from a small archive and checks lengths, fades, seeks, volume, group files, a
-reverb's tail and a delay's echoes. The ripper's test (`tests/rip_test.cpp`) measures a sequence of each kind that the
-length analysis distinguishes. The game test (`tests/game_test.cpp`) builds a Bezel Engine archive, data sheets with a
-sound effect list and sounds' levels, and a `boot.lua`. It checks what `hsfrip` finds in a folder of them, in the
-archive alone and in a title's folder that holds the archive unpacked. The test also checks that the readers refuse
-damaged files.
+reverb's tail and a delay's echoes. It also plays a small Wii sound archive on Skyward Sword HD's layer. The ripper's
+test (`tests/rip_test.cpp`) measures a sequence of each kind that the length analysis distinguishes. It also checks
+the parts of a rip of a Wii sound archive. The game test (`tests/game_test.cpp`) builds a Bezel Engine archive, data
+sheets with a sound effect list and sounds' levels, and a `boot.lua`. It checks what `hsfrip` finds in a folder of
+them, in the archive alone and in a title's folder that holds the archive unpacked. The test also checks that the
+readers refuse damaged files.
 
 ## Layout
 
@@ -224,15 +252,12 @@ damaged files.
 docs/         the format's specification (hsf.md)
 src/game/     a Switch game's files: folders, and Bezel Engine's archives and data sheets
 src/hsf/      the HSF format and the player
-src/jaudio/   the model of JAudio2 and of the emulation of its DSP program (version 2)
-src/jaudio1/  the model of JAudio1 and of Pikmin 2's sound code (version 2, library 2)
-src/jac/      the model of the C JAudio and of Pikmin's sound code (version 2, library 3)
-src/rip/      the ripper: sets, the JAudio games and the length analysis
+src/rip/      the ripper: sets, the JAudio games, Wii sound archives and the length analysis
 src/cli/      hsfrip and hsfplay
 plugins/      the foobar2000 component and the XMPlay plugin
 tests/        ctest suites
 externals/    xsflib, the code that the PSF players share, and ntdlib, for Nintendo's formats and the models of the
-              Switch's sound library and audio renderer (submodules)
+              Switch's sound library and audio renderer and of JAudio (submodules)
 ```
 
 ## Licence

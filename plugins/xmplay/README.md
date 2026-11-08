@@ -29,8 +29,8 @@ a folder inside it, and restart XMPlay.
   At most 128 states are kept. The intervals between them grow as the track continues. With rendering ahead turned off,
   every track saves states. Seeking ahead then renders up to the target.
 - Output is 16-bit stereo at 48,000 Hz. That's the rate of the Switch's audio renderer. The output isn't resampled.
-- When a track starts, the plugin loads the track's `.hsflib`. A `.hsflib` holds a whole sound archive. The tracks of a
-  game with a large archive therefore take longer to start and use more memory.
+- When a track starts, the plugin loads the track's `.hsflib`. A `.hsflib` holds the files of the sound archive that the
+  rip plays. The tracks of a game with a large archive therefore take longer to start and use more memory.
 
 ## Building
 

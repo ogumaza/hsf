@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/jaudio2/engine.h"
+#include "ntdlib/jaudio2/output.h"
 #include "ntdlib/nwsnd/length_model.h"
 #include "ntdlib/nwsnd/sequence.h"
 #include "ntdlib/nx/atk/engine.h"
@@ -22,11 +24,10 @@
 
 #include "hsf/format.h"
 #include "hsf/jaudio.h"
+#include "hsf/jaudio_models.h"
 #include "hsf/model.h"
 #include "hsf/nx.h"
 #include "hsf/sar.h"
-#include "jaudio/engine.h"
-#include "jaudio/output.h"
 
 namespace hsf::rip
 {

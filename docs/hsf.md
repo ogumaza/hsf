@@ -1,11 +1,15 @@
 # HSF
 
-Version 2. HSF stores sequenced music from Nintendo Switch games so that it can be played back as the game plays it. A
+Version 3. HSF stores sequenced music from Nintendo Switch games so that it can be played back as the game plays it. A
 rip contains a game's sound files. In version 1, they're a sound archive. The player plays it with HSF's model of the
 SDK's sound library (`nn::atk`) and of the console's audio renderer (`nn::audio`'s renderer), with the effects the game
 puts on the sound library's aux buses. Version 2 adds games that play their sound with JAudio, the sound library of
 Nintendo's GameCube and Wii games. A version 2 rip holds such a game's JAudio files. The player plays them with HSF's
-model of JAudio and of the emulator that runs JAudio's DSP program in the game (see "Version 2: JAudio").
+model of JAudio and of the emulator that runs JAudio's DSP program in the game (see "Version 2: JAudio"). Version 3
+adds Switch releases of Wii games that play their sound with the Wii's NW4R SND, such as The Legend of Zelda: Skyward
+Sword HD. A version 3 rip holds part of the game's Wii sound archive (`.brsar`, RSAR). The player plays it with HSF's
+model of NW4R SND, on the layer that the game puts in place of the Wii's AX, and of the renderer (see "Version 3: NW4R
+SND").
 
 Switch games play sounds from NintendoWare sound archives (`.bfsar`, FSAR): sequences, wave sounds and streams. HSF
 plays sequences. Streams are recorded audio. Other tools already play them.
@@ -20,7 +24,7 @@ emulator inside the game. A version 2 player reproduces the emulator's work in c
 | Extension | Contents |
 |---|---|
 | `.hsf` | A self-contained rip (rarely used). |
-| `.hsflib` | Shared data for one sound archive: the sound archive, any group files that its sequences require, and the archive descriptor. In version 2, a game's JAudio files and the descriptor. |
+| `.hsflib` | Shared data for one sound archive: the sound archive, any group files that its sequences require, and the archive descriptor. In version 2, a game's JAudio files and the descriptor. In version 3, the part of a Wii sound archive that its sequences play, and the descriptor. |
 | `.minihsf` | One sound: a small chunk that selects the sound, plus tags. It references an `.hsflib` with `_lib`. |
 
 All three use the PSF container.
@@ -62,7 +66,7 @@ u32  size of the payload in bytes (excluding padding)
 | Type | Payload | Meaning |
 |---|---|---|
 | `FILE` | `u16 path length`, the UTF-8 path (no leading `/`, `/` separators), zeros to a multiple of 4, then the file data | A file of the game, by its path among the game's files (for example `Audio/sound.bfsar`, or `Archive/Sound.bea/Audio/sound.bfsar` for a file in a Bezel Engine archive), or a file the descriptor names. |
-| `SND ` | `u32 sound id` | The sound to play: an `nn::atk` item id (`0x01000000 \| index` in the archive's sound table). In version 2, a JAudio sound ID. In library 1, the ID has the section in the top byte, the group in the next, and the index in the low 16 bits. Libraries 2 and 3 give their IDs in their sections. The last one in loading order takes effect. |
+| `SND ` | `u32 sound id` | The sound to play: an `nn::atk` item id (`0x01000000 \| index` in the archive's sound table). In version 2, a JAudio sound ID. In library 1, the ID has the section in the top byte, the group in the next, and the index in the low 16 bits. Libraries 2 and 3 give their IDs in their sections. In version 3, the sound's index in the Wii sound archive's sound table. The last one in loading order takes effect. |
 
 Unknown chunk types are skipped. Chunks are applied in order. For the same path, later data replaces earlier data.
 
@@ -80,7 +84,8 @@ takes effect. The loaded files must select a sound with a `SND ` chunk.
 
 ```
 0x00  u32  magic "HSFA"
-0x04  u32  descriptor version (1, or 2 for JAudio: see "Version 2's descriptor")
+0x04  u32  descriptor version (1, 2 for JAudio, or 3 for NW4R SND: see "Version 2's descriptor" and "Version 3's
+           descriptor")
 0x08  u32  flags: bit 0 for the track volumes after the paths (see "Track volumes"), bit 1 for the scripted starts
            after them (see "Scripted starts"), bit 2 for the user procedures after those (see "User procedures"), or
            none (0)
@@ -302,6 +307,31 @@ count other than 64, aux effects, other than two group paths, a library other th
 volume that isn't a finite number of 0 or more, a delay past 128 sub-frames, or a sound's volume past 255. It rejects
 every other version.
 
+### Version 3's descriptor
+
+Version 3 keeps version 1's layout up to the paths' padding too. A version 1 player refuses it with "archive
+descriptor version 3; this player supports version 1", and a version 2 player with "archive descriptor version 3; this
+player supports versions 1 and 2". The settings of NW4R SND follow the padding:
+
+```
+0x00  u32  magic "HSFA"
+0x04  u32  descriptor version (3)
+0x08  u32  flags: none (0)
+0x0C  u32  output mode: 1 stereo
+0x10  u32  the voice count: 64, AX's voices
+0x14  u32  the game's SDK version, as in version 1 (110400 for Skyward Sword HD's 11.4.0)
+0x18  u32  0 (version 1's aux effects: version 3 has none)
+      u16  length of the sound archive's path, then the path (UTF-8)
+      u16  0 (version 1's group files: version 3 has none)
+      zeros to a multiple of 4
+      u32  the layer: 1 for Skyward Sword HD's
+      u32  NW4R SND's build, by its date as YYYYMMDD (20111007 for Skyward Sword HD)
+```
+
+The path identifies the `FILE` chunk that holds the Wii sound archive (RSAR), in the Wii's big-endian byte order. A
+version 3 player plays versions 1 to 3. It rejects a version 3 descriptor with flags other than 0, an output mode other
+than 1, a voice count other than 64, aux effects, group paths, or a layer other than 1. It rejects every other version.
+
 ## Aux effects
 
 `nn::atk` has three aux buses besides its main bus. A sound sends part of each voice to them, and a game puts effects on
@@ -425,7 +455,7 @@ A version 2 player provides:
   Switch's AudioOut then plays the result at a gain of 127/128, rounded down.
 - **Output.** 16-bit stereo at 48,000 Hz. A sub-frame gives 120 stereo pairs, and the first gives 119.
 
-HSF's implementation (`src/jaudio`) follows a study of the code in the Super Mario Galaxy games' `main`, with Hagi
+HSF's implementation (ntdlib's `jaudio2`) follows a study of the code in the Super Mario Galaxy games' `main`, with Hagi
 linked in. The sound starts before the first sub-frame. The sound has finished when the sequence has ended, no DSP
 channel plays, the FX lines' delays are empty and a sub-frame's output is silent.
 
@@ -534,7 +564,7 @@ A library 2 player provides:
   for a stick tilted all the way. A request for the story's flag of the paid debt gets 0, the state at the start of
   the story. Any other request gets 0 and changes nothing.
 
-HSF's implementation (`src/jaudio1`) follows a study of the code in the release's `main`, with Hagi linked in. The
+HSF's implementation (ntdlib's `jaudio1`) follows a study of the code in the release's `main`, with Hagi linked in. The
 sound starts before the first sub-frame. A piece has finished when its sequence has ended, no DSP channel plays, the FX
 lines' delays hold no sample louder than 8 and a sub-frame's output is silent. An effect has finished in the same way,
 once JAI has released it. A line's feedback can keep quieter samples going round for ever.
@@ -644,7 +674,7 @@ of kind 3 whose type isn't 1 to 7, an effect of kind 7 whose type isn't 0 or 1, 
 type isn't 0. It rejects a finish on an effect of a kind other than 7 too. A player that supports library 1
 alone, such as HSF 1.2.0, refuses the set by the library's number. It does the same for library 2.
 
-HSF's implementation (`src/jac`) follows a study of the code in the release's `main`, with Hagi linked in. Hagi's DSP
+HSF's implementation (ntdlib's `jac`) follows a study of the code in the release's `main`, with Hagi linked in. Hagi's DSP
 renders one sub-frame of 80 samples at a time, 400 a second, and the CPU side updates after each. The game's code
 runs at 30 frames a second. Its frame k runs after sub-frame n, counting from 1, once 30n reaches 400(k + 1). The
 start-up runs before the first sub-frame, up to its wait for the track that registers 0x20000. The rest of the
@@ -657,6 +687,54 @@ effect plays on tracks that keep running after it. It plays while the game's cod
 while its tracks haven't read a value that the code queued or wrote to port 0 or 1. It also plays while a track of the
 trees that the code writes to has opened or started a note since the sound started. The formation's and the crowd's
 sounds play for as long as the game's code runs. A part or an effect has then finished in the same way as a piece.
+
+## Version 3: NW4R SND
+
+Skyward Sword HD is the Wii game recompiled for the Switch. Its sound still comes from NW4R SND, the sound library of
+the Wii's SDK, and NW4R SND still writes the parameter blocks of the Wii's AX. A layer in the game's code takes AX's
+place: it turns each AX voice into a voice of the audio renderer. Layer 1 is that layer in version 0 of the game.
+
+A version 3 player provides:
+
+- **NW4R SND.** HSF's model of the library, the one that WSF plays on the Wii: the sequence player, the banks and
+  waves, the channels and the voices, in the descriptor's build. NW4R SND runs a sound frame every 3 ms on the game's
+  AX timer, after AX's frame callback. It mixes in its output mode for Dolby Pro Logic II, which the layer sets. Each
+  bus then has four channels: left and right in front, and left and right behind. A channel of a voice that reaches
+  both sides first moves its pan and surround pan as the game's code does. Its four volumes on a bus are the
+  products of the left and right ratios at its pan with the front and rear ratios at its surround pan. A rear right
+  volume goes in a volume of aux bus C, for each of the main bus, bus A and bus B.
+- **The layer.** 64 records, one for each AX voice. A record that plays has a voice of the renderer at 32 kHz. The
+  voice's pitch is AX's ratio. A splitter sends the voice to the final mix and to a sub-mix for each of aux buses A
+  and B. The renderer gets the envelope's current volume and the mix's volumes, without their ramps. The low-pass
+  filter becomes the voice's first biquad, and AX's biquad its second. A wave buffer covers the wave from a base
+  aligned to 64 bytes, and a looping wave loops with the renderer's loop fields. Each sub-mix reaches the final mix at
+  its aux bus's return volume. The volume stays 0 until the game appends an effect. The render thread reads each aux
+  bus's 4 channels a frame at a time, runs the bus's effects on them and returns them to the renderer.
+- **The reverbs.** `nn::audio`'s reverb for the CPU, at 32,000 Hz on the 4 channels of a bus, as the game's reverb
+  class runs it. Bus B has the reverb of the game's start-up and bus A the one of a scene that names no type of room.
+  Each bus returns at full volume. A bus is silent for 2 frames after its first reverb. The class turns the game's
+  parameters into the reverb's:
+
+  | | Bus A | Bus B |
+  |---|---|---|
+  | Early reflections | a cathedral's, gain 0 | a hall's, gain 0.3 |
+  | Late reverb | a hall's, gain 1 | a hall's, gain 1 |
+  | Pre-delay | 20 ms | 100 ms |
+  | Decay time | 3 s | 2 s |
+  | High-frequency decay ratio | 0.4 | 0.7 |
+  | Coloration | 1 | 1/3 |
+  | Reverb gain, output gain, dry gain | 1, 1, 0 | 1, 1, 0 |
+
+- **The renderer.** HSF's model of the renderer at the game's settings: 32,000 Hz in frames of 160 samples (5 ms),
+  14 mix buffers, a final mix of 6 channels and the two sub-mixes. The renderer's frame runs every 5 ms. The AX ticks
+  due by then run before it: tick k at 3k ms, and frame j at 5j ms. The SDK's upsampler takes the final mix's
+  channels to 48,000 Hz, 240 samples a frame, with the SDK's rounding.
+- **Output.** The final mix's front left and right, in 16-bit stereo at 48,000 Hz.
+
+HSF's implementation follows a study of the code in the game's `main` and `sdk` (NintendoSDK 11.4.0). The game's
+changes of bus A's reverb with the scene aren't modelled, and neither are streams. A rip plays sequences only. The
+sound has finished when NW4R SND has nothing playing and the reverbs have stopped ringing: no frame louder than ±8 for
+a second. The reverbs round down, and samples of ±1 can stay in their output for ever.
 
 ## End of a sound
 
@@ -1008,6 +1086,24 @@ return, and each counted loop's start and count. The jumps' targets may differ. 
 The Switch's release plays nothing for the crowd or for `SYSSE_JUNGLE`. The crowd's notes play instruments 0 and 2 of
 bank 1. `SYSSE_JUNGLE`'s note plays key 18 of drum set 228 in bank 0. The bank file lacks the waves of all three. The
 length analysis skips those sounds as sounds that make no sound. With `--no-length`, the rip holds them, silent.
+
+### Wii sound archives
+
+A game without a Switch sound archive or JAudio's files may hold Wii sound archives (`.brsar`). Skyward Sword HD keeps
+its sound in `Sound/WZSound.brsar`, and its cutscenes' sound in the archives of `Sound/demo`. `hsfrip` rips each
+archive separately. It also rips a loose `.brsar`. The rip goes in a folder with the archive's name. Each `.minihsf`
+selects a sequence sound of the archive: a piece of music or a sound effect. `--bgm` takes the sequences whose labels
+say BGM, or that play on a player named for music. Sequences whose sequence data or bank the archive doesn't hold are
+listed and skipped.
+
+The `.hsflib` holds a copy of the archive with only what its sequences play: each sequence's file, and its bank's file
+and waves. The archive's header and its SYMB and INFO blocks stay, with the files' new places. A group's files that
+hold the same bytes are kept once. The descriptor is version 3, with layer 1 and NW4R SND's build of 20111007. The Wii
+release's code gives that date. The HD release's code gives none.
+
+The lengths follow the rules above, in the renderer's frames of 5 ms. As on the Wii, an open of a track keeps the
+track's wait. A track that another track opens again therefore makes its pass when its wait runs out. The tags are those of
+the other rips.
 
 ## Copyright
 

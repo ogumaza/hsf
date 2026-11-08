@@ -6,7 +6,8 @@
 // tag must apply. A group file outside the archive must be found. A reverb on an aux bus must play as the model plays
 // it. So must a delay, whose output never returns to 0, and a set without a length must still end. Track volumes in a
 // mini's descriptor must reach the sound's tracks. A scripted start in a mini's descriptor must start the sound as it
-// says, with each kind of sequence variable. A set that can't play must report why.
+// says, with each kind of sequence variable. A set that can't play must report why. A set of version 3 must play a Wii
+// sound archive's sequence on Skyward Sword HD's layer, end after it, and seek from its snapshots.
 
 #include "hsf/player.h"
 
@@ -14,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -25,7 +27,9 @@
 #include "ntdlib/nx/atk/effect.h"
 #include "ntdlib/nx/atk/engine.h"
 #include "ntdlib/nx/audio/i3dl2.h"
+#include "ntdlib/testing/rsar_files.h"
 #include "ntdlib/testing/sar_files.h"
+#include "xsflib/bytes.h"
 #include "xsflib/rip/length.h"
 #include "xsflib/testing/check.h"
 #include "xsflib/testing/sets.h"
@@ -178,7 +182,7 @@ void CheckSnapshotSeeks(const std::string& path, const std::vector<int16_t>& str
     const bool started = playback.Open(path, kReader, options) && playback.Start();
     if (started)
     {
-        played = RenderFrames([&playback](int16_t* out, std::size_t frames) { return playback.Render(out, frames); },
+        played = RenderFrames([&playback](int16_t* out, std::size_t count) { return playback.Render(out, count); },
                               SIZE_MAX, kBlock);
     }
     const std::size_t snapshots = playback.SnapshotCount();
@@ -711,6 +715,116 @@ void TestRefusals(const TestArchive& plain, const std::string& library)
     CheckRefusals<hsf::Playback>(refusals, kReader);
 }
 
+// A Wii sound archive with one sequence sound of `commands`, on track 0. The test archive's waves hold only their
+// frames' headers. Here each frame gives the samples of its nibbles at a scale of 2^11, and the waves sound.
+std::vector<uint8_t> RsarWith(const std::vector<uint8_t>& commands)
+{
+    namespace rsar_files = ntdlib::testing::rsar_files;
+    std::vector<uint8_t> bytes = rsar_files::MakeArchive(rsar_files::MakeSequence(commands), 0, 1);
+    constexpr uint8_t kNibbles[] = {0x7F, 0x19, 0xE3, 0x5A, 0xC6, 0x2D, 0x91};
+    for (std::size_t at = 0; at + 4 <= bytes.size(); at++)
+    {
+        if (std::memcmp(&bytes[at], "RWAV", 4) != 0)
+        {
+            continue;
+        }
+
+        // The wave's DATA block holds 0x40 bytes of samples after its header of 8 bytes.
+        const uint32_t data = xsflib::LoadBe32(&bytes[at + 0x18]);
+        for (std::size_t frame = 0; frame < 0x40; frame += 8)
+        {
+            uint8_t* samples = &bytes[at + data + 8 + frame];
+            samples[0] = 0x0B;
+            std::memcpy(samples + 1, kNibbles, sizeof(kNibbles));
+        }
+    }
+
+    return bytes;
+}
+
+// Writes a library of version 3 that holds `archive`, and returns its path.
+std::string WriteNw4rLibrary(const std::string& name, const std::vector<uint8_t>& archive)
+{
+    const hsf::ArchiveDescriptor descriptor = hsf::ArchiveDescriptor::Nw4r({}, "Sound/test.brsar", 110400);
+    hsf::ProgramBuilder b;
+    b.AddFile(descriptor.archive_path, archive);
+    const std::string path = "sets/" + name + ".hsflib";
+    files[path] = hsf::WritePsf(hsf::kPsfVersionHsf, descriptor.Serialize(), b.Data(), {});
+
+    return path;
+}
+
+// The last frame of `samples` with a sample louder than ±8 (xsflib's Audible), or -1.
+int64_t LastHeardFrame(const std::vector<int16_t>& samples)
+{
+    const std::span<const int16_t> all(samples);
+    int64_t heard = -1;
+    for (std::size_t f = 0; (f + 1) * 2 * kFrame <= samples.size(); ++f)
+    {
+        if (xsflib::rip::Audible(all.subspan(f * 2 * kFrame, 2 * kFrame)))
+        {
+            heard = static_cast<int64_t>(f);
+        }
+    }
+
+    return heard;
+}
+
+// Sets of version 3. Each track sets its notes' envelope first (D1 7F D2 7F D3 7F): a full sustain at once and the
+// fastest release. The sequences play at 96 ticks a second. Without a length, a set ends once the reverbs on the aux
+// buses have stopped ringing, a second after the last frame louder than ±8, and half a second after that.
+void TestNw4r()
+{
+    // A note of 24 ticks that ends: 250 ms of sound.
+    const std::string note_library =
+        WriteNw4rLibrary("nw4r note", RsarWith({0xD1, 0x7F, 0xD2, 0x7F, 0xD3, 0x7F, 60, 127, 24, 0xFF}));
+    const std::vector<int16_t> note = RenderAll(WriteMini("nw4r note", note_library, 0, {}));
+    const auto [first, last] = AudibleFrames(note);
+    const int64_t heard = LastHeardFrame(note);
+    const auto end = static_cast<int64_t>(note.size() / (2 * kFrame));
+    Check(first >= 0 && first < 20 && last - first >= 48 && last - first <= 60,
+          "a set of version 3 plays its note for 250 ms (frames " + std::to_string(first) + " to " +
+              std::to_string(last) + ")");
+    Check(end >= heard + 299 && end <= heard + 303,
+          "a set of version 3 without a length ends a second and a half after its sound (sound to frame " +
+              std::to_string(heard) + ", end at frame " + std::to_string(end) + ")");
+
+    // The same note, sent in full to aux bus B (DA 7F). The reverb's arithmetic rounds down. Samples of ±1 go on long
+    // after its tail falls below ±8, with frames of silence among them.
+    const std::string reverb_library =
+        WriteNw4rLibrary("nw4r reverb", RsarWith({0xD1, 0x7F, 0xD2, 0x7F, 0xD3, 0x7F, 0xDA, 0x7F, 60, 127, 24, 0xFF}));
+    const std::vector<int16_t> rung = RenderAll(WriteMini("nw4r reverb", reverb_library, 0, {}));
+    const int64_t rung_heard = LastHeardFrame(rung);
+    const int64_t tail = AudibleFrames(rung).second;
+    const auto rung_end = static_cast<int64_t>(rung.size() / (2 * kFrame));
+    const std::string frames = "sound to frame " + std::to_string(rung_heard) + ", samples other than 0 to frame " +
+                               std::to_string(tail) + ", end at frame " + std::to_string(rung_end);
+    Check(
+        rung_heard > heard && tail >= rung_heard + 200 && rung_end >= rung_heard + 299 && rung_end <= rung_heard + 303,
+        "a set of version 3 without a length ends a second and a half after its reverb's last sound (" + frames + ")");
+
+    // The note played over and over, for 1 s and a fade of half a second. Seeks from snapshots taken every 2,000
+    // frames land where a straight render does.
+    const std::string loop_library = WriteNw4rLibrary(
+        "nw4r loop", RsarWith({0xD1, 0x7F, 0xD2, 0x7F, 0xD3, 0x7F, 60, 127, 24, 0x89, 0x00, 0x00, 6, 0xFF}));
+    const std::string loop = WriteMini("nw4r loop", loop_library, 0, {{"length", "0:01"}, {"fade", "0.5"}});
+    const std::vector<int16_t> looped = RenderAll(loop, 1001);
+    Check(looped.size() == 2 * 72000, "a set of version 3 keeps its tagged length and fade");
+    CheckSnapshotSeeks(loop, looped, 2000, {65000, 30123, 47999, 2345, 70500});
+
+    // A sound that isn't a sequence, and a layer that the player doesn't have.
+    hsf::ArchiveDescriptor layer2 = hsf::ArchiveDescriptor::Nw4r({}, "Sound/test.brsar", 110400);
+    layer2.nw4r.layer = 2;
+    hsf::ProgramBuilder b;
+    b.AddSound(0);
+    files["sets/nw4r layer 2.minihsf"] =
+        hsf::WritePsf(hsf::kPsfVersionHsf, layer2.Serialize(), b.Data(), {{"_lib", "nw4r note.hsflib"}});
+    const std::map<std::string, std::string> refusals = {
+        {WriteMini("nw4r absent", note_library, 5, {}), "isn't a sequence"},
+        {"sets/nw4r layer 2.minihsf", "layer is 2"}};
+    CheckRefusals<hsf::Playback>(refusals, kReader);
+}
+
 } // namespace
 
 int main()
@@ -728,6 +842,7 @@ int main()
     TestWritesInProcedures(library);
     TestUserProcedures();
     TestRefusals(plain, library);
+    TestNw4r();
 
     return xsflib::testing::Summary("player");
 }

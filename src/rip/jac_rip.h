@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-// hsfrip's parts for Pikmin, whose Switch release plays its sound with the C JAudio, Jac (src/jac): the game's sound
-// files and its code among its files, what the game's code sets up for its sounds, and the sounds to rip. A rip of the
-// game has a library 3 descriptor (docs/hsf.md, "Library 3: Pikmin").
+// hsfrip's parts for Pikmin, whose Switch release plays its sound with the C JAudio, Jac (ntdlib's jac): the game's
+// sound files and its code among its files, what the game's code sets up for its sounds, and the sounds to rip. A rip
+// of the game has a library 3 descriptor (docs/hsf.md, "Library 3: Pikmin").
 
 #pragma once
 
@@ -20,13 +20,14 @@
 #include "ntdlib/nx/nso.h"
 
 #include "hsf/format.h"
+#include "hsf/jaudio_models.h"
 #include "rip/jac_tables.h"
 #include "rip/jaudio_rip.h"
 
-namespace hsf::jac
+namespace ntdlib::jac
 {
 class SoundFiles;
-} // namespace hsf::jac
+} // namespace ntdlib::jac
 
 namespace hsf::rip
 {

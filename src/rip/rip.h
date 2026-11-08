@@ -11,13 +11,14 @@
 #include <optional>
 #include <span>
 
+#include "ntdlib/jaudio2/engine.h"
 #include "ntdlib/rip/archive.h"
 #include "xsflib/rip/file_names.h"
 #include "xsflib/rip/length.h"
 
 #include "hsf/format.h"
+#include "hsf/jaudio_models.h"
 #include "hsf/sar.h"
-#include "jaudio/engine.h"
 
 namespace hsf::rip
 {

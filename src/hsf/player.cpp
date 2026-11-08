@@ -5,6 +5,7 @@
 #include "hsf/player.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -13,21 +14,26 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/jac/engine.h"
+#include "ntdlib/jaudio1/engine.h"
+#include "ntdlib/jaudio2/engine.h"
+#include "ntdlib/jaudio2/output.h"
 #include "ntdlib/nx/atk/engine.h"
+#include "ntdlib/rsar/formats.h"
+#include "ntdlib/rvl/nx/archive_model.h"
+#include "ntdlib/rvl/snd/rsar_options.h"
 #include "ntdlib/sar/set_archive.h"
+#include "xsflib/rip/length.h"
 #include "xsflib/text.h"
 
 #include "hsf/format.h"
 #include "hsf/jac.h"
 #include "hsf/jaudio.h"
 #include "hsf/jaudio1.h"
+#include "hsf/jaudio_models.h"
 #include "hsf/model.h"
 #include "hsf/nx.h"
 #include "hsf/sar.h"
-#include "jac/engine.h"
-#include "jaudio/engine.h"
-#include "jaudio/output.h"
-#include "jaudio1/engine.h"
 
 namespace hsf
 {
@@ -221,8 +227,8 @@ struct Player::SourceTraits
     }
 };
 
-// The model of JAudio (src/jaudio): the game's sound files, and an engine that plays a sound of them through Hagi's
-// path to AudioOut.
+// The model of JAudio (ntdlib's jaudio2): the game's sound files, and an engine that plays a sound of them through
+// Hagi's path to AudioOut.
 struct Player::JaudioTraits
 {
     using Set = LoadedSet;
@@ -322,8 +328,8 @@ struct Player::JaudioTraits
     }
 };
 
-// The model of JAudio1 (src/jaudio1) for a set of library 2: the game's sound files, and an engine that plays a sound
-// of them through Hagi's path to AudioOut.
+// The model of JAudio1 (ntdlib's jaudio1) for a set of library 2: the game's sound files, and an engine that plays a
+// sound of them through Hagi's path to AudioOut.
 struct Player::Jaudio1Traits
 {
     using Set = LoadedSet;
@@ -424,8 +430,8 @@ struct Player::Jaudio1Traits
     }
 };
 
-// The model of the C JAudio (src/jac) for a set of library 3: the game's sound files, and an engine that plays a sound
-// of them after the game's start-up, through Hagi's path to AudioOut.
+// The model of the C JAudio (ntdlib's jac) for a set of library 3: the game's sound files, and an engine that plays a
+// sound of them after the game's start-up, through Hagi's path to AudioOut.
 struct Player::JacTraits
 {
     using Set = LoadedSet;
@@ -525,9 +531,126 @@ struct Player::JacTraits
     }
 };
 
+// The model of NW4R SND on Skyward Sword HD's layer (ntdlib's rvl::nx): the sound archive, and the stack that plays a
+// sequence of it.
+struct Player::Nw4rTraits
+{
+    using Set = LoadedSet;
+    using Archive = ntdlib::rsar::SoundArchive;
+
+    // The reverbs on the aux buses ring until a second has passed without a frame louder than ±8 (xsflib's Audible), as
+    // in the length analysis (ntdlib::rvl::nx::LengthConsole). Their arithmetic rounds down, and samples of ±1 can stay
+    // in their output for ever. A frame of silence can also come before a reverb's tail, during its pre-delay.
+    static constexpr int kRingingFrames = 200;
+
+    // The stack, and the frames that the reverbs may still ring.
+    struct Model
+    {
+        ntdlib::rvl::nx::ArchiveModel model;
+        int ringing_frames = 0;
+    };
+
+    // The stack's snapshot, and the frames that the reverbs could still ring when it was taken.
+    struct Snapshot
+    {
+        ntdlib::rvl::nx::ArchiveModel::Snapshot model;
+        int ringing_frames = 0;
+    };
+
+    struct Prepared
+    {
+        ntdlib::SndBuild build;
+        uint32_t sound = 0;
+    };
+
+    // The archive loads at the first start, and later starts reuse it.
+    static constexpr bool kKeepArchive = true;
+
+    static std::optional<std::string> Prepare(const Set& set, Prepared& prepared)
+    {
+        prepared.build = ntdlib::SndBuild{set.archive->nw4r.snd_build, false};
+        prepared.sound = set.sound.value_or(0);
+
+        return std::nullopt;
+    }
+
+    // The set's bytes of the archive move into the archive.
+    static std::optional<std::string> LoadArchive(Set& set, const Prepared&, std::optional<Archive>& archive)
+    {
+        const std::string& path = set.archive->archive_path;
+        for (FileChunk& chunk : set.files)
+        {
+            if (chunk.path == path)
+            {
+                archive.emplace(Archive::Load(std::move(chunk.data), ntdlib::rvl::snd::kRsarOptions));
+                return std::nullopt;
+            }
+        }
+
+        return "the sound archive " + path + " isn't in the set";
+    }
+
+    static std::unique_ptr<Model> MakeModel(const Prepared& prepared, const Archive&)
+    {
+        auto model = std::make_unique<Model>();
+        model->model.build = prepared.build;
+
+        return model;
+    }
+
+    static std::optional<std::string> StartModel(Model& model, const Archive& archive, const Prepared&)
+    {
+        model.model.Start(archive);
+
+        return std::nullopt;
+    }
+
+    // The sound is its index in the archive's sound table.
+    static std::optional<std::string> StartSequence(Model& model, const Set&, const Prepared& prepared)
+    {
+        if (model.model.engine->StartSequence(prepared.sound) == nullptr)
+        {
+            return "sound " + std::to_string(prepared.sound) + " isn't a sequence that the archive can play";
+        }
+
+        return std::nullopt;
+    }
+
+    // A frame of 5 ms: 240 stereo pairs. The model reports what it doesn't model by throwing.
+    static bool RunFrame(Model& model, std::vector<int16_t>& out)
+    {
+        const std::size_t start = out.size();
+        model.model.RunFrame(out);
+        const std::span<const int16_t> frame(out.begin() + static_cast<std::ptrdiff_t>(start), out.end());
+        model.ringing_frames = xsflib::rip::Audible(frame) ? kRingingFrames : std::max(model.ringing_frames - 1, 0);
+
+        return true;
+    }
+
+    // The sound has finished once the engine has nothing playing and the reverbs have stopped ringing.
+    static bool Busy(const Model& model)
+    {
+        return model.model.engine->IsBusy() || (model.model.effects.Any() && model.ringing_frames > 0);
+    }
+
+    // The snapshot shares its unchanged memory pages with `previous`.
+    static Snapshot Save(const Model& model, const Snapshot* previous)
+    {
+        return {model.model.Save(previous != nullptr ? &previous->model : nullptr), model.ringing_frames};
+    }
+
+    // The engine throws for a snapshot that it can't return to, and then changes nothing.
+    static void Restore(Model& model, const Snapshot& snapshot)
+    {
+        model.model.Restore(snapshot.model);
+        model.ringing_frames = snapshot.ringing_frames;
+    }
+};
+
 struct Player::SourceSnapshot
 {
     std::shared_ptr<SourceTraits::Snapshot> model;
+    std::shared_ptr<Nw4rTraits::Snapshot> nw4r; // for a set of version 3
 };
 
 Player::Player() = default;
@@ -537,6 +660,7 @@ Player::~Player() = default;
 void Player::Unload()
 {
     source_.reset();
+    nw4r_.reset();
     jaudio_.reset();
     jaudio1_.reset();
     jac_.reset();
@@ -557,13 +681,26 @@ bool Player::Jac() const
     return Jaudio() && set_.archive->jaudio.library == JaudioSettings::kPikminLibrary;
 }
 
+bool Player::Nw4r() const
+{
+    return set_.archive && set_.archive->version == ArchiveDescriptor::kNw4rVersion;
+}
+
 bool Player::StartSource()
 {
     output_.clear();
 
     // The source keeps the archive for restarts. Unload drops it with the set.
     std::optional<std::string> err;
-    if (Jac())
+    if (Nw4r())
+    {
+        if (!nw4r_)
+        {
+            nw4r_ = std::make_unique<Nw4rSource>();
+        }
+        err = nw4r_->Start(set_, output_);
+    }
+    else if (Jac())
     {
         if (!jac_)
         {
@@ -607,6 +744,10 @@ bool Player::StartSource()
 bool Player::RunStep()
 {
     // The model reports a failure by throwing.
+    if (Nw4r())
+    {
+        return nw4r_->RunFrame(output_);
+    }
     if (Jac())
     {
         return jac_->RunFrame(output_);
@@ -621,6 +762,10 @@ bool Player::RunStep()
 
 bool Player::Finished() const
 {
+    if (Nw4r())
+    {
+        return !nw4r_->Busy();
+    }
     if (Jac())
     {
         return !jac_->Busy();
@@ -633,24 +778,47 @@ bool Player::Finished() const
     return Jaudio() ? !jaudio_->Busy() : !source_->Busy();
 }
 
-std::shared_ptr<const Player::SourceSnapshot> Player::SaveSource(const SourceSnapshot*)
+std::shared_ptr<const Player::SourceSnapshot> Player::SaveSource(const SourceSnapshot* previous)
 {
-    // A start that failed before the model existed leaves nothing to save. The model of JAudio takes no snapshots.
+    // A start that failed before the model existed leaves nothing to save. The model of JAudio takes no snapshots. A
+    // snapshot of NW4R SND's model shares its unchanged memory with the one before.
+    if (Nw4r())
+    {
+        if (!nw4r_ || nw4r_->GetModel() == nullptr)
+        {
+            return nullptr;
+        }
+
+        const Nw4rTraits::Snapshot* before = previous != nullptr ? previous->nw4r.get() : nullptr;
+        return std::make_shared<const SourceSnapshot>(SourceSnapshot{nullptr, nw4r_->Save(before)});
+    }
+
     if (Jaudio() || !source_ || source_->GetModel() == nullptr)
     {
         return nullptr;
     }
 
-    return std::make_shared<const SourceSnapshot>(SourceSnapshot{source_->Save(nullptr)});
+    return std::make_shared<const SourceSnapshot>(SourceSnapshot{source_->Save(nullptr), nullptr});
 }
 
 bool Player::CanRestore(const SourceSnapshot* source) const
 {
+    if (Nw4r())
+    {
+        return source != nullptr && source->nw4r != nullptr && nw4r_ && nw4r_->GetModel() != nullptr;
+    }
+
     return !Jaudio() && source != nullptr && source->model != nullptr && source_ && source_->GetModel() != nullptr;
 }
 
 void Player::RestoreSource(const SourceSnapshot& source)
 {
+    if (Nw4r())
+    {
+        nw4r_->Restore(*source.nw4r);
+        return;
+    }
+
     source_->Restore(*source.model);
 }
 

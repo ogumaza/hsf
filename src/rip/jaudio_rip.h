@@ -14,8 +14,10 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/jaudio2/engine.h"
+
 #include "hsf/format.h"
-#include "jaudio/engine.h"
+#include "hsf/jaudio_models.h"
 #include "rip/rip.h"
 
 namespace hsf::rip

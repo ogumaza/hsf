@@ -252,9 +252,9 @@ std::optional<std::string> CheckLibrary2(const JaudioSettings& j)
             return "a sound starts after " + std::to_string(d.draws) + " draws; library 2 takes 1 to 65535";
         }
 
-        for (std::size_t j = 0; j < i; j++)
+        for (std::size_t k = 0; k < i; k++)
         {
-            if (l.draws[j].sound == d.sound)
+            if (l.draws[k].sound == d.sound)
             {
                 return std::string("the archive descriptor lists a sound's draws twice");
             }
@@ -741,6 +741,68 @@ std::optional<std::string> CheckJaudio(const ArchiveDescriptor& d)
             return "a sound's volume in the archive descriptor is " + std::to_string(sound.volume) +
                    "; it's at most 255";
         }
+    }
+
+    return std::nullopt;
+}
+
+// Version 3's fields after the paths: the layer and NW4R SND's build.
+constexpr std::size_t kNw4rBytes = 8;
+
+void PutNw4r(std::vector<uint8_t>& v, const Nw4rSettings& n)
+{
+    Put32(v, n.layer);
+    Put32(v, n.snd_build);
+}
+
+// Reads version 3's fields at `pos`, after the paths and their padding. False if `data` ends first.
+bool ReadNw4r(const std::vector<uint8_t>& data, std::size_t pos, Nw4rSettings& n)
+{
+    pos = (pos + 3) & ~std::size_t{3};
+    if (pos > data.size() || data.size() - pos < kNw4rBytes)
+    {
+        return false;
+    }
+
+    n.layer = xsflib::LoadLe32(&data[pos]);
+    n.snd_build = xsflib::LoadLe32(&data[pos + 4]);
+
+    return true;
+}
+
+// Why a version 3 player can't play a version 3 descriptor, or nothing.
+std::optional<std::string> CheckNw4r(const ArchiveDescriptor& d)
+{
+    if (auto err = xsflib::psf::CheckDescriptorFlags("archive", d.flags, 0))
+    {
+        return err;
+    }
+
+    if (auto err = xsflib::psf::CheckDescriptorOutputMode("archive", d.output_mode))
+    {
+        return err;
+    }
+
+    if (d.voice_count != ArchiveDescriptor::kNw4rVoices)
+    {
+        return "the archive descriptor's voice count is " + std::to_string(d.voice_count) + "; version 3 has 64";
+    }
+
+    if (!d.effects.empty())
+    {
+        return std::string("the archive descriptor has aux effects; version 3 has none");
+    }
+
+    if (!d.group_paths.empty())
+    {
+        return "the archive descriptor has " + std::to_string(d.group_paths.size()) +
+               " group paths; version 3 has none";
+    }
+
+    if (d.nw4r.layer != Nw4rSettings::kSkywardSwordLayer)
+    {
+        return "the archive descriptor's layer is " + std::to_string(d.nw4r.layer) +
+               "; this player supports layer 1 (Skyward Sword HD's)";
     }
 
     return std::nullopt;
@@ -1303,6 +1365,18 @@ ArchiveDescriptor ArchiveDescriptor::Jaudio(const JaudioSettings& settings)
     return d;
 }
 
+ArchiveDescriptor ArchiveDescriptor::Nw4r(const Nw4rSettings& settings, std::string archive_path, uint32_t sdk_version)
+{
+    ArchiveDescriptor d;
+    d.version = kNw4rVersion;
+    d.voice_count = kNw4rVoices;
+    d.sdk_version = sdk_version;
+    d.archive_path = std::move(archive_path);
+    d.nw4r = settings;
+
+    return d;
+}
+
 ScriptStep ScriptStep::Start(uint32_t frame, uint32_t sound, uint16_t archive)
 {
     ScriptStep step;
@@ -1386,13 +1460,17 @@ std::vector<uint8_t> ArchiveDescriptor::Serialize() const
     }
     xsflib::psf::PutArchivePaths(v, *this);
 
-    // Version 2 keeps version 1's layout up to here. A version 1 player then reads the version, and refuses it. A
+    // Versions 2 and 3 keep version 1's layout up to here. An older player then reads the version, and refuses it. A
     // version 1 descriptor's track volumes follow the paths, with their flag, and its scripted starts follow those,
     // with theirs. Its user procedures come last, with their flag. A player that doesn't know a flag refuses the
     // descriptor.
     if (version == kJaudioVersion)
     {
         PutJaudio(v, jaudio);
+    }
+    else if (version == kNw4rVersion)
+    {
+        PutNw4r(v, nw4r);
     }
     else if (version == kVersion)
     {
@@ -1461,6 +1539,11 @@ std::optional<ArchiveDescriptor> ArchiveDescriptor::Parse(const std::vector<uint
         return std::nullopt;
     }
 
+    if (d.version == kNw4rVersion && !ReadNw4r(data, pos, d.nw4r))
+    {
+        return std::nullopt;
+    }
+
     if (d.version == kVersion && (d.flags & kFlagTrackVolumes) != 0 && !ReadTrackVolumes(data, pos, d.track_volumes))
     {
         return std::nullopt;
@@ -1486,9 +1569,14 @@ std::optional<std::string> ArchiveDescriptor::Check() const
         return CheckJaudio(*this);
     }
 
+    if (version == kNw4rVersion)
+    {
+        return CheckNw4r(*this);
+    }
+
     if (version != kVersion)
     {
-        return "archive descriptor version " + std::to_string(version) + "; this player supports versions 1 and 2";
+        return "archive descriptor version " + std::to_string(version) + "; this player supports versions 1 to 3";
     }
 
     // The archive's start, with the flags that version 1 has (CheckTrackVolumes) left out of xsflib's check of them.

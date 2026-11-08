@@ -20,6 +20,9 @@
 #include <vector>
 
 #include "ntdlib/jaudio/aaf.h"
+#include "ntdlib/jaudio1/channel.h"
+#include "ntdlib/jaudio1/engine.h"
+#include "ntdlib/jaudio2/output.h"
 #include "xsflib/ascii.h"
 #include "xsflib/binary.h"
 #include "xsflib/rip/length.h"
@@ -27,9 +30,7 @@
 
 #include "hsf/format.h"
 #include "hsf/jaudio1.h"
-#include "jaudio/output.h"
-#include "jaudio1/channel.h"
-#include "jaudio1/engine.h"
+#include "hsf/jaudio_models.h"
 
 namespace hsf::rip
 {

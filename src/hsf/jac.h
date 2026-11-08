@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-// What a library 3 descriptor sets up on the model of the C JAudio (src/jac): the engine's settings, the files, the
-// game's start-up and the start of a sound. The player and the ripper's length analysis both set the model up with
+// What a library 3 descriptor sets up on the model of the C JAudio (ntdlib's jac): the engine's settings, the files,
+// the game's start-up and the start of a sound. The player and the ripper's length analysis both set the model up with
 // these functions. A rip's length then comes from the sound that the player plays. The length analysis also queues a
 // cutscene's later events that make no sound alone (rip/jac_rip.h). The player leaves them out.
 
@@ -14,9 +14,11 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/jac/engine.h"
+
 #include "hsf/format.h"
 #include "hsf/jaudio.h"
-#include "jac/engine.h"
+#include "hsf/jaudio_models.h"
 
 namespace hsf
 {

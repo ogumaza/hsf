@@ -263,7 +263,7 @@ void TestSelection()
     }
 
     std::size_t at = table.size();
-    for (const uint16_t value : {0x19, 0x1e, 0x1f})
+    for (const uint16_t value : {uint16_t{0x19}, uint16_t{0x1e}, uint16_t{0x1f}})
     {
         XSFLIB_CHECK(library.effects[at++] == MakeEffect(JacEffect::kSystem, 0, value));
     }

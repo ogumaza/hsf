@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-// hsfrip's parts for Pikmin 2, whose Switch release plays its sound with JAudio1 (src/jaudio1): the game's sound files
-// among its files, what the game's code sets up for each piece of music, the sounds to rip, and their lengths. A rip
-// of the game has a library 2 descriptor (docs/hsf.md, "Library 2: Pikmin 2").
+// hsfrip's parts for Pikmin 2, whose Switch release plays its sound with JAudio1 (ntdlib's jaudio1): the game's sound
+// files among its files, what the game's code sets up for each piece of music, the sounds to rip, and their lengths. A
+// rip of the game has a library 2 descriptor (docs/hsf.md, "Library 2: Pikmin 2").
 
 #pragma once
 

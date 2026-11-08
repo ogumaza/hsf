@@ -299,7 +299,7 @@ void TestFramesToFinish()
     XSFLIB_CHECK(rip::FramesToFinish(cutscene, 4) == 0);
     XSFLIB_CHECK(rip::FramesToFinish(cutscene, 5) == 0);
 
-    for (const int16_t end : {-2, -3})
+    for (const int16_t end : {int16_t{-2}, int16_t{-3}})
     {
         cutscene.events.back().value = end;
         Check(rip::FramesToFinish(cutscene, 1) == 0, "events that end with " + std::to_string(end));

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-// What a library 2 descriptor sets up on the model of JAudio1 (src/jaudio1): the engine's settings, the files and the
-// start of a sound. The player and the ripper's length analysis both set the model up with these functions. A rip's
+// What a library 2 descriptor sets up on the model of JAudio1 (ntdlib's jaudio1): the engine's settings, the files and
+// the start of a sound. The player and the ripper's length analysis both set the model up with these functions. A rip's
 // length then comes from the sound that the player plays.
 
 #pragma once
@@ -14,10 +14,11 @@
 #include <vector>
 
 #include "ntdlib/jaudio/rarc.h"
+#include "ntdlib/jaudio1/engine.h"
 
 #include "hsf/format.h"
 #include "hsf/jaudio.h"
-#include "jaudio1/engine.h"
+#include "hsf/jaudio_models.h"
 
 namespace hsf
 {

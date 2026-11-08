@@ -337,6 +337,23 @@ struct JaudioSettings
     bool operator==(const JaudioSettings&) const = default;
 };
 
+// What a version 3 descriptor gives the model of NW4R SND: the layer that the game puts in place of AX, and the build
+// of NW4R SND (docs/hsf.md, "Version 3: NW4R SND").
+struct Nw4rSettings
+{
+    // Skyward Sword HD's layer: AX's voices mixed by nn::audio's renderer (ntdlib::rvl::nx::Layer).
+    static constexpr uint32_t kSkywardSwordLayer = 1;
+
+    // The build of NW4R SND in Skyward Sword, by its date in the Wii release's main.dol. The HD release's code has no
+    // date. ntdlib plays builds from September 24 2009 on as that build.
+    static constexpr uint32_t kSkywardSwordBuild = 20111007;
+
+    uint32_t layer = kSkywardSwordLayer;
+    uint32_t snd_build = kSkywardSwordBuild; // NW4R SND's build, by its date (YYYYMMDD)
+
+    bool operator==(const Nw4rSettings&) const = default;
+};
+
 // The volumes that the game's code gives a sound's 16 tracks through the sound's handle as the sound starts: nn::atk's
 // SetTrackVolume, track 0 first (docs/hsf.md, "Track volumes"). 1 leaves a track as the sequence plays it.
 struct SoundTrackVolumes
@@ -458,18 +475,23 @@ struct UserProcedureHandler
 // The reserved area of a set (docs/hsf.md, "Archive descriptor"). In version 1, the sound archive is played by
 // ntdlib's model of the SDK's sound library (nn::atk) and of the console's audio renderer, with the effects a scene of
 // the game puts on the aux buses. In version 2, a game's JAudio files are played by HSF's model of JAudio and of the
-// emulator that runs JAudio's DSP program in the game.
+// emulator that runs JAudio's DSP program in the game. In version 3, a Wii game's sound archive (RSAR) is played by
+// ntdlib's model of NW4R SND, on the layer that the game's Switch release puts in place of AX.
 struct ArchiveDescriptor
 {
     static constexpr uint32_t kMagic = 0x41465348; // "HSFA"
     static constexpr uint32_t kVersion = 1;
     static constexpr uint32_t kJaudioVersion = 2;
+    static constexpr uint32_t kNw4rVersion = 3;
 
     // nn::atk's voice count when the game doesn't change it, and the most a version 1 player has.
     static constexpr uint32_t kDefaultVoices = 96;
 
     // The voice count of version 2: the DSP program's 64 channels.
     static constexpr uint32_t kJaudioVoices = 64;
+
+    // The voice count of version 3: AX's 64 voices on the layer.
+    static constexpr uint32_t kNw4rVoices = 64;
 
     // Version 2's group paths: the sequence archive, then the folder of the wave archives.
     static constexpr std::size_t kSequenceArchive = 0;
@@ -497,6 +519,10 @@ struct ArchiveDescriptor
     // A version 2 descriptor for JAudio, with `settings`: 64 voices and no aux effects.
     static ArchiveDescriptor Jaudio(const JaudioSettings& settings);
 
+    // A version 3 descriptor for the sound archive at `archive_path`, with `settings`: 64 voices, no aux effects and
+    // no group files, and the SDK version `sdk_version`.
+    static ArchiveDescriptor Nw4r(const Nw4rSettings& settings, std::string archive_path, uint32_t sdk_version);
+
     // The track volumes that the descriptor gives `sound`, an nn::atk item ID, or null.
     const SoundTrackVolumes* TrackVolumesOf(uint32_t sound) const;
 
@@ -511,7 +537,8 @@ struct ArchiveDescriptor
     std::vector<AuxEffect> effects;
 
     // Version 1: the FILE chunks holding the sound archive (.bfsar) and the group files (.bfgrp) the game keeps outside
-    // it. Version 2: the start-up archive, then the sequence archive and the folder of the wave archives.
+    // it. Version 2: the start-up archive, then the sequence archive and the folder of the wave archives. Version 3:
+    // the sound archive (.brsar), and no group files.
     std::string archive_path;
     std::vector<std::string> group_paths;
 
@@ -527,11 +554,13 @@ struct ArchiveDescriptor
     UserProcedureHandler procedures;
 
     JaudioSettings jaudio; // version 2
+    Nw4rSettings nw4r;     // version 3
 };
 
 // The program's chunks in the streaming formats' layout (xsflib/psf/streaming.h): FILE chunks, each a file of the game
 // by its path in the game's files, and the SND chunk, the sound to play: an nn::atk item id in version 1, a JAudio
-// sound ID in version 2 (docs/hsf.md, "Program: chunks"). The builder compresses the program as it writes it.
+// sound ID in version 2, and the sound's index in the archive's sound table in version 3 (docs/hsf.md, "Program:
+// chunks"). The builder compresses the program as it writes it.
 using xsflib::psf::FileChunk;
 using ProgramBuilder = xsflib::psf::StreamingProgramBuilder;
 

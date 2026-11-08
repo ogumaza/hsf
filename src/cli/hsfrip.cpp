@@ -3,9 +3,9 @@
 // hsfrip: builds HSF sets (.hsflib and .minihsf files) from Switch games and sound archives.
 //
 // usage: hsfrip [options] <input> [<input> ...]
-//   <input>          a Switch game's files or a sound archive (.bfsar). The game's files are a folder (its RomFS, once
-//                    it's extracted) or a Bezel Engine archive (.bea). An NSP, XCI or NCA holds them encrypted, and is
-//                    refused.
+//   <input>          a Switch game's files or a sound archive (.bfsar, or the Wii's .brsar that Skyward Sword HD
+//                    plays). The game's files are a folder (its RomFS, once it's extracted) or a Bezel Engine archive
+//                    (.bea). An NSP, XCI or NCA holds them encrypted, and is refused.
 //   -o, --output DIR the folder the rips go in (default: a folder next to each input, with the input's name and "_hsf"
 //                    added)
 //   --list           list each game's sound archives, or what an archive holds, then stop
@@ -29,7 +29,9 @@
 // the group files in the SARC archives in the sound archive's folder (hsf::game::SarcsBeside). Sequences whose data
 // isn't all there are listed and skipped. So are those that make no sound: those whose volume in the archive is 0, and
 // those that the length analysis finds never sound. The inputs are ripped one after another. An input that fails
-// doesn't stop the rest. Dropping files or folders on the program gives it them as inputs.
+// doesn't stop the rest. Dropping files or folders on the program gives it them as inputs. A game without a Switch
+// sound archive or JAudio's files may hold Wii sound archives (.brsar). Skyward Sword HD does. Each one is ripped in
+// the same way, with a library of the part of the archive that its sequences play.
 
 #include <algorithm>
 #include <array>
@@ -50,10 +52,13 @@
 
 #include "ntdlib/jaudio/barc.h"
 #include "ntdlib/jaudio/bx.h"
+#include "ntdlib/jaudio2/engine.h"
 #include "ntdlib/nx/bex/music_sync.h"
 #include "ntdlib/nx/nso.h"
 #include "ntdlib/rip/archive.h"
 #include "ntdlib/rip/archive_mode.h"
+#include "ntdlib/rsar/formats.h"
+#include "ntdlib/rvl/snd/rsar_options.h"
 #include "xsflib/binary.h"
 #include "xsflib/cli/rip.h"
 #include "xsflib/files.h"
@@ -64,11 +69,12 @@
 #include "hsf/jac.h"
 #include "hsf/jaudio.h"
 #include "hsf/jaudio1.h"
+#include "hsf/jaudio_models.h"
 #include "hsf/sar.h"
-#include "jaudio/engine.h"
 #include "rip/jac_rip.h"
 #include "rip/jaudio1_rip.h"
 #include "rip/jaudio_rip.h"
+#include "rip/nw4r_rip.h"
 #include "rip/procedures.h"
 #include "rip/rip.h"
 #include "rip/sound_states.h"
@@ -100,10 +106,11 @@ constexpr char kUsage[] =
     "\n"
     "Rips each input into an .hsflib and a .minihsf per sound. The rip goes in a folder next to the\n"
     "input, with the input's name and \"_hsf\" added. An input is a Switch game's files or a sound\n"
-    "archive (.bfsar). The game's files are a folder (its RomFS, once it's extracted) or a Bezel\n"
-    "Engine archive (.bea). An NSP, XCI or NCA file holds a game's files encrypted, and hsfrip\n"
-    "doesn't read it. Files and folders can also be dropped on the program. Sequences that make no\n"
-    "sound, and those whose data isn't all there, are listed and skipped.\n"
+    "archive (.bfsar, or the .brsar of Skyward Sword HD). The game's files are a folder (its RomFS,\n"
+    "once it's extracted) or a Bezel Engine archive (.bea). An NSP, XCI or NCA file holds a game's\n"
+    "files encrypted, and hsfrip doesn't read it. Files and folders can also be dropped on the\n"
+    "program. Sequences that make no sound, and those whose data isn't all there, are listed and\n"
+    "skipped.\n"
     "\n"
     "options:\n"
     "  -o, --output DIR     put the rips in DIR\n"
@@ -1290,6 +1297,217 @@ int RipJaudio1Game(const std::string& input, const hsf::game::GameFiles& game, c
                           registries);
 }
 
+// The SDK version of Skyward Sword HD's sdk, NintendoSDK 11.4.0, for a version 3 descriptor.
+constexpr uint32_t kSkywardSwordSdk = 110400;
+
+// What a Wii sound archive holds, such as "RSAR, 790 sequences (61 music), 2 wave sounds, 3412 streams".
+std::string DescribeRsar(const ntdlib::rsar::SoundArchive& archive)
+{
+    std::size_t sequences = 0;
+    std::size_t music = 0;
+    std::size_t waves = 0;
+    std::size_t streams = 0;
+    const std::vector<ntdlib::rsar::SoundInfo>& sounds = archive.Sounds();
+    for (std::size_t i = 0; i < sounds.size(); i++)
+    {
+        sequences += sounds[i].type == ntdlib::rsar::SoundType::kSequence ? 1 : 0;
+        music += hsf::rip::IsNw4rMusic(archive, static_cast<uint32_t>(i)) ? 1 : 0;
+        waves += sounds[i].type == ntdlib::rsar::SoundType::kWaveSound ? 1 : 0;
+        streams += sounds[i].type == ntdlib::rsar::SoundType::kStream ? 1 : 0;
+    }
+
+    return "RSAR, " + std::to_string(sequences) + " sequences (" + std::to_string(music) + " music), " +
+           std::to_string(waves) + " wave sounds, " + std::to_string(streams) + " streams";
+}
+
+// Rips the Wii sound archive `rsar` into the folder of `out_dir` named after it: a library of the part of the archive
+// that the sequences play, with a version 3 descriptor, and a mini for each sequence. The model plays the archive on
+// Skyward Sword HD's layer, the only layer that HSF has. Sequences whose data isn't all there are listed and skipped,
+// and so are those that the length analysis finds never sound. Returns the exit code.
+int RipRsar(FileChunk rsar, const std::string& game_name, const fs::path& out_dir, const Options& o,
+            xsflib::cli::FileNameRegistries& registries)
+{
+    const std::string path = rsar.path;
+    const char* source = path.c_str();
+    std::optional<ntdlib::rsar::SoundArchive> loaded;
+    try
+    {
+        loaded.emplace(ntdlib::rsar::SoundArchive::Load(std::move(rsar.data), ntdlib::rvl::snd::kRsarOptions));
+    }
+    catch (const xsflib::FormatError& e)
+    {
+        std::fprintf(stderr, "error: %s: %s\n", source, e.what());
+        return 1;
+    }
+
+    const ntdlib::rsar::SoundArchive& archive = *loaded;
+    if (o.list)
+    {
+        std::printf("  %s: %s\n", source, DescribeRsar(archive).c_str());
+        return 0;
+    }
+
+    std::fprintf(stderr, "%s: %s; NW4R SND on Skyward Sword HD's layer, with the game's reverbs on the aux buses\n",
+                 source, DescribeRsar(archive).c_str());
+    std::vector<hsf::rip::Nw4rJob> jobs = hsf::rip::SelectNw4rSounds(archive, o.only, o.bgm);
+    if (jobs.empty())
+    {
+        return NoJaudioSounds(path, o);
+    }
+
+    // The sequences whose data the archive doesn't hold.
+    std::size_t missing = 0;
+    std::vector<hsf::rip::Nw4rJob> complete;
+    for (hsf::rip::Nw4rJob& job : jobs)
+    {
+        const std::vector<std::string> lacks = hsf::rip::Nw4rMissingData(archive, job.index);
+        if (lacks.empty())
+        {
+            complete.push_back(std::move(job));
+            continue;
+        }
+
+        missing++;
+        std::string what;
+        for (const std::string& item : lacks)
+        {
+            what += (what.empty() ? "" : ", ") + item;
+        }
+        std::fprintf(stderr, "skipped %s: the archive doesn't hold %s\n", job.label.c_str(), what.c_str());
+    }
+    jobs = std::move(complete);
+
+    const hsf::ArchiveDescriptor descriptor = hsf::ArchiveDescriptor::Nw4r(hsf::Nw4rSettings{}, path, kSkywardSwordSdk);
+    std::size_t silent = 0;
+    if (o.lengths)
+    {
+        const auto analyze = [&archive, &descriptor](hsf::rip::Nw4rJob& job)
+        {
+            job.timing = hsf::rip::AnalyzeNw4rLength(archive, descriptor.nw4r, job.index);
+            return true;
+        };
+        xsflib::cli::AnalyzeLengths(jobs, o.jobs, analyze);
+
+        std::vector<hsf::rip::Nw4rJob> sounding;
+        for (hsf::rip::Nw4rJob& job : jobs)
+        {
+            if (job.timing && job.timing->silent)
+            {
+                silent++;
+                std::fprintf(stderr, "skipped %s: it makes no sound\n", job.label.c_str());
+                continue;
+            }
+
+            sounding.push_back(std::move(job));
+        }
+        jobs = std::move(sounding);
+    }
+
+    const std::string skipped_text = xsflib::cli::SkippedText(missing, "data not there", silent, "sequence");
+    if (jobs.empty())
+    {
+        std::fprintf(stderr, "%s: nothing to rip%s\n", source, skipped_text.c_str());
+        return 0;
+    }
+
+    // The library holds the part of the archive that the sequences play.
+    FileChunk kept;
+    kept.path = path;
+    try
+    {
+        std::vector<uint32_t> indices;
+        for (const hsf::rip::Nw4rJob& job : jobs)
+        {
+            indices.push_back(job.index);
+        }
+        kept.data = hsf::rip::KeepNw4rSequenceData(archive, indices);
+    }
+    catch (const xsflib::FormatError& e)
+    {
+        std::fprintf(stderr, "error: %s: %s\n", source, e.what());
+        return 1;
+    }
+
+    const std::string folder = xsflib::rip::ArchiveFolders({path}).front();
+    const fs::path rip_dir = out_dir / folder;
+    hsf::rip::FileNames& names = xsflib::cli::NamesIn(registries, rip_dir, ".hsflib", ".minihsf");
+    const xsflib::psf::Tags common = xsflib::cli::RipTags(o, game_name, "hsf", nullptr);
+    const std::vector<uint8_t> lib = hsf::rip::BuildNw4rLibrary(kept, descriptor, common);
+    const std::string lib_name = names.LibraryIn(rip_dir, game_name + " " + folder, lib);
+    fs::create_directories(rip_dir);
+    if (!xsflib::rip::WriteFile(rip_dir / xsflib::PathFromUtf8(lib_name), lib))
+    {
+        std::fprintf(stderr, "error: can't write %s\n", lib_name.c_str());
+        return 1;
+    }
+    std::fprintf(stderr, "wrote %s (%zu bytes)\n", lib_name.c_str(), lib.size());
+
+    const auto build_mini = [&lib_name](const hsf::rip::Nw4rJob& job, const xsflib::psf::Tags& tags)
+    {
+        return hsf::rip::BuildNw4rMini(job, lib_name, tags);
+    };
+    const int written = xsflib::cli::WriteMinis(rip_dir, names, jobs, common, "hsf_sound", build_mini);
+    if (written < 0)
+    {
+        return 1;
+    }
+
+    std::fprintf(stderr, "%s: %d minihsf files%s\n", source, written, skipped_text.c_str());
+    xsflib::rip::ReportOutput(out_dir);
+
+    return 0;
+}
+
+// Rips the Wii sound archives among a game's files, one after another (RipRsar). --archive picks one. Returns the
+// exit code: 1 if any archive failed.
+int RipRsarGame(const std::string& input, const hsf::game::GameFiles& game, const std::vector<std::string>& archives,
+                const fs::path& out_dir, const Options& o, xsflib::cli::FileNameRegistries& registries)
+{
+    if (!o.only_archive.empty() && std::find(archives.begin(), archives.end(), o.only_archive) == archives.end())
+    {
+        std::fprintf(stderr, "error: the game has no sound archive %s (--list shows them)\n", o.only_archive.c_str());
+        return 1;
+    }
+
+    if (o.list)
+    {
+        std::printf("%s: %zu files, %zu Wii sound archive%s\n", input.c_str(), game.files.size(), archives.size(),
+                    archives.size() == 1 ? "" : "s");
+    }
+
+    const std::string game_name = o.game_name.empty() ? game.name : o.game_name;
+    int result = 0;
+    for (const std::string& path : archives)
+    {
+        if (!o.only_archive.empty() && path != o.only_archive)
+        {
+            continue;
+        }
+
+        FileChunk rsar;
+        rsar.path = path;
+        if (!game.read_file(path, rsar.data))
+        {
+            std::fprintf(stderr, "error: can't read %s\n", path.c_str());
+            result = 1;
+            continue;
+        }
+
+        if (!hsf::rip::IsRsar(rsar.data))
+        {
+            std::fprintf(stderr, "skipped %s: it isn't a Wii sound archive\n", path.c_str());
+            continue;
+        }
+
+        if (RipRsar(std::move(rsar), game_name, out_dir, o, registries) != 0)
+        {
+            result = 1;
+        }
+    }
+
+    return result;
+}
+
 // Rips Pikmin, whose sound plays with the C JAudio: one library of the game's sound files and of the sequence index
 // from its main, and a mini for each piece of music, each piece of the cutscenes' music and each effect. The settings
 // come from the game's main, one of the builds that hsfrip reads. The folder of the rip has the bank file's name.
@@ -1487,8 +1705,8 @@ int RipJacGame(const std::string& input, const hsf::game::GameFiles& game, const
 }
 
 // Rips a game's sound archives (or the one --archive names). Each archive's folder takes its registry of file names
-// from `registries`. A game that plays its sound with JAudio is ripped by RipJaudioGame, Pikmin 2 by RipJaudio1Game
-// and Pikmin by RipJacGame. Returns the exit code.
+// from `registries`. A game that plays its sound with JAudio is ripped by RipJaudioGame, Pikmin 2 by RipJaudio1Game,
+// Pikmin by RipJacGame and a game with Wii sound archives by RipRsarGame. Returns the exit code.
 int RipGame(const std::string& input, const fs::path& out_dir, const Options& o,
             xsflib::cli::FileNameRegistries& registries)
 {
@@ -1515,6 +1733,11 @@ int RipGame(const std::string& input, const fs::path& out_dir, const Options& o,
         if (const std::optional<hsf::rip::JacPaths> jac = hsf::rip::FindJacFiles(game.files))
         {
             return RipJacGame(input, game, *jac, out_dir, o, registries);
+        }
+
+        if (const std::vector<std::string> rsars = hsf::rip::FindRsarFiles(game.files); !rsars.empty())
+        {
+            return RipRsarGame(input, game, rsars, out_dir, o, registries);
         }
     }
 
@@ -1669,7 +1892,8 @@ int ParseOption(const std::string& a, const std::function<std::string()>& next, 
 int RipInput(const std::string& input, const Options& o, xsflib::cli::FileNameRegistries& registries)
 {
     const std::string head = xsflib::rip::ReadHead(input);
-    if (RefuseForeignArchive(input, std::span(reinterpret_cast<const uint8_t*>(head.data()), head.size())))
+    const std::span<const uint8_t> head_bytes(reinterpret_cast<const uint8_t*>(head.data()), head.size());
+    if (!hsf::rip::IsRsar(head_bytes) && RefuseForeignArchive(input, head_bytes))
     {
         return 1;
     }
@@ -1687,6 +1911,22 @@ int RipInput(const std::string& input, const Options& o, xsflib::cli::FileNameRe
     if (head.starts_with("FSAR"))
     {
         return RipLooseArchive(input, out_dir, o, xsflib::cli::NamesIn(registries, out_dir, ".hsflib", ".minihsf"));
+    }
+
+    // A loose Wii sound archive plays as Skyward Sword HD's does. The library names it by its file name.
+    if (hsf::rip::IsRsar(head_bytes))
+    {
+        const fs::path loose = InputPath(input);
+        FileChunk rsar;
+        rsar.path = xsflib::Utf8(loose.filename());
+        if (!xsflib::ReadFile(loose, rsar.data))
+        {
+            std::fprintf(stderr, "error: can't read %s\n", input.c_str());
+            return 1;
+        }
+
+        const std::string game_name = o.game_name.empty() ? xsflib::Utf8(loose.stem()) : o.game_name;
+        return RipRsar(std::move(rsar), game_name, out_dir, o, registries);
     }
 
     return RipGame(input, out_dir, o, registries);

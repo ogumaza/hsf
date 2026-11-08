@@ -21,13 +21,14 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/jac/channel.h"
+#include "ntdlib/jac/engine.h"
+#include "ntdlib/jaudio2/output.h"
 #include "xsflib/ascii.h"
 #include "xsflib/rip/length.h"
 
 #include "hsf/jac.h"
-#include "jac/channel.h"
-#include "jac/engine.h"
-#include "jaudio/output.h"
+#include "hsf/jaudio_models.h"
 
 namespace hsf::rip
 {

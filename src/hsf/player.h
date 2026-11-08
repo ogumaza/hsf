@@ -2,8 +2,9 @@
 
 // HSF player core: loads an .hsflib and .minihsf set and produces its audio. A set of version 1 plays on ntdlib's model
 // of the SDK's sound library (nn::atk) and of the console's audio renderer. A set of version 2 plays on HSF's model of
-// JAudio: of JAudio2 with library 1, of JAudio1 with library 2 and of the C JAudio with library 3. Portable C++ with no
-// platform audio or UI. The CLI renderer, the foobar2000 component and the XMPlay plugin use it.
+// JAudio: of JAudio2 with library 1, of JAudio1 with library 2 and of the C JAudio with library 3. A set of version 3
+// plays on ntdlib's model of NW4R SND, on Skyward Sword HD's layer over the renderer. Portable C++ with no platform
+// audio or UI. The CLI renderer, the foobar2000 component and the XMPlay plugin use it.
 
 #pragma once
 
@@ -28,8 +29,8 @@ namespace hsf
 // the sound archive and the group files out of the set and into the source's archive. A large archive is then held
 // once. The sound has finished once the sequence has ended, no channel sounds and a frame's output was silent. The
 // effects have then died away too. FinishedFrame gives the frame count at the end of that frame. The player takes
-// snapshots of the nn::atk model. xsflib's Playback seeks with them. It takes none of the JAudio model: Playback then
-// seeks by playing from the start.
+// snapshots of the nn::atk model and of NW4R SND's model. xsflib's Playback seeks with them. It takes none of the
+// JAudio model: Playback then seeks by playing from the start.
 class Player : public xsflib::player::PlayerBase<Player, LoadedSet>
 {
 public:
@@ -59,6 +60,8 @@ private:
     using Jaudio1Source = xsflib::player::ArchiveSource<Jaudio1Traits>;
     struct JacTraits;
     using JacSource = xsflib::player::ArchiveSource<JacTraits>;
+    struct Nw4rTraits;
+    using Nw4rSource = xsflib::player::ArchiveSource<Nw4rTraits>;
 
     static constexpr const char* kNotPlayable = "no archive descriptor";
     static constexpr const char* kStartFailure = "the sound couldn't start: ";
@@ -77,6 +80,9 @@ private:
     bool Jaudio() const;
     bool Jaudio1() const;
     bool Jac() const;
+
+    // Whether the set plays on the model of NW4R SND: its descriptor has version 3.
+    bool Nw4r() const;
 
     bool Playable() const
     {
@@ -100,6 +106,7 @@ private:
     std::unique_ptr<JaudioSource> jaudio_;   // the same for a set of version 2
     std::unique_ptr<Jaudio1Source> jaudio1_; // the same for a set of library 2
     std::unique_ptr<JacSource> jac_;         // the same for a set of library 3
+    std::unique_ptr<Nw4rSource> nw4r_;       // the same for a set of version 3
     std::vector<int16_t> output_;            // samples produced and not dropped yet
 };
 

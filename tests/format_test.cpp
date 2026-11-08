@@ -18,6 +18,7 @@
 #include <string_view>
 #include <vector>
 
+#include "xsflib/bytes.h"
 #include "xsflib/psf/descriptor.h"
 #include "xsflib/testing/check.h"
 #include "xsflib/testing/sets.h"
@@ -67,7 +68,7 @@ void TestVersion()
 void TestArchiveDescriptor()
 {
     ArchiveDescriptor d;
-    d.version = 3;
+    d.version = 4;
     d.flags = 1;
     d.output_mode = 2;
     d.voice_count = 72;
@@ -93,8 +94,9 @@ void TestArchiveDescriptor()
     XSFLIB_CHECK(!ArchiveDescriptor::Parse(std::vector<uint8_t>(raw.begin(), raw.begin() + 100)).has_value());
 
     // A player accepts version 1 with no flags, in stereo, with 1 to 96 voices, and I3DL2 reverbs of 12 finite
-    // parameters on the aux buses 0 to 2. It also accepts version 2 (TestJaudioDescriptor).
-    XSFLIB_CHECK(d.Check() && d.Check()->find("version 3") != std::string::npos);
+    // parameters on the aux buses 0 to 2. It also accepts versions 2 (TestJaudioDescriptor) and 3
+    // (TestNw4rDescriptor).
+    XSFLIB_CHECK(d.Check() && d.Check()->find("version 4") != std::string::npos);
 
     ArchiveDescriptor v1 = d;
     v1.version = 1;
@@ -670,6 +672,45 @@ void TestJaudioDescriptor()
 // Library 2: version 2's layout, then the effect sequence, the conductor archive, the pieces of music and the sounds
 // that start after draws. They make the round trip. A player that supports library 1 alone reads as far as the sounds'
 // volumes. A version 2 player refuses the settings that library 2 doesn't have, and pieces that it can't play.
+// A version 3 descriptor: version 1's layout to the paths' padding, then the layer and NW4R SND's build.
+void TestNw4rDescriptor()
+{
+    hsf::Nw4rSettings settings;
+    settings.snd_build = 20090924;
+    const ArchiveDescriptor d = ArchiveDescriptor::Nw4r(settings, "Sound/WZSound.brsar", 110400);
+    XSFLIB_CHECK(!d.Check());
+
+    const auto raw = d.Serialize();
+    XSFLIB_CHECK(raw.size() % 4 == 0 && xsflib::LoadLe32(&raw[4]) == 3 && xsflib::LoadLe32(&raw[16]) == 64 &&
+                 xsflib::LoadLe32(&raw[20]) == 110400 && xsflib::LoadLe32(&raw[24]) == 0);
+    XSFLIB_CHECK(xsflib::LoadLe32(&raw[raw.size() - 8]) == 1 && xsflib::LoadLe32(&raw[raw.size() - 4]) == 20090924);
+
+    const auto back = ArchiveDescriptor::Parse(raw);
+    XSFLIB_CHECK(back && back->version == 3 && back->archive_path == d.archive_path && back->group_paths.empty() &&
+                 back->nw4r == d.nw4r && back->sdk_version == 110400);
+    XSFLIB_CHECK(!ArchiveDescriptor::Parse(std::vector<uint8_t>(raw.begin(), raw.end() - 1)).has_value());
+
+    // A version 1 player reads the start and the paths, and refuses the version.
+    std::vector<uint8_t> as_v1 = raw;
+    as_v1[4] = 1;
+    const auto v1 = ArchiveDescriptor::Parse(as_v1);
+    XSFLIB_CHECK(v1 && v1->archive_path == d.archive_path && v1->group_paths.empty());
+
+    // What a version 3 player refuses.
+    const auto refused = [&d](auto change)
+    {
+        ArchiveDescriptor odd = d;
+        change(odd);
+        return odd.Check().has_value();
+    };
+    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.flags = 1; }));
+    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.output_mode = 2; }));
+    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.voice_count = 96; }));
+    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.effects = {Reverb(0)}; }));
+    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.group_paths = {"Sound/a.brsar"}; }));
+    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.nw4r.layer = 2; }));
+}
+
 void TestJaudioLibrary2()
 {
     hsf::JaudioSettings j;
@@ -941,17 +982,17 @@ void TestLoadSet()
     XSFLIB_CHECK(set.File("f") && *set.File("f") == std::vector<uint8_t>{2} && set.tags["title"] == "X");
 
     // A wrong PSF version, a set without a descriptor or a sound, and a descriptor the player can't play.
-    ArchiveDescriptor v3;
-    v3.version = 3;
+    ArchiveDescriptor v4;
+    v4.version = 4;
     fs["dir/z.miniwsf"] = WritePsf(0x27, {}, {}, {{"_lib", "lib.hsflib"}});
     fs["dir/w.minihsf"] = WritePsf(kVersion, {}, {}, {{"title", "w"}});
     fs["dir/nosound.hsflib"] = WritePsf(kVersion, archive.Serialize(), {}, {});
-    fs["dir/v3.hsflib"] = WritePsf(kVersion, v3.Serialize(), {}, {});
+    fs["dir/v4.hsflib"] = WritePsf(kVersion, v4.Serialize(), {}, {});
 
     XSFLIB_CHECK(LoadError("dir/z.miniwsf", reader).find("not an HSF file") != std::string::npos);
     XSFLIB_CHECK(LoadError("dir/w.minihsf", reader).starts_with("no archive descriptor"));
     XSFLIB_CHECK(LoadError("dir/nosound.hsflib", reader).starts_with("no sound selected"));
-    XSFLIB_CHECK(LoadError("dir/v3.hsflib", reader).find("version 3") != std::string::npos);
+    XSFLIB_CHECK(LoadError("dir/v4.hsflib", reader).find("version 4") != std::string::npos);
 
     // A version 2 set loads with its settings.
     ArchiveDescriptor jaudio = ArchiveDescriptor::Jaudio({});
@@ -979,6 +1020,7 @@ int main()
     TestScriptedStarts();
     TestUserProcedures();
     TestJaudioDescriptor();
+    TestNw4rDescriptor();
     TestJaudioLibrary2();
     TestJaudioLibrary3();
     TestLoadSet();

@@ -7,8 +7,9 @@
 // game sets. The jobs of a sound's states follow the archive's rules (rip/sound_states.h), and so do those of a piece
 // that waits for its variables (rip/variable_states.h). A rhythm piece's script, the frames until a variable takes a
 // value and the delay that makes a sound that draws sound come next. Then come the descriptors of the JAudio games'
-// variants (JobDescriptor) and the tracks of Pikmin 2's layers (LayerTracks). Last, the test checks that the ripper
-// takes a big-endian archive, and only that, for a Wii U archive.
+// variants (JobDescriptor) and the tracks of Pikmin 2's layers (LayerTracks). Then come a Wii sound archive's parts
+// (rip/nw4r_rip.h): its sequences, a loop's length on Skyward Sword HD's layer, and the copy of the archive that a
+// library holds. Last, the test checks that the ripper takes a big-endian archive, and only that, for a Wii U archive.
 
 #include "rip/rip.h"
 
@@ -16,14 +17,20 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <optional>
+#include <regex>
 #include <span>
 #include <string>
 #include <vector>
 
 #include "ntdlib/nx/atk/engine.h"
+#include "ntdlib/rsar/formats.h"
+#include "ntdlib/rvl/snd/rsar_options.h"
 #include "ntdlib/testing/length_cases.h"
+#include "ntdlib/testing/rsar_files.h"
 #include "ntdlib/testing/sar_files.h"
+#include "xsflib/bytes.h"
 #include "xsflib/rip/length.h"
 #include "xsflib/testing/check.h"
 
@@ -32,6 +39,7 @@
 #include "hsf/sar.h"
 #include "rip/jaudio1_rip.h"
 #include "rip/jaudio_rip.h"
+#include "rip/nw4r_rip.h"
 #include "rip/sound_states.h"
 #include "rip/variable_states.h"
 
@@ -705,6 +713,71 @@ void TestLayerTracks()
     Check(hsf::rip::LayerTracks(wide, 5) == 0, "a layer past the 16th track has none");
 }
 
+// A Wii sound archive with one sequence sound of `commands`, on track 0, whose waves sound: each frame of the test
+// archive's waves gives the samples of its nibbles at a scale of 2^11.
+std::vector<uint8_t> RsarWith(const std::vector<uint8_t>& commands)
+{
+    namespace rsar_files = ntdlib::testing::rsar_files;
+    std::vector<uint8_t> bytes = rsar_files::MakeArchive(rsar_files::MakeSequence(commands), 0, 1);
+    constexpr uint8_t kNibbles[] = {0x7F, 0x19, 0xE3, 0x5A, 0xC6, 0x2D, 0x91};
+    for (std::size_t at = 0; at + 4 <= bytes.size(); at++)
+    {
+        if (std::memcmp(&bytes[at], "RWAV", 4) != 0)
+        {
+            continue;
+        }
+
+        const uint32_t data = xsflib::LoadBe32(&bytes[at + 0x18]);
+        for (std::size_t frame = 0; frame < 0x40; frame += 8)
+        {
+            uint8_t* samples = &bytes[at + data + 8 + frame];
+            samples[0] = 0x0B;
+            std::memcpy(samples + 1, kNibbles, sizeof(kNibbles));
+        }
+    }
+
+    return bytes;
+}
+
+// A Wii sound archive's parts. The sequence plays a note of 24 ticks over and over, at 96 ticks a second. Its track
+// sets the notes' envelope first: a full sustain at once and the fastest release.
+void TestNw4r()
+{
+    const std::vector<uint8_t> bytes =
+        RsarWith({0xD1, 0x7F, 0xD2, 0x7F, 0xD3, 0x7F, 60, 127, 24, 0x89, 0x00, 0x00, 6, 0xFF});
+    Check(hsf::rip::IsRsar(bytes) && !hsf::rip::IsRsar(sar_files::Archive(false, {})),
+          "a Wii sound archive is an RSAR");
+    Check(hsf::rip::FindRsarFiles({"Sound/A.brsar", "Sound/b.bfsar", "Sound/demo/C.BRSAR"}) ==
+              std::vector<std::string>{"Sound/A.brsar", "Sound/demo/C.BRSAR"},
+          "the game's .brsar files");
+
+    const auto archive = ntdlib::rsar::SoundArchive::Load(bytes, ntdlib::rvl::snd::kRsarOptions);
+    const std::vector<hsf::rip::Nw4rJob> jobs = hsf::rip::SelectNw4rSounds(archive, std::regex(".*"), false);
+    Check(jobs.size() == 1 && jobs[0].index == 0 && jobs[0].label == "SEQ_TEST" &&
+              hsf::rip::Nw4rMissingData(archive, 0).empty(),
+          "the archive's sequence, with its data");
+    Check(hsf::rip::SelectNw4rSounds(archive, std::regex(".*"), true).empty(), "a sequence without BGM isn't music");
+
+    // Two loops of 250 ms, then the fade.
+    const std::optional<hsf::rip::Timing> timing = hsf::rip::AnalyzeNw4rLength(archive, {}, 0);
+    Check(timing && timing->length_ms >= 490 && timing->length_ms <= 510 && timing->fade_ms == 10000,
+          "two loops of 24 ticks on the layer, " + std::to_string(timing ? timing->length_ms : -1) + " ms");
+
+    // The copy holds the sequence's files as the archive does, and plays them the same.
+    const std::vector<uint8_t> kept = hsf::rip::KeepNw4rSequenceData(archive, {0});
+    const auto cut = ntdlib::rsar::SoundArchive::Load(kept, ntdlib::rvl::snd::kRsarOptions);
+    const auto same = [&archive, &cut](uint32_t file_id)
+    {
+        const auto a = archive.File(file_id);
+        const auto b = cut.File(file_id);
+        return a && b && std::ranges::equal(a->file, b->file) && std::ranges::equal(a->wave_data, b->wave_data);
+    };
+    Check(same(archive.Sounds()[0].file_id) && same(archive.Banks()[archive.Sounds()[0].bank].file_id),
+          "the library's copy of the archive holds the sequence's files");
+    const std::optional<hsf::rip::Timing> again = hsf::rip::AnalyzeNw4rLength(cut, {}, 0);
+    Check(again && timing && again->length_ms == timing->length_ms, "the copy plays as the archive does");
+}
+
 } // namespace
 
 int main()
@@ -740,6 +813,7 @@ int main()
     TestSoundingDelay();
     TestJobDescriptor();
     TestLayerTracks();
+    TestNw4r();
 
     // The Wii U's archives are big-endian. The ripper refuses them, and takes the Switch's archives.
     Check(hsf::rip::IsWiiUArchive(sar_files::Archive(true, {})), "a big-endian archive is the Wii U's");
