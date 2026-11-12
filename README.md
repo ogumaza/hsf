@@ -167,9 +167,9 @@ part of the archive that the rip's sequences play. Some things differ from the g
 
 - The game puts a reverb on each of its two aux buses, and changes the first one's with the scene. A rip plays bus A's
   reverb for a scene that names no type of room, and bus B's from the game's start-up.
-- The game mixes for 5.1 speakers, in NW4R SND's mode for Dolby Pro Logic II. A rip plays the front pair only, in
-  stereo. It leaves out the rear channels, which hold part of each reverb and the sounds panned behind or past the
-  sides. On a stereo TV, the console mixes the six channels down to two. A rip doesn't.
+- The game mixes for 5.1 speakers, in NW4R SND's mode for Dolby Pro Logic II. On a stereo output, such as the
+  console's speakers, headphones or a TV in stereo, the console mixes the six channels down to two. A rip plays that
+  downmix. A TV with 5.1 speakers plays the six channels as they are, and a rip can't.
 - The game plays streams, some of them beside its sequences. HSF plays no streams.
 - The game plays most effects at a place in its world, and moves their levels as the camera and the sound's source
   move. A rip plays each effect at the listener.
@@ -240,11 +240,13 @@ layer is in its `rvl_nx` module.
 The format test (`tests/format_test.cpp`) checks the descriptor and the loading of libraries. The player test
 (`tests/player_test.cpp`) plays sets made from a small archive and checks lengths, fades, seeks, volume, group files, a
 reverb's tail and a delay's echoes. It also plays a small Wii sound archive on Skyward Sword HD's layer. The ripper's
-test (`tests/rip_test.cpp`) measures a sequence of each kind that the length analysis distinguishes. It also checks
-the parts of a rip of a Wii sound archive. The game test (`tests/game_test.cpp`) builds a Bezel Engine archive, data
-sheets with a sound effect list and sounds' levels, and a `boot.lua`. It checks what `hsfrip` finds in a folder of
-them, in the archive alone and in a title's folder that holds the archive unpacked. The test also checks that the
-readers refuse damaged files.
+test (`tests/rip_test.cpp`) measures a sequence of each kind that the length analysis distinguishes. The model test
+(`tests/model_test.cpp`) checks how long the effects ring after a sequence. The ripper's other tests check the jobs of a
+sound's states (`tests/sound_states_test.cpp`), the JAudio games' descriptors (`tests/jaudio_rip_test.cpp`) and the
+parts of a rip of a Wii sound archive (`tests/nw4r_rip_test.cpp`). The game test (`tests/game_test.cpp`) builds a Bezel
+Engine archive, data sheets with a sound effect list and sounds' levels, and a `boot.lua`. It checks what `hsfrip` finds
+in a folder of them, in the archive alone and in a title's folder that holds the archive unpacked. The test also checks
+that the readers refuse damaged files.
 
 ## Layout
 

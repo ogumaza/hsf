@@ -46,6 +46,7 @@ inline jac::Startup JacStartup(const JaudioLibrary3& library)
     {
         startup.loads.push_back({{load.scene.system, load.scene.scene}, load.set != 0});
     }
+
     startup.files = library.startup_files;
     startup.effect_level = library.effect_level;
     startup.cutscene_level = library.cutscene_level;
@@ -133,13 +134,13 @@ inline std::optional<std::string> StartJacSound(jac::Engine& engine, const Jaudi
         engine.RunFrame();
     }
 
-    const uint32_t place = sound & 0xffff;
-    if ((sound & 0x3fff0000u) != 0)
+    const uint32_t place = sound & kSoundPlaceMask;
+    if ((sound & kSoundZeroMask) != 0)
     {
         return std::string("the descriptor has no such sound");
     }
 
-    switch (sound & 0xc0000000u)
+    switch (sound & kSoundSectionMask)
     {
     case JaudioLibrary3::kPieceSection:
         {

@@ -219,18 +219,18 @@ void TestSelection()
 
     XSFLIB_CHECK(library.effect_level == 20000 && library.cutscene_level == 8000 && library.music_volume == 0.75f);
     XSFLIB_CHECK(library.startup_files == (std::array<uint16_t, 4>{0, 1, 13, 2}));
-    XSFLIB_CHECK(library.loads.size() == 8);
+    XSFLIB_REQUIRE(library.loads.size() == 8);
     XSFLIB_CHECK(library.loads.front() == (hsf::JacLoad{{0, 0}, 1}));
     XSFLIB_CHECK(library.loads[3] == (hsf::JacLoad{{22, 0}, 0}));
     XSFLIB_CHECK(library.loads.back() == (hsf::JacLoad{{2, 0}, 1}));
 
     // The pieces: file 6's wave system is missing, and file 22 has no settings.
-    XSFLIB_CHECK(library.pieces.size() == 2);
+    XSFLIB_REQUIRE(library.pieces.size() == 2);
     XSFLIB_CHECK(library.pieces[0] == (hsf::JacPiece{4, 0x1002, 0.02f, {4, 0}}));
     XSFLIB_CHECK(library.pieces[1] == (hsf::JacPiece{21, 0x1013, 0.19f, {21, 0}}));
 
     // The pieces of the cutscenes' music: the cutscenes' 1, 2, 3 and 5, and the ship's piece 8. Piece 3 has no scene.
-    XSFLIB_CHECK(library.parts.size() == 4);
+    XSFLIB_REQUIRE(library.parts.size() == 4);
     XSFLIB_CHECK(library.parts[0] == (hsf::JacPart{1, {13, 7}}));
     XSFLIB_CHECK(library.parts[1] == (hsf::JacPart{2, {14, 0}}));
     XSFLIB_CHECK(library.parts[2] == (hsf::JacPart{5, {13, 3}}));
@@ -256,7 +256,7 @@ void TestSelection()
         MakeEffect(JacEffect::kEvent, 7, 0xe031, 0xf035),
         MakeEffect(JacEffect::kEvent, 7, 0x0033, 0xf035),
     };
-    XSFLIB_CHECK(library.effects.size() == table.size() + 3 + 1 + 13 + 1 + 29 + 1 + 4);
+    XSFLIB_REQUIRE(library.effects.size() == table.size() + 3 + 1 + 13 + 1 + 29 + 1 + 4);
     for (std::size_t i = 0; i < table.size(); ++i)
     {
         Check(library.effects[i] == table[i], "the table's effect " + std::to_string(i));
@@ -291,7 +291,7 @@ void TestSelection()
 
     // Each cutscene's sound gets the later events that queue a value, with the frames from the sound's event and each
     // event's value. The other effects get none.
-    XSFLIB_CHECK(all.later_events.size() == library.effects.size());
+    XSFLIB_REQUIRE(all.later_events.size() == library.effects.size());
     const std::size_t sounds = library.effects.size() - 4;
     for (std::size_t i = 0; i < sounds; ++i)
     {
@@ -299,11 +299,11 @@ void TestSelection()
     }
 
     const std::vector<rip::JacLaterEvent>& after_3 = all.later_events[sounds];
-    XSFLIB_CHECK(after_3.size() == 2);
+    XSFLIB_REQUIRE(after_3.size() == 2);
     XSFLIB_CHECK(after_3[0].frames == 10 && after_3[0].value == 5);
     XSFLIB_CHECK(after_3[1].frames == 20 && after_3[1].value == 3);
     const std::vector<rip::JacLaterEvent>& after_5 = all.later_events[sounds + 1];
-    XSFLIB_CHECK(after_5.size() == 1);
+    XSFLIB_REQUIRE(after_5.size() == 1);
     XSFLIB_CHECK(after_5[0].frames == 10 && after_5[0].value == 3);
     XSFLIB_CHECK(all.later_events[sounds + 2].empty() && all.later_events[sounds + 3].empty());
 
@@ -320,6 +320,7 @@ void TestSelection()
                          "cutscene-000-05 cutscene-001-00 cutscene-004-00"));
 
     // Each sound's ID: its section and its place in its list.
+    XSFLIB_REQUIRE(all.jobs.size() == 6 + library.effects.size());
     XSFLIB_CHECK(all.jobs[0].id == JaudioLibrary3::kPieceSection &&
                  all.jobs[1].id == (JaudioLibrary3::kPieceSection | 1));
     XSFLIB_CHECK(all.jobs[2].id == JaudioLibrary3::kPartSection &&
@@ -343,6 +344,7 @@ void TestSelection()
     XSFLIB_CHECK(some.library.effects.size() == 3);
     XSFLIB_CHECK(some.later_events.size() == 3 && some.later_events[0].empty() && some.later_events[1].size() == 2 &&
                  some.later_events[2].size() == 1);
+    XSFLIB_REQUIRE(some.jobs.size() == 4);
     XSFLIB_CHECK(some.jobs[1].id == JaudioLibrary3::kEffectSection &&
                  some.jobs[3].id == (JaudioLibrary3::kEffectSection | 2));
 }

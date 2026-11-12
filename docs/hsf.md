@@ -696,7 +696,7 @@ place: it turns each AX voice into a voice of the audio renderer. Layer 1 is tha
 
 A version 3 player provides:
 
-- **NW4R SND.** HSF's model of the library, the one that WSF plays on the Wii: the sequence player, the banks and
+- **NW4R SND.** HSF's model of the library: the sequence player, the banks and
   waves, the channels and the voices, in the descriptor's build. NW4R SND runs a sound frame every 3 ms on the game's
   AX timer, after AX's frame callback. It mixes in its output mode for Dolby Pro Logic II, which the layer sets. Each
   bus then has four channels: left and right in front, and left and right behind. A channel of a voice that reaches
@@ -729,7 +729,7 @@ A version 3 player provides:
   14 mix buffers, a final mix of 6 channels and the two sub-mixes. The renderer's frame runs every 5 ms. The AX ticks
   due by then run before it: tick k at 3k ms, and frame j at 5j ms. The SDK's upsampler takes the final mix's
   channels to 48,000 Hz, 240 samples a frame, with the SDK's rounding.
-- **Output.** The final mix's front left and right, in 16-bit stereo at 48,000 Hz.
+- **Output.** The console's stereo downmix of the final mix's six channels, in 16-bit stereo at 48,000 Hz.
 
 HSF's implementation follows a study of the code in the game's `main` and `sdk` (NintendoSDK 11.4.0). The game's
 changes of bus A's reverb with the scene aren't modelled, and neither are streams. A rip plays sequences only. The

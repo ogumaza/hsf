@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -17,6 +18,7 @@
 
 #include "hsf/format.h"
 #include "hsf/jaudio1.h"
+#include "rip/jaudio_length.h"
 #include "rip/jaudio_rip.h"
 #include "rip/rip.h"
 

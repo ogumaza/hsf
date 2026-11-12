@@ -1,8 +1,8 @@
 # foo_input_hsf
 
 foobar2000 input component for HSF rips (`.minihsf`, and the rarely used `.hsf`). The component is built on the same
-player core as `hsfplay`. The player core plays a sound with HSF's model of the SDK's sound library. The library plays
-through HSF's model of the console's audio renderer.
+player core as `hsfplay`. The player core plays a rip on a model of the game's sound library: `nn::atk` with the
+console's audio renderer, JAudio for the Super Mario Galaxy games and Pikmin 1 and 2, or NW4R SND for Skyward Sword HD.
 
 **Status:** the component builds with clang-cl for 32-bit and 64-bit foobar2000 on Windows. On macOS, Apple Clang
 builds it for Apple Silicon. CI builds the component on every push to `main` that changes more than documentation. The
@@ -84,9 +84,8 @@ the component uses only the system's libraries.
 
 ## Performance
 
-Playback runs HSF's models of the sound library and the audio renderer on one CPU core. Use 64-bit foobar2000
-and the 64-bit component if your other components support them. A 64-bit process has room for the largest
-sound archives. A 32-bit process may not.
+Playback runs the models on one CPU core. Use 64-bit foobar2000 and the 64-bit component if your other components
+support them. A 64-bit process has room for the largest sound archives. A 32-bit process may not.
 
 ## Licence
 

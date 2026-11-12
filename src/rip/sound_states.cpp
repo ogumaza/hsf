@@ -3,26 +3,10 @@
 #include "rip/sound_states.h"
 
 #include <algorithm>
-#include <cstddef>
-#include <iterator>
 #include <utility>
 
 namespace hsf::rip
 {
-
-ntdlib::rip::TrackVolumes TrackVolumesOf(uint16_t muted)
-{
-    ntdlib::rip::TrackVolumes volumes = ntdlib::rip::kFullTrackVolumes;
-    for (std::size_t t = 0; t < volumes.size(); ++t)
-    {
-        if ((muted >> t & 1) != 0)
-        {
-            volumes[t] = 0.0f;
-        }
-    }
-
-    return volumes;
-}
 
 std::vector<ntdlib::rip::Job> WithStates(const ntdlib::sar::ArchiveRules& rules,
                                          const std::vector<ntdlib::rip::Job>& selected)
@@ -44,7 +28,7 @@ std::vector<ntdlib::rip::Job> WithStates(const ntdlib::sar::ArchiveRules& rules,
                 in_state.label += state.name;
             }
 
-            in_state.track_volumes = TrackVolumesOf(state.muted);
+            in_state.track_volumes = ntdlib::rip::TrackVolumesOf(state.muted);
             in_state.bus_b_reverb = rules.FindBusBPreset(state.bus_b);
             jobs.push_back(std::move(in_state));
         }

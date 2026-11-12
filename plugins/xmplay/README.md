@@ -1,8 +1,8 @@
 # xmp-hsf
 
 XMPlay input plugin for HSF rips (`.minihsf`, and the rarely used `.hsf`). It's built on the same player core as
-`hsfplay`. The player core plays a sound with HSF's model of the SDK's sound library. The library plays through HSF's
-model of the console's audio renderer.
+`hsfplay`. The player core plays a rip on a model of the game's sound library: `nn::atk` with the console's audio
+renderer, JAudio for the Super Mario Galaxy games and Pikmin 1 and 2, or NW4R SND for Skyward Sword HD.
 
 XMPlay is a 32-bit program for Windows. The plugin is therefore a 32-bit DLL, `xmp-hsf.dll`, built with clang-cl. It
 requires XMPlay 3.8.2 or later.
@@ -53,8 +53,8 @@ The plugin therefore requires no runtime DLLs.
 
 ## Performance
 
-Playback runs HSF's models of the sound library and the audio renderer on one CPU core. XMPlay is a 32-bit program. A
-32-bit process may not have room for the largest sound archives.
+Playback runs the models on one CPU core. XMPlay is a 32-bit program. A 32-bit process may not have room for the
+largest sound archives.
 
 ## Licence
 

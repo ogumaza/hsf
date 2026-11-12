@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.20)
 # Shared version for the tools (HSF_VERSION_ARGS below). For a release, update it here and add notes in
 # docs/release-notes/.
-project(hsf VERSION 1.5.0 LANGUAGES C CXX)
+project(hsf VERSION 1.5.1 LANGUAGES C CXX)
 
 # xsflib: a library for players and rippers of the PSF family, as a submodule. Its XsflibProject.cmake sets what a
 # project built on it starts with: C++20, a release build by default, the static C runtime, the options that keep the
@@ -14,6 +14,13 @@ if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/externals/xsflib/CMakeLists.txt")
 endif()
 include(externals/xsflib/cmake/XsflibProject.cmake)
 xsflib_project(CHECK_COMPILERS NAME HSF PREFIX HSF)
+
+# clang-cl's /W4 warns when a designated initializer leaves out a field (-Wmissing-designated-field-initializers). The
+# Mac's -Wall -Wextra doesn't. HSF leaves out the fields whose default member initializers give their values. Writing
+# those values into each initializer would copy the defaults, and the copies could drift from them.
+if (HSF_CLANG_CL)
+    list(APPEND HSF_WARNINGS -Wno-missing-designated-field-initializers)
+endif()
 
 # xsflib also provides the libraries that HSF requires: zlib for the PSF container's compressed program, Zstandard for
 # Bezel Engine's archives (.bea) and libFLAC for the tools' FLAC output. Each comes from the system where it can, or is
@@ -38,34 +45,57 @@ add_library(hsf_game STATIC
     src/game/sheet.cpp
     src/game/sheet.h
 )
-target_link_libraries(hsf_game PUBLIC hsf_common ntdlib::bezel PRIVATE xsflib::zstd)
+target_link_libraries(hsf_game PUBLIC hsf_common hsf_format ntdlib::bezel PRIVATE xsflib::zstd)
 target_compile_options(hsf_game PRIVATE ${HSF_WARNINGS})
 
 # The HSF file format: the PSF container, chunks, the archive descriptor and tags, and loading a set with its libraries.
 add_library(hsf_format STATIC
+    src/hsf/descriptor_jaudio.cpp
+    src/hsf/descriptor_parts.h
+    src/hsf/descriptor_v1.cpp
     src/hsf/format.cpp
     src/hsf/format.h
+    src/hsf/jaudio_settings.h
 )
 target_link_libraries(hsf_format PUBLIC hsf_common xsflib::psf)
 target_compile_options(hsf_format PRIVATE ${HSF_WARNINGS})
 
+# What an archive descriptor sets up on the model of nn::atk, for the player and the ripper's length analysis.
+add_library(hsf_model STATIC
+    src/hsf/model.cpp
+    src/hsf/model.h
+    src/hsf/nx.h
+    src/hsf/sar.h
+)
+target_link_libraries(hsf_model PUBLIC hsf_format ntdlib::nx ntdlib::nx_bex xsflib::common xsflib::rip)
+target_compile_options(hsf_model PRIVATE ${HSF_WARNINGS})
+
 # The player: a set's sound on the model. Playback with lengths, fades and seeking, and rendering ahead on a worker
 # thread for the foobar2000 component and the XMPlay plugin, come from xsflib::player.
 add_library(hsf_player STATIC
+    src/hsf/jac.h
+    src/hsf/jaudio.h
+    src/hsf/jaudio1.h
+    src/hsf/jaudio_models.h
     src/hsf/player.cpp
     src/hsf/player.h
 )
-target_link_libraries(hsf_player PUBLIC hsf_format ntdlib::jaudio2 ntdlib::jaudio1 ntdlib::jac ntdlib::nx ntdlib::nx_bex
+target_link_libraries(hsf_player PUBLIC hsf_format hsf_model ntdlib::jaudio2 ntdlib::jaudio1 ntdlib::jac ntdlib::nx
                                         ntdlib::rvl_nx xsflib::player)
 target_compile_options(hsf_player PRIVATE ${HSF_WARNINGS})
 
 add_library(hsf_rip STATIC
+    src/rip/game_paths.h
     src/rip/jac_rip.cpp
     src/rip/jac_rip.h
     src/rip/jac_tables.cpp
     src/rip/jac_tables.h
     src/rip/jaudio1_rip.cpp
     src/rip/jaudio1_rip.h
+    src/rip/jaudio_length.cpp
+    src/rip/jaudio_length.h
+    src/rip/jaudio_profiles.cpp
+    src/rip/jaudio_profiles.h
     src/rip/jaudio_rip.cpp
     src/rip/jaudio_rip.h
     src/rip/nw4r_rip.cpp
@@ -79,8 +109,9 @@ add_library(hsf_rip STATIC
     src/rip/variable_states.cpp
     src/rip/variable_states.h
 )
-target_link_libraries(hsf_rip PUBLIC hsf_format ntdlib::jac ntdlib::jaudio2 ntdlib::jaudio1 ntdlib::nx ntdlib::nx_bex
-                                     ntdlib::rvl_nx ntdlib::nwsnd_lengths xsflib::rip ntdlib::rip_archive)
+target_link_libraries(hsf_rip PUBLIC hsf_format hsf_model ntdlib::jac ntdlib::jaudio2 ntdlib::jaudio1 ntdlib::nx
+                                     ntdlib::nx_bex ntdlib::rvl_nx ntdlib::nwsnd_lengths xsflib::rip
+                                     ntdlib::rip_archive)
 target_compile_options(hsf_rip PRIVATE ${HSF_WARNINGS})
 
 # The version of each program, as HSF_VERSION, and on Windows the version resource that Explorer shows in the file's
@@ -90,8 +121,19 @@ set(HSF_VERSION_ARGS VERSION ${hsf_VERSION} DEFINE HSF_VERSION PRODUCT HSF
 
 # hsfrip rips on several threads (--jobs). glibc before 2.34 keeps threads in a separate library.
 find_package(Threads REQUIRED)
-add_executable(hsfrip src/cli/hsfrip.cpp)
-target_link_libraries(hsfrip PRIVATE hsf_rip hsf_game ntdlib::nx_bex xsflib::cli Threads::Threads)
+add_executable(hsfrip
+    src/cli/archive_rip.cpp
+    src/cli/archive_rip.h
+    src/cli/game_settings.cpp
+    src/cli/game_settings.h
+    src/cli/hsfrip.cpp
+    src/cli/hsfrip.h
+    src/cli/jaudio_games.cpp
+    src/cli/jaudio_games.h
+    src/cli/rsar_rip.cpp
+    src/cli/rsar_rip.h
+)
+target_link_libraries(hsfrip PRIVATE hsf_rip hsf_game xsflib::cli Threads::Threads)
 target_compile_options(hsfrip PRIVATE ${HSF_WARNINGS})
 xsflib_add_version(hsfrip ${HSF_VERSION_ARGS} DESCRIPTION "HSF ripper")
 
@@ -134,14 +176,16 @@ if (HSF_TESTS)
     xsflib_add_project_test(hsf game hsf_game xsflib::zstd)
     xsflib_add_project_test(hsf player hsf_player)
     xsflib_add_project_test(hsf rip hsf_rip)
+    xsflib_add_project_test(hsf model hsf_rip)
+    xsflib_add_project_test(hsf sound_states hsf_rip)
+    xsflib_add_project_test(hsf jaudio_rip hsf_rip)
+    xsflib_add_project_test(hsf nw4r_rip hsf_rip)
     xsflib_add_project_test(hsf jac_tables hsf_rip)
     xsflib_add_project_test(hsf jac_rip hsf_rip)
 
     # The tools report the version they were built as.
-    string(REPLACE "." "\\." version_pattern ${hsf_VERSION})
     foreach (tool hsfrip hsfplay)
-        add_test(NAME version_${tool} COMMAND ${tool} --version)
-        set_tests_properties(version_${tool} PROPERTIES PASS_REGULAR_EXPRESSION "^${tool} ${version_pattern}[\r\n]*$")
+        xsflib_add_version_test(${tool} VERSION ${hsf_VERSION} NAME version_${tool})
     endforeach()
 
     # Load local_tests.cmake from each immediate subdirectory to register tests that use locally supplied files.

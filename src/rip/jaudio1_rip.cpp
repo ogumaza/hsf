@@ -22,7 +22,6 @@
 #include "ntdlib/jaudio/aaf.h"
 #include "ntdlib/jaudio1/channel.h"
 #include "ntdlib/jaudio1/engine.h"
-#include "ntdlib/jaudio2/output.h"
 #include "xsflib/ascii.h"
 #include "xsflib/binary.h"
 #include "xsflib/rip/length.h"
@@ -31,6 +30,8 @@
 #include "hsf/format.h"
 #include "hsf/jaudio1.h"
 #include "hsf/jaudio_models.h"
+#include "rip/game_paths.h"
+#include "rip/jaudio_length.h"
 
 namespace hsf::rip
 {
@@ -111,21 +112,6 @@ struct PieceCode
     std::string_view conductor;
 };
 
-// The pieces of the game's music whose settings don't come from a conductor's name, by their files' names. A piece
-// that the table leaves out plays once with each conductor whose name gives it (ConductedPiece).
-//
-// PikSceneMgr::initMainBgm makes the scenes' main music. The overworld's pieces are JumpBgmSeq objects
-// (SceneMgr::newMainBgm) with directors that take the track maps. yakushima and last get a beat interval of 30. The
-// middle bosses start m_boss at their appearance, at part 9 (EnemyMidBoss::BossBgm_Appear), and the final boss starts
-// l_boss at part 1. Their directors (DirectorMgr_Battle) take tracks 10 and 11, and 14 and 15. The two players' battle
-// plays battle_t as a DirectedBgm whose directors (DirectorMgr_2PBattle) take tracks 8 to 15. hiscore, kuro_post and
-// n_tutorial_1stday take the sound information of the additional pieces. The others are BgmSeq objects with the main
-// music's sound information.
-//
-// The game never plays 2pbattle, a_zawinul01, c_result, the six ff_ pieces, id_test, result and u_result. 2pbattle
-// makes the requests of battle_t, and gets its object. a_zawinul01 makes the requests of the cave music. It has no
-// conductor of its own, and plays with the conductor of a_iron. id_test makes the requests of a DirectedBgm, and gets
-// one without directors. The others play as BgmSeq objects.
 constexpr PieceCode Plain(std::string_view file, uint8_t kept_levels = kAllLevels)
 {
     PieceCode piece;
@@ -203,6 +189,21 @@ constexpr PieceCode Borrowing(std::string_view file, std::string_view conductor)
     return piece;
 }
 
+// The pieces of the game's music whose settings don't come from a conductor's name, by their files' names. A piece
+// that the table leaves out plays once with each conductor whose name gives it (ConductedPiece).
+//
+// PikSceneMgr::initMainBgm makes the scenes' main music. The overworld's pieces are JumpBgmSeq objects
+// (SceneMgr::newMainBgm) with directors that take the track maps. yakushima and last get a beat interval of 30. The
+// middle bosses start m_boss at their appearance, at part 9 (EnemyMidBoss::BossBgm_Appear), and the final boss starts
+// l_boss at part 1. Their directors (DirectorMgr_Battle) take tracks 10 and 11, and 14 and 15. The two players' battle
+// plays battle_t as a DirectedBgm whose directors (DirectorMgr_2PBattle) take tracks 8 to 15. hiscore, kuro_post and
+// n_tutorial_1stday take the sound information of the additional pieces. The others are BgmSeq objects with the main
+// music's sound information.
+//
+// The game never plays 2pbattle, a_zawinul01, c_result, the six ff_ pieces, id_test, result and u_result. 2pbattle
+// makes the requests of battle_t, and gets its object. a_zawinul01 makes the requests of the cave music. It has no
+// conductor of its own, and plays with the conductor of a_iron. id_test makes the requests of a DirectedBgm, and gets
+// one without directors. The others play as BgmSeq objects.
 constexpr std::array<PieceCode, 29> kPieces = {
     Battle("2pbattle.bms"),
     Borrowing("a_zawinul01.bms", "iron.cnd"),
@@ -235,16 +236,6 @@ constexpr std::array<PieceCode, 29> kPieces = {
     Overworld("yakushima.bms", 30),
 };
 
-bool StartsWith(std::string_view text, std::string_view start)
-{
-    return text.substr(0, start.size()) == start;
-}
-
-std::string WithoutExtension(std::string_view name)
-{
-    return std::string(name.substr(0, name.rfind('.')));
-}
-
 // The piece that a conductor plays (ConductorList::getSeqAndWaveFromConductor): the families' pieces by the start of
 // the conductor's name, and new_NN for new_NN_M. The game names the piece of cavekeyget.cnd itself. caveboss.cnd and
 // iron.cnd, which the game never plays, play the pieces of their names: caveboss and a_iron.
@@ -254,13 +245,13 @@ std::optional<std::string> ConductedPiece(std::string_view conductor)
                                                            "caveglass", "cavetsumiki", "caverelax"};
     for (const std::string_view family : kFamilies)
     {
-        if (StartsWith(conductor, family))
+        if (conductor.starts_with(family))
         {
             return std::string(family) + ".bms";
         }
     }
 
-    if (StartsWith(conductor, "new") && conductor.size() >= 6)
+    if (conductor.starts_with("new") && conductor.size() >= 6)
     {
         return std::string(conductor.substr(0, 6)) + ".bms";
     }
@@ -289,7 +280,7 @@ std::pair<std::size_t, std::string> TrackMapOf(std::string_view piece, std::stri
         return {kSeqT, std::string(piece)};
     }
 
-    if (piece == "caveconc.bms" || StartsWith(piece, "new_"))
+    if (piece == "caveconc.bms" || piece.starts_with("new_"))
     {
         return {kCondT, std::string(conductor)};
     }
@@ -364,103 +355,27 @@ uint8_t LeadingNumber(std::string_view token)
     return static_cast<uint8_t>(value);
 }
 
-// The key under which the name file names a sound: an effect's ID without bits 10 and 11, which say how long the game
-// plays it.
-uint32_t NameKey(uint32_t id)
-{
-    return (id & nj::kAafTypeMask) == nj::kAafEffect ? id & ~(nj::kAafToEnd | nj::kAafToEnd >> 1) : id;
-}
-
-// A path in a folder, or the name alone for no folder.
-std::string InFolder(const std::string& folder, std::string_view name)
-{
-    return folder.empty() ? std::string(name) : folder + "/" + std::string(name);
-}
-
-bool EndsWithLower(std::string_view text, std::string_view end)
-{
-    return text.size() >= end.size() && xsflib::AsciiLower(std::string(text.substr(text.size() - end.size()))) == end;
-}
-
-// The model of JAudio1 for the length analysis, as JAudio2's is (rip.cpp's JaudioLengthModel), with JAudio2's rules.
-// The FX lines ring while their delays hold a sample louder than 8 (jaudio1::Engine::FxRinging). Without `loops`, no
-// loop counts: a piece that a conductor plays never repeats.
-class Jaudio1LengthModel
+// The model of JAudio1 for the length analysis, as JAudio2's is (JaudioLengthModel in jaudio_length.cpp), with
+// JAudio2's rules. The FX lines ring while their delays hold a sample louder than 8 (jaudio1::Engine::FxRinging).
+// Without `loops`, no loop counts: a piece that a conductor plays never repeats.
+class Jaudio1LengthModel : public JaudioModelBase<jaudio1::Engine, jaudio1::Voices::kDspChannels, jaudio1::Track::kNone>
 {
 public:
-    Jaudio1LengthModel(jaudio1::Engine& engine, bool loops) : engine_(engine), loops_(loops)
+    Jaudio1LengthModel(jaudio1::Engine& engine, bool loops) : JaudioModelBase(engine), loops_(loops)
     {
     }
 
     bool RunFrame()
     {
         engine_.RunSubframe();
-        output_.clear();
-        out_.Push(engine_.Output(), output_);
+        TakeOutput();
 
         return true;
     }
 
-    bool Sounded() const
-    {
-        return xsflib::rip::Audible(output_);
-    }
-
     bool Ringing() const
     {
-        return std::any_of(output_.begin(), output_.end(), [](int16_t sample) { return sample != 0; }) ||
-               engine_.FxRinging();
-    }
-
-    std::size_t VoiceCount()
-    {
-        return jaudio1::Voices::kDspChannels;
-    }
-
-    xsflib::rip::VoicePlace Voice(std::size_t index)
-    {
-        const jaudio1::Engine::WavePlace place = engine_.DspChannelPlace(static_cast<uint32_t>(index));
-        return {place.playing, place.loops, place.position};
-    }
-
-    bool Active() const
-    {
-        return engine_.Playing();
-    }
-
-    bool Settled() const
-    {
-        return engine_.Held() && engine_.Waiting();
-    }
-
-    bool Stuck() const
-    {
-        return false;
-    }
-
-    bool Moving() const
-    {
-        return engine_.Moving();
-    }
-
-    uint64_t ChangedAt() const
-    {
-        return 0;
-    }
-
-    bool Busy() const
-    {
-        return engine_.Busy();
-    }
-
-    bool ChannelsChanging() const
-    {
-        return !engine_.Held();
-    }
-
-    int ActiveChannels() const
-    {
-        return engine_.ActiveChannels();
+        return AnySample() || engine_.FxRinging();
     }
 
     template <typename Hook>
@@ -482,35 +397,246 @@ public:
     }
 
 private:
-    // The main track, as JAudio2's model picks it. A track that waits for ever doesn't count.
-    uint32_t MainTrack() const
+    bool loops_;
+};
+
+// Selects Pikmin 2's sounds (SelectJaudio1Sounds).
+class Jaudio1Choice
+{
+public:
+    // `files`, `text` and `only` must outlive the choice.
+    Jaudio1Choice(const Jaudio1Files& files, const Jaudio1GameText& text, const std::regex& only)
+        : files_(files), text_(text), only_(only)
     {
-        uint32_t first = jaudio1::Track::kNone;
-        for (const uint32_t track : engine_.TreeOrder())
+    }
+
+    // The sounds, the music alone with `bgm`. Call it once.
+    Jaudio1Selection Select(bool bgm)
+    {
+        SetEffectSequence();
+        for (const jaudio1::SoundFiles::SequenceFile& file : files_.sound.Sequences())
         {
-            if (!engine_.PlayedNotes(track) || engine_.WaitsForEver(track))
+            const auto code = std::find_if(kPieces.begin(), kPieces.end(),
+                                           [&file](const PieceCode& piece) { return piece.file == file.name; });
+            if (code != kPieces.end())
+            {
+                AddCodePiece(file, *code);
+            }
+            else
+            {
+                AddCavePieces(file);
+            }
+        }
+
+        if (!bgm)
+        {
+            AddEffects();
+        }
+
+        std::move(variants_.begin(), variants_.end(), std::back_inserter(selection_.jobs));
+        return std::move(selection_);
+    }
+
+private:
+    // The effect sequence plays at its volume in the game's list too (SeqBase::init).
+    void SetEffectSequence()
+    {
+        JaudioLibrary2& library = selection_.library;
+        for (const jaudio1::SoundFiles::SequenceFile& file : files_.sound.Sequences())
+        {
+            if (file.name == "se.bms")
+            {
+                library.effect_sequence = file.id;
+                const auto volume = text_.volumes.find(file.name);
+                library.effect_sequence_volume = volume != text_.volumes.end() ? volume->second : uint8_t{127};
+            }
+        }
+    }
+
+    // Adds a job for the sound with ID `id`, at the next index.
+    void AddJob(const std::string& label, uint32_t id)
+    {
+        JaudioJob job;
+        job.index = static_cast<uint32_t>(selection_.jobs.size());
+        job.label = label;
+        job.id = id;
+        selection_.jobs.push_back(std::move(job));
+    }
+
+    // Adds `piece` to the descriptor's list, and its job.
+    void AddPiece(const std::string& label, JaudioPiece piece)
+    {
+        const auto place = static_cast<uint32_t>(selection_.library.pieces.size());
+        selection_.library.pieces.push_back(std::move(piece));
+        AddJob(label, JaudioLibrary2::kPieceSection | place);
+    }
+
+    // The track map of `piece` as `conductor` plays it. Nothing, with a warning, if the game has no such map.
+    const TrackCounts* MapOf(const std::string& piece, const std::string& conductor)
+    {
+        const auto [file, name] = TrackMapOf(piece, conductor);
+        const auto map = text_.track_maps[file].find(name);
+        if (map == text_.track_maps[file].end())
+        {
+            selection_.warnings.push_back(name + " has no track map; its rip plays every track");
+            return nullptr;
+        }
+
+        return &map->second;
+    }
+
+    // The volume of `piece` in the game's list of its music. 50, with a warning, if the list doesn't name it.
+    uint8_t VolumeOf(const std::string& piece)
+    {
+        const auto volume = text_.volumes.find(piece);
+        if (volume == text_.volumes.end())
+        {
+            selection_.warnings.push_back(piece + " isn't in the game's list of its music; its rip plays at 50");
+            return 50;
+        }
+
+        return std::min<uint8_t>(volume->second, 127);
+    }
+
+    // A variant of a piece for each layer of its map: the piece with that layer's tracks playing. The directors fade a
+    // layer in to a level of 1. Those of the treasure and the ground take 100 frames (0x2fbb0). The others set the
+    // level from 0 to 1 by how near the event or the enemies are (0x2fc5c and 0x30238). A variant plays its layer at 1
+    // from the start. The variants come after all the other sounds, with their pieces' numbers. These are the variants
+    // of the last piece added.
+    void AddVariants(const TrackCounts& counts)
+    {
+        const JaudioJob& job = selection_.jobs.back();
+        const uint16_t muted = selection_.library.pieces.back().muted_tracks;
+        for (std::size_t layer = 1; layer <= kLayerNames.size(); ++layer)
+        {
+            JaudioJob variant = job;
+            variant.label = job.label + " " + std::string(kLayerNames[layer - 1]) + " layer";
+            variant.sound_label = job.label;
+            variant.muted_tracks = static_cast<uint16_t>(muted & ~LayerTracks(counts, layer));
+            if (*variant.muted_tracks != muted && std::regex_search(variant.label, only_))
+            {
+                variants_.push_back(std::move(variant));
+            }
+        }
+    }
+
+    // The same for a piece whose directors take tracks that the game's code gives them: the bosses' music and battle_t.
+    // Their directors fade a layer in as the scene's do.
+    void AddCodeVariants(std::span<const CodeLayer> layers)
+    {
+        const JaudioJob& job = selection_.jobs.back();
+        const uint16_t muted = selection_.library.pieces.back().muted_tracks;
+        for (const CodeLayer& layer : layers)
+        {
+            JaudioJob variant = job;
+            variant.label = job.label + " " + std::string(layer.name) + " layer";
+            variant.sound_label = job.label;
+            variant.muted_tracks = static_cast<uint16_t>(muted & ~layer.tracks);
+            if (std::regex_search(variant.label, only_))
+            {
+                variants_.push_back(std::move(variant));
+            }
+        }
+    }
+
+    // Adds the piece of `file`, as the game's code sets it up (`code`), and its variants.
+    void AddCodePiece(const jaudio1::SoundFiles::SequenceFile& file, const PieceCode& code)
+    {
+        if (!std::regex_search(WithoutExtension(file.name), only_))
+        {
+            return;
+        }
+
+        JaudioPiece piece;
+        piece.file = file.id;
+        piece.kind = code.kind;
+        piece.volume = VolumeOf(file.name);
+        piece.kept_levels = code.kept_levels;
+        piece.beat_interval = code.beat_interval;
+        piece.start_point = code.start_point;
+        piece.conductor = code.conductor;
+        const TrackCounts* counts = code.muted ? nullptr : MapOf(file.name, piece.conductor);
+        piece.muted_tracks = code.muted ? *code.muted : counts ? MutedTracks(*counts) : uint16_t{0};
+        if (piece.kind == kConducted && !files_.conductors.contains(piece.conductor))
+        {
+            selection_.warnings.push_back(file.name + "'s conductor " + piece.conductor +
+                                          " isn't in the conductor archive; the piece is left out");
+            return;
+        }
+
+        AddPiece(WithoutExtension(file.name), piece);
+        if (counts)
+        {
+            AddVariants(*counts);
+        }
+
+        AddCodeVariants(code.layers);
+    }
+
+    // A piece of the cave music: one rip for each conductor whose name gives the piece, named after the
+    // conductor. A file that no conductor plays, such as the effect sequence, plays no music.
+    void AddCavePieces(const jaudio1::SoundFiles::SequenceFile& file)
+    {
+        for (const auto& [conductor, data] : files_.conductors)
+        {
+            if (ConductedPiece(conductor) != file.name || !std::regex_search(WithoutExtension(conductor), only_))
             {
                 continue;
             }
 
-            if (!engine_.QuietPass(track))
+            JaudioPiece piece;
+            piece.file = file.id;
+            piece.kind = kConducted;
+            piece.volume = VolumeOf(file.name);
+            piece.kept_levels = kAllLevels;
+            const TrackCounts* counts = MapOf(file.name, conductor);
+            piece.muted_tracks = counts ? MutedTracks(*counts) : uint16_t{0};
+            piece.conductor = conductor;
+            AddPiece(WithoutExtension(conductor), piece);
+            if (counts)
             {
-                return track;
-            }
-
-            if (first == jaudio1::Track::kNone)
-            {
-                first = track;
+                AddVariants(*counts);
             }
         }
-
-        return first;
     }
 
-    jaudio1::Engine& engine_;
-    bool loops_;
-    jaudio::AudioOut out_;
-    std::vector<int16_t> output_;
+    // The effects, by category and index. The game keeps an effect until it ends (bit 11). An effect plays on a slot
+    // track of its category in the first effect scene. A category without one plays no effect.
+    void AddEffects()
+    {
+        const std::vector<std::vector<uint8_t>>& scenes = files_.sound.EffectScenes();
+        for (uint32_t category = 0; category < jaudio1::SoundFiles::kEffectCategories; ++category)
+        {
+            const bool slot = !scenes.empty() && category < scenes[0].size() && scenes[0][category] != 0;
+            if (!slot && files_.sound.SoundCount(category) != 0)
+            {
+                selection_.warnings.push_back("the effects of category " + std::to_string(category) +
+                                              " have no slot track in the first effect scene; they're left out");
+                continue;
+            }
+
+            for (uint32_t index = 0; index < files_.sound.SoundCount(category); ++index)
+            {
+                const uint32_t id = category << 12 | index | nj::kAafToEnd;
+                const auto name = text_.names.find(nj::AsnNameKey(id));
+                char label[32];
+                std::snprintf(label, sizeof(label), "se%u-%04u", static_cast<unsigned>(category),
+                              static_cast<unsigned>(index));
+                const std::string text_label =
+                    name != text_.names.end() && !name->second.empty() ? name->second : label;
+                if (std::regex_search(text_label, only_))
+                {
+                    AddJob(text_label, id);
+                }
+            }
+        }
+    }
+
+    const Jaudio1Files& files_;
+    const Jaudio1GameText& text_;
+    const std::regex& only_;
+    Jaudio1Selection selection_;
+    std::vector<JaudioJob> variants_; // the variants of the pieces' layers, after all the other sounds
 };
 
 } // namespace
@@ -530,11 +656,8 @@ std::optional<Jaudio1Paths> FindJaudio1Files(const std::vector<std::string>& fil
 {
     for (const std::string& path : files)
     {
-        const std::size_t slash = path.rfind('/');
-        const std::string folder = slash == std::string::npos ? std::string() : path.substr(0, slash);
-        const std::size_t parent = folder.rfind('/');
-        const std::string folder_name = parent == std::string::npos ? folder : folder.substr(parent + 1);
-        if (xsflib::AsciiLower(folder_name) != "audiores" || !EndsWithLower(path, ".aaf"))
+        const std::string folder = FolderOf(path);
+        if (xsflib::AsciiLower(FileNameOf(folder)) != "audiores" || !EndsWithLower(path, ".aaf"))
         {
             continue;
         }
@@ -551,7 +674,7 @@ std::optional<Jaudio1Paths> FindJaudio1Files(const std::vector<std::string>& fil
         paths.waves = InFolder(folder, "Banks");
         paths.conductors = InFolder(folder, "Conductor.arc");
         paths.names = path.substr(0, path.size() - 4) + ".asn";
-        paths.user = InFolder(parent == std::string::npos ? std::string() : folder.substr(0, parent), "user");
+        paths.user = InFolder(FolderOf(folder), "user");
 
         return paths;
     }
@@ -671,7 +794,7 @@ std::optional<std::string> ReadJaudio1GameText(const Jaudio1Paths& paths, const 
         {
             for (const nj::AsnSound& sound : nj::ReadAsnSounds(data, false))
             {
-                text.names.try_emplace(NameKey(sound.id), sound.name);
+                text.names.try_emplace(nj::AsnNameKey(sound.id), sound.name);
             }
         }
         catch (const xsflib::FormatError& e)
@@ -686,200 +809,8 @@ std::optional<std::string> ReadJaudio1GameText(const Jaudio1Paths& paths, const 
 Jaudio1Selection SelectJaudio1Sounds(const Jaudio1Files& files, const Jaudio1GameText& text, const std::regex& only,
                                      bool bgm)
 {
-    Jaudio1Selection selection;
-    JaudioLibrary2& library = selection.library;
-
-    // The effect sequence plays at its volume in the game's list too (SeqBase::init).
-    for (const jaudio1::SoundFiles::SequenceFile& file : files.sound.Sequences())
-    {
-        if (file.name == "se.bms")
-        {
-            library.effect_sequence = file.id;
-            const auto volume = text.volumes.find(file.name);
-            library.effect_sequence_volume = volume != text.volumes.end() ? volume->second : uint8_t{127};
-        }
-    }
-
-    const auto add_piece = [&](const std::string& label, JaudioPiece piece)
-    {
-        const auto place = static_cast<uint32_t>(library.pieces.size());
-        library.pieces.push_back(std::move(piece));
-        JaudioJob job;
-        job.index = static_cast<uint32_t>(selection.jobs.size());
-        job.label = label;
-        job.id = JaudioLibrary2::kPieceSection | place;
-        selection.jobs.push_back(std::move(job));
-    };
-
-    const auto map_of = [&](const std::string& piece, const std::string& conductor) -> const TrackCounts*
-    {
-        const auto [file, name] = TrackMapOf(piece, conductor);
-        const auto map = text.track_maps[file].find(name);
-        if (map == text.track_maps[file].end())
-        {
-            selection.warnings.push_back(name + " has no track map; its rip plays every track");
-            return nullptr;
-        }
-
-        return &map->second;
-    };
-
-    // A variant of a piece for each layer of its map: the piece with that layer's tracks playing. The directors fade a
-    // layer in to a level of 1. Those of the treasure and the ground take 100 frames (0x2fbb0). The others set the
-    // level from 0 to 1 by how near the event or the enemies are (0x2fc5c and 0x30238). A variant plays its layer at 1
-    // from the start. The variants come after all the other sounds, with their pieces' numbers.
-    std::vector<JaudioJob> variants;
-    const auto add_variants = [&](const TrackCounts& counts)
-    {
-        const JaudioJob& job = selection.jobs.back();
-        const uint16_t muted = library.pieces.back().muted_tracks;
-        for (std::size_t layer = 1; layer <= kLayerNames.size(); ++layer)
-        {
-            JaudioJob variant = job;
-            variant.label = job.label + " " + std::string(kLayerNames[layer - 1]) + " layer";
-            variant.muted_tracks = static_cast<uint16_t>(muted & ~LayerTracks(counts, layer));
-            if (*variant.muted_tracks != muted && std::regex_search(variant.label, only))
-            {
-                variants.push_back(std::move(variant));
-            }
-        }
-    };
-
-    // The same for a piece whose directors take tracks that the game's code gives them: the bosses' music and battle_t.
-    // Their directors fade a layer in as the scene's do.
-    const auto add_code_variants = [&](std::span<const CodeLayer> layers)
-    {
-        const JaudioJob& job = selection.jobs.back();
-        const uint16_t muted = library.pieces.back().muted_tracks;
-        for (const CodeLayer& layer : layers)
-        {
-            JaudioJob variant = job;
-            variant.label = job.label + " " + std::string(layer.name) + " layer";
-            variant.muted_tracks = static_cast<uint16_t>(muted & ~layer.tracks);
-            if (std::regex_search(variant.label, only))
-            {
-                variants.push_back(std::move(variant));
-            }
-        }
-    };
-
-    const auto volume_of = [&](const std::string& piece) -> uint8_t
-    {
-        const auto volume = text.volumes.find(piece);
-        if (volume == text.volumes.end())
-        {
-            selection.warnings.push_back(piece + " isn't in the game's list of its music; its rip plays at 50");
-            return 50;
-        }
-
-        return std::min<uint8_t>(volume->second, 127);
-    };
-
-    for (const jaudio1::SoundFiles::SequenceFile& file : files.sound.Sequences())
-    {
-        const auto code = std::find_if(kPieces.begin(), kPieces.end(),
-                                       [&file](const PieceCode& piece) { return piece.file == file.name; });
-        if (code != kPieces.end())
-        {
-            if (!std::regex_search(WithoutExtension(file.name), only))
-            {
-                continue;
-            }
-
-            JaudioPiece piece;
-            piece.file = file.id;
-            piece.kind = code->kind;
-            piece.volume = volume_of(file.name);
-            piece.kept_levels = code->kept_levels;
-            piece.beat_interval = code->beat_interval;
-            piece.start_point = code->start_point;
-            piece.conductor = code->conductor;
-            const TrackCounts* counts = code->muted ? nullptr : map_of(file.name, piece.conductor);
-            piece.muted_tracks = code->muted ? *code->muted : counts ? MutedTracks(*counts) : uint16_t{0};
-            if (piece.kind == kConducted && !files.conductors.contains(piece.conductor))
-            {
-                selection.warnings.push_back(file.name + "'s conductor " + piece.conductor +
-                                             " isn't in the conductor archive; the piece is left out");
-                continue;
-            }
-
-            add_piece(WithoutExtension(file.name), piece);
-            if (counts)
-            {
-                add_variants(*counts);
-            }
-
-            add_code_variants(code->layers);
-            continue;
-        }
-
-        // A piece of the cave music: one rip for each conductor whose name gives the piece, named after the
-        // conductor. A file that no conductor plays, such as the effect sequence, plays no music.
-        for (const auto& [conductor, data] : files.conductors)
-        {
-            if (ConductedPiece(conductor) != file.name || !std::regex_search(WithoutExtension(conductor), only))
-            {
-                continue;
-            }
-
-            JaudioPiece piece;
-            piece.file = file.id;
-            piece.kind = kConducted;
-            piece.volume = volume_of(file.name);
-            piece.kept_levels = kAllLevels;
-            const TrackCounts* counts = map_of(file.name, conductor);
-            piece.muted_tracks = counts ? MutedTracks(*counts) : uint16_t{0};
-            piece.conductor = conductor;
-            add_piece(WithoutExtension(conductor), piece);
-            if (counts)
-            {
-                add_variants(*counts);
-            }
-        }
-    }
-
-    if (bgm)
-    {
-        std::move(variants.begin(), variants.end(), std::back_inserter(selection.jobs));
-        return selection;
-    }
-
-    // The effects, by category and index. The game keeps an effect until it ends (bit 11). An effect plays on a slot
-    // track of its category in the first effect scene. A category without one plays no effect.
-    const std::vector<std::vector<uint8_t>>& scenes = files.sound.EffectScenes();
-    for (uint32_t category = 0; category < jaudio1::SoundFiles::kEffectCategories; ++category)
-    {
-        const bool slot = !scenes.empty() && category < scenes[0].size() && scenes[0][category] != 0;
-        if (!slot && files.sound.SoundCount(category) != 0)
-        {
-            selection.warnings.push_back("the effects of category " + std::to_string(category) +
-                                         " have no slot track in the first effect scene; they're left out");
-            continue;
-        }
-
-        for (uint32_t index = 0; index < files.sound.SoundCount(category); ++index)
-        {
-            const uint32_t id = category << 12 | index | nj::kAafToEnd;
-            const auto name = text.names.find(NameKey(id));
-            char label[32];
-            std::snprintf(label, sizeof(label), "se%u-%04u", static_cast<unsigned>(category),
-                          static_cast<unsigned>(index));
-            const std::string text_label = name != text.names.end() && !name->second.empty() ? name->second : label;
-            if (!std::regex_search(text_label, only))
-            {
-                continue;
-            }
-
-            JaudioJob job;
-            job.index = static_cast<uint32_t>(selection.jobs.size());
-            job.label = text_label;
-            job.id = id;
-            selection.jobs.push_back(std::move(job));
-        }
-    }
-
-    std::move(variants.begin(), variants.end(), std::back_inserter(selection.jobs));
-    return selection;
+    Jaudio1Choice choice(files, text, only);
+    return choice.Select(bgm);
 }
 
 Jaudio1LengthAnalyzer::Jaudio1LengthAnalyzer(const Jaudio1Files& files, ArchiveDescriptor settings)
@@ -899,8 +830,8 @@ JaudioTiming Jaudio1LengthAnalyzer::Analyze(uint32_t sound, std::optional<uint32
             return std::nullopt;
         }
 
-        const bool conducted = (sound & 0xc0000000u) == JaudioLibrary2::kPieceSection &&
-                               library.pieces[sound & 0xffff].kind == JaudioPiece::kConducted;
+        const bool conducted = (sound & kSoundSectionMask) == JaudioLibrary2::kPieceSection &&
+                               library.pieces[sound & kSoundPlaceMask].kind == JaudioPiece::kConducted;
         Jaudio1LengthModel model(engine, !conducted);
         const std::optional<Timing> timing = xsflib::rip::MeasureLength(model, JaudioLengthRules());
         result.missing_bank_notes = engine.MissingBankNotes();

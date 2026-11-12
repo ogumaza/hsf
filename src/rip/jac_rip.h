@@ -22,6 +22,7 @@
 #include "hsf/format.h"
 #include "hsf/jaudio_models.h"
 #include "rip/jac_tables.h"
+#include "rip/jaudio_length.h"
 #include "rip/jaudio_rip.h"
 
 namespace ntdlib::jac

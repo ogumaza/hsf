@@ -53,6 +53,28 @@ float FloatAt(std::span<const uint8_t> record, std::size_t offset)
     return std::bit_cast<float>(xsflib::LoadLe32(&record[offset]));
 }
 
+// The I3DL2 reverb's 12 parameters at kI3dl2Parameters in `record`, in nn::audio's units. The record gives the times in
+// ms. With `percents`, it gives the decay ratio and the dry gain in percent too.
+I3dl2Preset ReadI3dl2(std::span<const uint8_t> record, bool percents)
+{
+    I3dl2Preset p;
+    for (std::size_t k = 0; k < p.size(); ++k)
+    {
+        p[k] = FloatAt(record, kI3dl2Parameters + 4 * k);
+    }
+
+    p[kDecayTime] = p[kDecayTime] / 1000.0f;
+    p[kReflectionsDelay] = p[kReflectionsDelay] / 1000.0f;
+    p[kReverbDelay] = p[kReverbDelay] / 1000.0f;
+    if (percents)
+    {
+        p[kHfDecayRatio] = p[kHfDecayRatio] / 100.0f;
+        p[kDryGain] = p[kDryGain] / 100.0f;
+    }
+
+    return p;
+}
+
 // AArch64's fcvtzs to 64 bits: a float to an integer, toward 0. NaN gives 0. A value past the range gives its end.
 int64_t ToInteger(float value)
 {
@@ -60,10 +82,12 @@ int64_t ToInteger(float value)
     {
         return 0;
     }
+
     if (value >= 9.2233720368547758e18f)
     {
         return INT64_MAX;
     }
+
     if (value <= -9.2233720368547758e18f)
     {
         return INT64_MIN;
@@ -111,6 +135,7 @@ std::array<float, 8> LightLimiterParameters(std::span<const uint8_t> record)
     {
         p[k] = WholeMilliseconds(p[k] / 1000.0f);
     }
+
     p[7] = kTwoChannels;
 
     return p;
@@ -138,17 +163,7 @@ std::map<std::string, I3dl2Preset> ReadI3dl2Presets(const Sheet& sheet)
             continue;
         }
 
-        I3dl2Preset p;
-        for (std::size_t k = 0; k < p.size(); ++k)
-        {
-            p[k] = std::bit_cast<float>(xsflib::LoadLe32(&records[base + kI3dl2Parameters + 4 * k]));
-        }
-        p[kDecayTime] = p[kDecayTime] / 1000.0f;
-        p[kHfDecayRatio] = p[kHfDecayRatio] / 100.0f;
-        p[kReflectionsDelay] = p[kReflectionsDelay] / 1000.0f;
-        p[kReverbDelay] = p[kReverbDelay] / 1000.0f;
-        p[kDryGain] = p[kDryGain] / 100.0f;
-        presets[*name] = p;
+        presets[*name] = ReadI3dl2(records.subspan(base, kRecordSize), true);
     }
 
     return presets;
@@ -177,15 +192,7 @@ RawEffectPresets ReadRawEffectPresets(const Sheet& sheet)
 
         if (type == kI3dl2Type)
         {
-            I3dl2Preset p;
-            for (std::size_t k = 0; k < p.size(); ++k)
-            {
-                p[k] = FloatAt(record, kI3dl2Parameters + 4 * k);
-            }
-            p[kDecayTime] = p[kDecayTime] / 1000.0f;
-            p[kReflectionsDelay] = p[kReflectionsDelay] / 1000.0f;
-            p[kReverbDelay] = p[kReverbDelay] / 1000.0f;
-            presets.i3dl2[*name] = p;
+            presets.i3dl2[*name] = ReadI3dl2(record, false);
         }
         else if (type == kRawDelay)
         {

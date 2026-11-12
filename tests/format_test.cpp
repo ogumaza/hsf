@@ -6,7 +6,6 @@
 #include "hsf/format.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -55,6 +54,55 @@ hsf::AuxEffect Reverb(uint32_t bus)
     }
 
     return effect;
+}
+
+// Whether `d` fails Check once `change(d)` has changed a copy of it.
+template <class Change>
+bool Refuses(const ArchiveDescriptor& d, Change change)
+{
+    ArchiveDescriptor odd = d;
+    change(odd);
+    return odd.Check().has_value();
+}
+
+// Checks that a copy of `d` that `change(d)` has changed fails Check with an error that holds `message`.
+template <class Change>
+void CheckRefused(const ArchiveDescriptor& d, Change change, std::string_view message)
+{
+    ArchiveDescriptor bad = d;
+    change(bad);
+    const std::optional<std::string> err = bad.Check();
+    Check(err && err->find(message) != std::string::npos,
+          "refused with \"" + std::string(message) + "\": " + err.value_or("accepted"));
+}
+
+// A JAudio descriptor's bytes, and where the fields of its library start: the size of the same descriptor with
+// library 1.
+struct JaudioBytes
+{
+    std::vector<uint8_t> raw;
+    std::size_t at = 0;
+};
+
+// Checks that the JAudio descriptor `d` makes the round trip, ends at a multiple of 4 bytes and passes Check.
+JaudioBytes CheckJaudioRoundTrip(const ArchiveDescriptor& d)
+{
+    const std::vector<uint8_t> raw = d.Serialize();
+    const auto back = ArchiveDescriptor::Parse(raw);
+    XSFLIB_CHECK(raw.size() % 4 == 0);
+    XSFLIB_CHECK(back && back->jaudio == d.jaudio && back->group_paths == d.group_paths);
+    XSFLIB_CHECK(!d.Check());
+
+    ArchiveDescriptor first = d;
+    first.jaudio.library = hsf::JaudioSettings::kGalaxyLibrary;
+    return {raw, first.Serialize().size()};
+}
+
+// Whether `raw` ends in `fields`, from `at` on.
+bool EndsWithFields(const std::vector<uint8_t>& raw, std::size_t at, const std::vector<uint8_t>& fields)
+{
+    return raw.size() == at + fields.size() &&
+           std::equal(fields.begin(), fields.end(), raw.begin() + static_cast<std::ptrdiff_t>(at));
 }
 
 // docs/hsf.md gives HSF the PSF version byte 0x29. An HSF file starts with "PSF" and that byte.
@@ -252,10 +300,10 @@ void TestReverbEffect()
 }
 
 // Version 1's track volumes (flag bit 0) follow the paths. They make the round trip, and the bytes before them are
-// those of the descriptor without them, but for the flags. A player accepts each sound once, with volumes that are
-// finite numbers of 0 or more. It refuses other flags, and volumes without the flag. HSF 1.3.0 checked the flags with
-// xsflib's check of a version 1 descriptor's start. That check refuses the flag, with the message that docs/hsf.md
-// gives.
+// those of the descriptor without them, but for the flags. A player refuses other flags, volumes without the flag, and
+// a sound listed twice. xsflib's psf_descriptor_test checks the rest of the list's checks. HSF 1.3.0 checked the flags
+// with xsflib's check of a version 1 descriptor's start. That check refuses the flag, with the message that
+// docs/hsf.md gives.
 void TestTrackVolumes()
 {
     ArchiveDescriptor plain;
@@ -288,7 +336,6 @@ void TestTrackVolumes()
     XSFLIB_CHECK(back && back->TrackVolumesOf(0x01000007) && back->TrackVolumesOf(0x01000007)->volumes[3] == 2.0f &&
                  !back->TrackVolumesOf(0x01000008));
     XSFLIB_CHECK(!ArchiveDescriptor::Parse(std::vector<uint8_t>(raw.begin(), raw.end() - 4)).has_value());
-    XSFLIB_CHECK(!plain.TrackVolumesOf(0x010001aa));
 
     // A descriptor without the flag is the same as before: nothing follows the paths.
     ArchiveDescriptor unflagged = d;
@@ -302,16 +349,10 @@ void TestTrackVolumes()
     no_flag.flags = 0;
     ArchiveDescriptor twice = d;
     twice.track_volumes[1].sound = first.sound;
-    ArchiveDescriptor negative = d;
-    negative.track_volumes[0].volumes[2] = -0.5f;
-    ArchiveDescriptor nan = d;
-    nan.track_volumes[1].volumes[0] = std::numeric_limits<float>::quiet_NaN();
 
     XSFLIB_CHECK(other_flag.Check() && other_flag.Check()->find("version 1 has only bits 0") != std::string::npos);
     XSFLIB_CHECK(no_flag.Check() && no_flag.Check()->find("without its flag") != std::string::npos);
     XSFLIB_CHECK(twice.Check() && twice.Check()->find("more than once") != std::string::npos);
-    XSFLIB_CHECK(negative.Check().has_value());
-    XSFLIB_CHECK(nan.Check().has_value());
 
     const std::optional<std::string> old_player = xsflib::psf::CheckArchiveStart(d, ArchiveDescriptor::kDefaultVoices);
     Check(old_player == "the archive descriptor's flags are 0x1; version 1 has none",
@@ -405,41 +446,38 @@ void TestScriptedStarts()
     unflagged.scripts.clear();
     XSFLIB_CHECK(unflagged.Serialize() == before);
 
-    const auto refused = [&d](auto change, std::string_view message)
-    {
-        ArchiveDescriptor bad = d;
-        change(bad);
-        const std::optional<std::string> err = bad.Check();
-        Check(err && err->find(message) != std::string::npos,
-              "refused with \"" + std::string(message) + "\": " + err.value_or("accepted"));
-    };
-
     const auto step = [](ArchiveDescriptor& bad, std::size_t script, std::size_t i) -> ScriptStep&
     {
         return bad.scripts[script].steps[i];
     };
 
-    refused([](ArchiveDescriptor& bad) { bad.flags = 0; }, "without its flag for them (bit 1)");
-    refused([](ArchiveDescriptor& bad) { bad.scripts[1].sound = 0x01000002; }, "more than once");
-    refused([](ArchiveDescriptor& bad) { bad.scripts[1].sound = 0x02000005; }, "the item isn't a sound");
-    refused([](ArchiveDescriptor& bad) { bad.scripts[0].steps.erase(bad.scripts[0].steps.begin() + 2); },
-            "no step before it starts that sound");
-    refused([](ArchiveDescriptor& bad) { bad.scripts[0].steps = {ScriptStep::Write(0, 28, 1)}; },
-            "never starts the sound");
-    refused([&step](ArchiveDescriptor& bad) { step(bad, 1, 3).frame = 1; }, "before the step ahead of it");
-    refused([&step](ArchiveDescriptor& bad) { step(bad, 1, 0).sound = 0x05000000; }, "the item isn't a sound");
-    refused([&step](ArchiveDescriptor& bad) { step(bad, 1, 2).sound = 0x01000009; }, "again");
-    refused([&step](ArchiveDescriptor& bad) { step(bad, 1, 2).value = 3; }, "starts a sound and sets a variable");
-    refused([&step](ArchiveDescriptor& bad) { step(bad, 1, 0).variable = 0; },
-            "starts a sound of add-on archive 0; it lists 0 add-on archives");
-    refused(
+    CheckRefused(d, [](ArchiveDescriptor& bad) { bad.flags = 0; }, "without its flag for them (bit 1)");
+    CheckRefused(d, [](ArchiveDescriptor& bad) { bad.scripts[1].sound = 0x01000002; }, "more than once");
+    CheckRefused(d, [](ArchiveDescriptor& bad) { bad.scripts[1].sound = 0x02000005; }, "the item isn't a sound");
+    CheckRefused(
+        d, [](ArchiveDescriptor& bad) { bad.scripts[0].steps.erase(bad.scripts[0].steps.begin() + 2); },
+        "no step before it starts that sound");
+    CheckRefused(
+        d, [](ArchiveDescriptor& bad) { bad.scripts[0].steps = {ScriptStep::Write(0, 28, 1)}; },
+        "never starts the sound");
+    CheckRefused(d, [&step](ArchiveDescriptor& bad) { step(bad, 1, 3).frame = 1; }, "before the step ahead of it");
+    CheckRefused(d, [&step](ArchiveDescriptor& bad) { step(bad, 1, 0).sound = 0x05000000; }, "the item isn't a sound");
+    CheckRefused(d, [&step](ArchiveDescriptor& bad) { step(bad, 1, 2).sound = 0x01000009; }, "again");
+    CheckRefused(
+        d, [&step](ArchiveDescriptor& bad) { step(bad, 1, 2).value = 3; }, "starts a sound and sets a variable");
+    CheckRefused(
+        d, [&step](ArchiveDescriptor& bad) { step(bad, 1, 0).variable = 0; },
+        "starts a sound of add-on archive 0; it lists 0 add-on archives");
+    CheckRefused(
+        d,
         [&step](ArchiveDescriptor& bad)
         {
             bad.addons = {{"addon.fsst", {}}};
             step(bad, 1, 2).variable = 0;
         },
         "never starts the sound from the set's archive");
-    refused(
+    CheckRefused(
+        d,
         [](ArchiveDescriptor& bad)
         {
             bad.flags = 0;
@@ -447,17 +485,20 @@ void TestScriptedStarts()
             bad.addons = {{"addon.fsst", {}}};
         },
         "without its flag for them (bit 1)");
-    refused([&step](ArchiveDescriptor& bad) { step(bad, 0, 0).kind = 3; }, "version 1 has only 0");
-    refused([&step](ArchiveDescriptor& bad) { step(bad, 0, 0).procedure = 1; }, "only a write of kind 2 names one");
-    refused([&step](ArchiveDescriptor& bad) { step(bad, 1, 0).procedure = 2; }, "only a write of kind 2 names one");
-    refused([&step](ArchiveDescriptor& bad) { step(bad, 0, 0).variable = 48; }, "are 0 to 47");
-    refused([&step](ArchiveDescriptor& bad) { step(bad, 0, 4).track = 16; }, "on track 0 to 15");
-    refused([&step](ArchiveDescriptor& bad) { step(bad, 0, 4).track = ScriptStep::kNone; }, "on track 0 to 15");
-    refused([&step](ArchiveDescriptor& bad) { step(bad, 0, 3).track = 0; }, "only variables 32 to 47");
-    refused([&step](ArchiveDescriptor& bad) { step(bad, 0, 1).sound = 0x01000002; }, "no sound's");
-    refused([&step](ArchiveDescriptor& bad) { step(bad, 0, 1).variable = 28; }, "a second time in frame 0");
-    refused([](ArchiveDescriptor& bad) { bad.scripts[1].lead_in = 0; }, "at frame 2, after the lead-in of 0 frames");
-    refused([](ArchiveDescriptor& bad) { bad.scripts[1].lead_in = 900 + 120001; }, "at most 120000 frames");
+    CheckRefused(d, [&step](ArchiveDescriptor& bad) { step(bad, 0, 0).kind = 3; }, "version 1 has only 0");
+    CheckRefused(
+        d, [&step](ArchiveDescriptor& bad) { step(bad, 0, 0).procedure = 1; }, "only a write of kind 2 names one");
+    CheckRefused(
+        d, [&step](ArchiveDescriptor& bad) { step(bad, 1, 0).procedure = 2; }, "only a write of kind 2 names one");
+    CheckRefused(d, [&step](ArchiveDescriptor& bad) { step(bad, 0, 0).variable = 48; }, "are 0 to 47");
+    CheckRefused(d, [&step](ArchiveDescriptor& bad) { step(bad, 0, 4).track = 16; }, "on track 0 to 15");
+    CheckRefused(d, [&step](ArchiveDescriptor& bad) { step(bad, 0, 4).track = ScriptStep::kNone; }, "on track 0 to 15");
+    CheckRefused(d, [&step](ArchiveDescriptor& bad) { step(bad, 0, 3).track = 0; }, "only variables 32 to 47");
+    CheckRefused(d, [&step](ArchiveDescriptor& bad) { step(bad, 0, 1).sound = 0x01000002; }, "no sound's");
+    CheckRefused(d, [&step](ArchiveDescriptor& bad) { step(bad, 0, 1).variable = 28; }, "a second time in frame 0");
+    CheckRefused(
+        d, [](ArchiveDescriptor& bad) { bad.scripts[1].lead_in = 0; }, "at frame 2, after the lead-in of 0 frames");
+    CheckRefused(d, [](ArchiveDescriptor& bad) { bad.scripts[1].lead_in = 900 + 120001; }, "at most 120000 frames");
 
     // The same variable on two tracks is two variables, and so is a variable of two frames.
     ArchiveDescriptor two_tracks = d;
@@ -486,11 +527,7 @@ void TestScriptedStarts()
     XSFLIB_CHECK(waits_back && waits_back->scripts == waits.scripts);
     const auto refused_wait = [&waits](auto change, std::string_view message)
     {
-        ArchiveDescriptor bad = waits;
-        change(bad.scripts[1].steps);
-        const std::optional<std::string> err = bad.Check();
-        Check(err && err->find(message) != std::string::npos,
-              "refused with \"" + std::string(message) + "\": " + err.value_or("accepted"));
+        CheckRefused(waits, [&change](ArchiveDescriptor& bad) { change(bad.scripts[1].steps); }, message);
     };
 
     refused_wait([](std::vector<ScriptStep>& steps) { steps[5].sound = 0x01000002; },
@@ -560,23 +597,15 @@ void TestUserProcedures()
     XSFLIB_CHECK(!superstars.Check() && superstars_raw.size() == at + 8);
     XSFLIB_CHECK(superstars_back && superstars_back->procedures == superstars.procedures);
 
-    const auto refused = [&d](auto change, std::string_view message)
-    {
-        ArchiveDescriptor bad = d;
-        change(bad);
-        const std::optional<std::string> err = bad.Check();
-        Check(err && err->find(message) != std::string::npos,
-              "refused with \"" + std::string(message) + "\": " + err.value_or("accepted"));
-    };
-
-    refused([](ArchiveDescriptor& bad) { bad.flags = 0; }, "without its flag for them (bit 2)");
-    refused([](ArchiveDescriptor& bad) { bad.procedures.handler = 3; }, "names handler 3 of user procedures");
-    refused([](ArchiveDescriptor& bad) { bad.procedures.handler = 0; }, "names handler 0 of user procedures");
-    refused([](ArchiveDescriptor& bad) { bad.procedures.handler = 2; }, "reads none");
-    refused([](ArchiveDescriptor& bad) { bad.procedures.tables[0].number = 16; }, "the tables are 0 to 15");
-    refused([](ArchiveDescriptor& bad) { bad.procedures.tables.push_back(bad.procedures.tables[0]); },
-            "more than once");
-    refused([](ArchiveDescriptor& bad) { bad.flags = 8; }, "version 1 has only bits 0 (track volumes), 1 (scripted");
+    CheckRefused(d, [](ArchiveDescriptor& bad) { bad.flags = 0; }, "without its flag for them (bit 2)");
+    CheckRefused(d, [](ArchiveDescriptor& bad) { bad.procedures.handler = 3; }, "names handler 3 of user procedures");
+    CheckRefused(d, [](ArchiveDescriptor& bad) { bad.procedures.handler = 0; }, "names handler 0 of user procedures");
+    CheckRefused(d, [](ArchiveDescriptor& bad) { bad.procedures.handler = 2; }, "reads none");
+    CheckRefused(d, [](ArchiveDescriptor& bad) { bad.procedures.tables[0].number = 16; }, "the tables are 0 to 15");
+    CheckRefused(
+        d, [](ArchiveDescriptor& bad) { bad.procedures.tables.push_back(bad.procedures.tables[0]); }, "more than once");
+    CheckRefused(
+        d, [](ArchiveDescriptor& bad) { bad.flags = 8; }, "version 1 has only bits 0 (track volumes), 1 (scripted");
 
     // A descriptor without the flag is the same as before.
     ArchiveDescriptor unflagged = d;
@@ -648,30 +677,21 @@ void TestJaudioDescriptor()
     XSFLIB_CHECK(refusal && *refusal == "archive descriptor version 2; this player supports version 1");
 
     // What a version 2 player refuses.
-    const auto refused = [&d](auto change)
-    {
-        ArchiveDescriptor odd = d;
-        change(odd);
-        return odd.Check().has_value();
-    };
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.flags = 1; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.output_mode = 2; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.voice_count = 96; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.effects = {Reverb(0)}; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.group_paths.pop_back(); }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library = 4; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.dsp_level = 0x10000; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.music_volume = -1.0f; }));
-    XSFLIB_CHECK(
-        refused([](ArchiveDescriptor& o) { o.jaudio.category_volumes[15] = std::numeric_limits<float>::quiet_NaN(); }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.fx_lines[2].subframes = 129; }));
-    XSFLIB_CHECK(!refused([](ArchiveDescriptor& o) { o.jaudio.fx_lines[2].subframes = 128; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.sound_volumes[1].volume = 256; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.flags = 1; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.output_mode = 2; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.voice_count = 96; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.effects = {Reverb(0)}; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.group_paths.pop_back(); }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library = 4; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.dsp_level = 0x10000; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.music_volume = -1.0f; }));
+    XSFLIB_CHECK(Refuses(
+        d, [](ArchiveDescriptor& o) { o.jaudio.category_volumes[15] = std::numeric_limits<float>::quiet_NaN(); }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.fx_lines[2].subframes = 129; }));
+    XSFLIB_CHECK(!Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.fx_lines[2].subframes = 128; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.sound_volumes[1].volume = 256; }));
 }
 
-// Library 2: version 2's layout, then the effect sequence, the conductor archive, the pieces of music and the sounds
-// that start after draws. They make the round trip. A player that supports library 1 alone reads as far as the sounds'
-// volumes. A version 2 player refuses the settings that library 2 doesn't have, and pieces that it can't play.
 // A version 3 descriptor: version 1's layout to the paths' padding, then the layer and NW4R SND's build.
 void TestNw4rDescriptor()
 {
@@ -697,20 +717,17 @@ void TestNw4rDescriptor()
     XSFLIB_CHECK(v1 && v1->archive_path == d.archive_path && v1->group_paths.empty());
 
     // What a version 3 player refuses.
-    const auto refused = [&d](auto change)
-    {
-        ArchiveDescriptor odd = d;
-        change(odd);
-        return odd.Check().has_value();
-    };
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.flags = 1; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.output_mode = 2; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.voice_count = 96; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.effects = {Reverb(0)}; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.group_paths = {"Sound/a.brsar"}; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.nw4r.layer = 2; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.flags = 1; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.output_mode = 2; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.voice_count = 96; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.effects = {Reverb(0)}; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.group_paths = {"Sound/a.brsar"}; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.nw4r.layer = 2; }));
 }
 
+// Library 2: version 2's layout, then the effect sequence, the conductor archive, the pieces of music and the sounds
+// that start after draws. They make the round trip. A player that supports library 1 alone reads as far as the sounds'
+// volumes. A version 2 player refuses the settings that library 2 doesn't have, and pieces that it can't play.
 void TestJaudioLibrary2()
 {
     hsf::JaudioSettings j;
@@ -738,17 +755,10 @@ void TestJaudioLibrary2()
     ArchiveDescriptor d = ArchiveDescriptor::Jaudio(j);
     d.archive_path = "AudioRes/start.aaf";
     d.group_paths = {"AudioRes/Seqs/seq.arc", "AudioRes/Banks"};
-    const std::vector<uint8_t> raw = d.Serialize();
-    const auto back = ArchiveDescriptor::Parse(raw);
-    XSFLIB_CHECK(raw.size() % 4 == 0);
-    XSFLIB_CHECK(back && back->jaudio == j && back->group_paths == d.group_paths);
-    XSFLIB_CHECK(!d.Check());
+    const auto [raw, at] = CheckJaudioRoundTrip(d);
 
     // Library 2's fields follow library 1's. The archive's path ends with zeros to a multiple of 4. Each piece takes 12
     // bytes before its conductor's name, and its name ends the same way. Each sound with draws takes 8 bytes.
-    ArchiveDescriptor first = d;
-    first.jaudio.library = hsf::JaudioSettings::kGalaxyLibrary;
-    const std::size_t at = first.Serialize().size();
     std::vector<uint8_t> fields;
     const auto put = [&fields](std::initializer_list<uint8_t> bytes)
     {
@@ -771,8 +781,7 @@ void TestJaudioLibrary2()
     put({1, 0, 0, 0});       // the count of sounds with draws
     put({0x05, 0x48, 0, 0}); // the sound
     put({3, 0, 0, 0});       // its draws
-    XSFLIB_CHECK(raw.size() == at + fields.size() &&
-                 std::equal(fields.begin(), fields.end(), raw.begin() + static_cast<std::ptrdiff_t>(at)));
+    XSFLIB_CHECK(EndsWithFields(raw, at, fields));
 
     // A descriptor that ends inside library 2's fields.
     for (const std::size_t cut : {std::size_t{2}, std::size_t{10}, std::size_t{30}, std::size_t{50}, raw.size() - at})
@@ -789,30 +798,24 @@ void TestJaudioLibrary2()
     const auto read_first = ArchiveDescriptor::Parse(as_first);
     XSFLIB_CHECK(read_first && read_first->jaudio.library == 1 && read_first->jaudio.library2 == hsf::JaudioLibrary2{});
 
-    const auto refused = [&d](auto change)
-    {
-        ArchiveDescriptor odd = d;
-        change(odd);
-        return odd.Check().has_value();
-    };
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.category_volumes[2] = 1.2f; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.fx_lines[1].flags = 1; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.track_states.push_back({}); }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.sound_volumes.push_back({}); }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library2.effect_sequence_volume = 128; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library2.pieces[0].kind = 4; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library2.pieces[0].volume = 128; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library2.pieces[0].kept_levels = 0x20; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library2.pieces[0].conductor = "x.cnd"; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library2.pieces[1].conductor.clear(); }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library2.conductor_archive.clear(); }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library2.pieces.resize(0x10001); }));
-    XSFLIB_CHECK(!refused([](ArchiveDescriptor& o) { o.jaudio.library2.pieces.resize(1); }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library2.draws[0].draws = 0; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library2.draws[0].draws = 0x10000; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library2.draws.push_back({0x4805, 1}); }));
-    XSFLIB_CHECK(!refused([](ArchiveDescriptor& o) { o.jaudio.library2.draws[0].draws = 0xffff; }));
-    XSFLIB_CHECK(!refused([](ArchiveDescriptor& o) { o.jaudio.library2.draws.push_back({0x4806, 1}); }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.category_volumes[2] = 1.2f; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.fx_lines[1].flags = 1; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.track_states.push_back({}); }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.sound_volumes.push_back({}); }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library2.effect_sequence_volume = 128; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library2.pieces[0].kind = 4; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library2.pieces[0].volume = 128; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library2.pieces[0].kept_levels = 0x20; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library2.pieces[0].conductor = "x.cnd"; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library2.pieces[1].conductor.clear(); }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library2.conductor_archive.clear(); }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library2.pieces.resize(0x10001); }));
+    XSFLIB_CHECK(!Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library2.pieces.resize(1); }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library2.draws[0].draws = 0; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library2.draws[0].draws = 0x10000; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library2.draws.push_back({0x4805, 1}); }));
+    XSFLIB_CHECK(!Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library2.draws[0].draws = 0xffff; }));
+    XSFLIB_CHECK(!Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library2.draws.push_back({0x4806, 1}); }));
     XSFLIB_CHECK(d.jaudio.library2.DrawsBefore(0x4805) == 3 && d.jaudio.library2.DrawsBefore(0x4806) == 0);
 }
 
@@ -861,17 +864,10 @@ void TestJaudioLibrary3()
     ArchiveDescriptor d = ArchiveDescriptor::Jaudio(j);
     d.archive_path = "dataDir/SndData/Banks/pikibank.bx";
     d.group_paths = {"dataDir/SndData/Seqs/pikiseq.arc", "dataDir/SndData/Banks"};
-    const std::vector<uint8_t> raw = d.Serialize();
-    const auto back = ArchiveDescriptor::Parse(raw);
-    XSFLIB_CHECK(raw.size() % 4 == 0);
-    XSFLIB_CHECK(back && back->jaudio == j && back->group_paths == d.group_paths);
-    XSFLIB_CHECK(!d.Check());
+    const auto [raw, at] = CheckJaudioRoundTrip(d);
 
     // Library 3's fields follow library 1's. The index's path ends with zeros to a multiple of 4. Each load, part and
     // effect takes 8 bytes, and each piece 12.
-    ArchiveDescriptor first = d;
-    first.jaudio.library = hsf::JaudioSettings::kGalaxyLibrary;
-    const std::size_t at = first.Serialize().size();
     std::vector<uint8_t> fields;
     const auto put = [&fields](std::initializer_list<uint8_t> bytes)
     {
@@ -896,8 +892,7 @@ void TestJaudioLibrary3()
     put({3, 7, 0x09, 0x51, 0x0d, 0xf1, 0, 0});          // the ship's action
     put({6, 0, 3, 0, 0xff, 0xff, 0, 0});                // the footstep
     put({7, 1, 2, 0, 0x10, 0, 0x49, 0x04});             // the cutscene's sound and its finish
-    XSFLIB_CHECK(raw.size() == at + fields.size() &&
-                 std::equal(fields.begin(), fields.end(), raw.begin() + static_cast<std::ptrdiff_t>(at)));
+    XSFLIB_CHECK(EndsWithFields(raw, at, fields));
 
     // A descriptor that ends inside library 3's fields.
     for (const std::size_t cut :
@@ -907,38 +902,32 @@ void TestJaudioLibrary3()
         XSFLIB_CHECK(!ArchiveDescriptor::Parse(shorter).has_value());
     }
 
-    const auto refused = [&d](auto change)
-    {
-        ArchiveDescriptor odd = d;
-        change(odd);
-        return odd.Check().has_value();
-    };
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.music_volume = 0.5f; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.effect_volume = 0.5f; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.category_volumes[2] = 1.2f; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.track_states.push_back({}); }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.sound_volumes.push_back({}); }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library3.sequence_index.clear(); }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library3.effect_level = 0x8000; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library3.cutscene_level = 0x8000; }));
-    XSFLIB_CHECK(!refused([](ArchiveDescriptor& o) { o.jaudio.library3.effect_level = 0x7fff; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library3.music_volume = -1.0f; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o)
-                         { o.jaudio.library3.pieces[0].volume = std::numeric_limits<float>::infinity(); }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library3.loads[1].set = 2; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library3.pieces.resize(0x10001); }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library3.parts.resize(0x10001); }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library3.effects.resize(0x10001); }));
-    XSFLIB_CHECK(!refused([](ArchiveDescriptor& o) { o.jaudio.library3.effects.resize(0x10000); }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library3.effects[1].kind = 8; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library3.effects[0].type = 0; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library3.effects[0].type = 8; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library3.effects[1].type = 1; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library3.effects[2].type = 2; }));
-    XSFLIB_CHECK(!refused([](ArchiveDescriptor& o) { o.jaudio.library3.effects[0].type = 1; }));
-    XSFLIB_CHECK(!refused([](ArchiveDescriptor& o) { o.jaudio.library3.effects[2].type = 0; }));
-    XSFLIB_CHECK(refused([](ArchiveDescriptor& o) { o.jaudio.library3.effects[1].finish = 1; }));
-    XSFLIB_CHECK(!refused([](ArchiveDescriptor& o) { o.jaudio.library3.effects[2].finish = 0; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.music_volume = 0.5f; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.effect_volume = 0.5f; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.category_volumes[2] = 1.2f; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.track_states.push_back({}); }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.sound_volumes.push_back({}); }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library3.sequence_index.clear(); }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library3.effect_level = 0x8000; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library3.cutscene_level = 0x8000; }));
+    XSFLIB_CHECK(!Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library3.effect_level = 0x7fff; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library3.music_volume = -1.0f; }));
+    XSFLIB_CHECK(Refuses(
+        d, [](ArchiveDescriptor& o) { o.jaudio.library3.pieces[0].volume = std::numeric_limits<float>::infinity(); }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library3.loads[1].set = 2; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library3.pieces.resize(0x10001); }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library3.parts.resize(0x10001); }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library3.effects.resize(0x10001); }));
+    XSFLIB_CHECK(!Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library3.effects.resize(0x10000); }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library3.effects[1].kind = 8; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library3.effects[0].type = 0; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library3.effects[0].type = 8; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library3.effects[1].type = 1; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library3.effects[2].type = 2; }));
+    XSFLIB_CHECK(!Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library3.effects[0].type = 1; }));
+    XSFLIB_CHECK(!Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library3.effects[2].type = 0; }));
+    XSFLIB_CHECK(Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library3.effects[1].finish = 1; }));
+    XSFLIB_CHECK(!Refuses(d, [](ArchiveDescriptor& o) { o.jaudio.library3.effects[2].finish = 0; }));
 
     // A player refuses a library past 3, and names the libraries that it supports.
     ArchiveDescriptor later = d;

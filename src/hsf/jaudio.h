@@ -34,6 +34,7 @@ inline jaudio::Settings JaudioEngineSettings(const JaudioSettings& j)
         const JaudioFxLine& line = j.fx_lines[i];
         settings.fx_lines[i] = {line.flags, line.subframes, line.buses, line.levels, line.filter};
     }
+
     for (const JaudioSoundVolume& sound : j.sound_volumes)
     {
         settings.sound_volumes[sound.sound] = static_cast<uint8_t>(sound.volume);

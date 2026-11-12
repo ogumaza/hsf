@@ -8,6 +8,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <map>
 #include <span>
 #include <string>
@@ -178,6 +179,7 @@ std::map<uint64_t, uint64_t> RelativePointers(const ntdlib::nx::Nso& main)
     {
         throw xsflib::FormatError("main's dynamic section has no DT_RELA or no DT_RELASZ");
     }
+
     if (rela_size % kRelocation != 0)
     {
         throw xsflib::FormatError("main's relocations don't take 24 bytes each");
@@ -389,6 +391,7 @@ std::array<JaudioFxLine, JaudioSettings::kFxLines> ReadFxLines(const ntdlib::nx:
             {
                 throw xsflib::FormatError(what + " name a bus past the table's end");
             }
+
             line.buses[k] = xsflib::LoadLe16(buses.data() + 2 * bus);
             line.levels[k] = xsflib::LoadLe16(settings.data() + 4 + 4 * k);
         }

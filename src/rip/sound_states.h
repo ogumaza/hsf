@@ -8,7 +8,6 @@
 
 #pragma once
 
-#include <cstdint>
 #include <vector>
 
 #include "ntdlib/rip/archive.h"
@@ -18,10 +17,6 @@
 
 namespace hsf::rip
 {
-
-// The volumes of the tracks in a state whose muted tracks are `muted`: 0 for each track whose bit is set, and 1 for
-// the rest.
-ntdlib::rip::TrackVolumes TrackVolumesOf(uint16_t muted);
 
 // The jobs that rip `selected` in the states that `rules` give their sounds (ntdlib::sar::StatesOf). A sound's job
 // takes its first state. The jobs of its later states follow it, under the sound's label, a space and the state's name.

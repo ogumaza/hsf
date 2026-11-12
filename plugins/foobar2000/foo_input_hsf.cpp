@@ -1,43 +1,25 @@
 // SPDX-License-Identifier: MIT
 
 // foo_input_hsf: foobar2000 input component for HSF (.hsf and .minihsf), from xsflib's input template
-// (xsflib/foobar2000/input.h). The template's comment says what the component does. This file gives HSF's traits: its
-// player, names, extensions, GUIDs and limits.
+// (xsflib/foobar2000/input.h). The template's comment says what the component does. This file defines the decoder's
+// name and GUIDs. plugin_traits.h defines HSF's other traits.
 //
-// The player core (src/hsf) plays the sound with ntdlib's model of the SDK's sound library, through ntdlib's model of
-// the console's audio renderer.
+// The player core (src/hsf) plays a rip on ntdlib's model of the sound library that the game uses: nn::atk with the
+// console's audio renderer, JAudio, or NW4R SND.
 //
 // Build: see plugins/foobar2000/README.md (clang-cl on Windows, or Apple Clang on macOS, with the foobar2000 SDK).
 
-#include <array>
-#include <cstdint>
-#include <optional>
-#include <string>
-#include <string_view>
-
 #include "xsflib/foobar2000/input.h"
-#include "xsflib/psf/psf.h"
 #include <SDK/foobar2000.h>
 
-#include "hsf/format.h"
-#include "hsf/player.h"
+#include "../plugin_traits.h"
 
 namespace
 {
 
-struct Traits
+struct Traits : hsf::PluginTraits
 {
-    using Player = hsf::Player;
-    using Set = hsf::LoadedSet;
-
-    static constexpr const char* kName = "HSF";
     static constexpr const char* kDecoderName = "HSF decoder";
-    static constexpr std::array<const char*, 2> kExtensions = {"hsf", "minihsf"};
-    static constexpr uint8_t kPsfVersion = hsf::kPsfVersionHsf;
-    static constexpr t_filesize kMaxFileSize = t_filesize{1} << 30; // largest file read into memory
-
-    // HSF has no tags that set how a file plays.
-    static constexpr std::array<const char*, 0> kPlaybackTags = {};
 
     // {B098EC3B-4AA0-48F8-8AFC-47F4A5B857EE}
     static constexpr GUID kInputGuid = {0xb098ec3b, 0x4aa0, 0x48f8, {0x8a, 0xfc, 0x47, 0xf4, 0xa5, 0xb8, 0x57, 0xee}};
@@ -49,12 +31,6 @@ struct Traits
     static constexpr GUID kEndlessGuid = {0x06179ada, 0x4d8b, 0x4652, {0xb9, 0x83, 0x23, 0xc4, 0x67, 0x82, 0xf3, 0xa7}};
     static constexpr GUID kRenderAheadGuid = {
         0x63821a5f, 0x89e7, 0x4535, {0xb6, 0xdc, 0xad, 0x3a, 0x31, 0x12, 0x0e, 0xad}};
-
-    static std::optional<std::string> LoadSet(const std::string& path, const xsflib::psf::FileReader& reader, Set& out,
-                                              std::string_view separators)
-    {
-        return hsf::LoadSet(path, reader, out, separators);
-    }
 };
 
 xsflib::foobar2000::Settings<Traits> g_settings;
@@ -64,9 +40,6 @@ input_singletrack_factory_t<xsflib::foobar2000::Input<Traits>> g_input_hsf_facto
 
 DECLARE_FILE_TYPE("HSF files", "*.HSF;*.MINIHSF");
 
-DECLARE_COMPONENT_VERSION("HSF Decoder", HSF_VERSION,
-                          "Plays HSF (Nintendo Switch sequenced music) rips with HSF's model of the SDK's sound "
-                          "library, through HSF's model of the console's audio renderer.\n\n"
-                          "MIT licence. Uses zlib.");
+DECLARE_COMPONENT_VERSION("HSF Decoder", hsf::PluginTraits::kVersion, hsf::PluginTraits::kAbout);
 
 VALIDATE_COMPONENT_FILENAME("foo_input_hsf.dll");

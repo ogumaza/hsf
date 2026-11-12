@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 
 // HSF player core: loads an .hsflib and .minihsf set and produces its audio. A set of version 1 plays on ntdlib's model
-// of the SDK's sound library (nn::atk) and of the console's audio renderer. A set of version 2 plays on HSF's model of
-// JAudio: of JAudio2 with library 1, of JAudio1 with library 2 and of the C JAudio with library 3. A set of version 3
-// plays on ntdlib's model of NW4R SND, on Skyward Sword HD's layer over the renderer. Portable C++ with no platform
+// of the SDK's sound library (nn::atk) and of the console's audio renderer. A set of version 2 plays on ntdlib's model
+// of JAudio: of JAudio2 with library 1, of JAudio1 with library 2 and of the C JAudio with library 3. A set of version
+// 3 plays on ntdlib's model of NW4R SND, on Skyward Sword HD's layer over the renderer. Portable C++ with no platform
 // audio or UI. The CLI renderer, the foobar2000 component and the XMPlay plugin use it.
 
 #pragma once

@@ -30,13 +30,6 @@ constexpr std::array<ProjectArchive, 2> kProjects = {{
 
 constexpr std::string_view kProjectPath = "_Resident/AddonAudioProject.fspj";
 
-// Whether `path` is `name` or ends in a folder's separator and `name`.
-bool Names(std::string_view path, std::string_view name)
-{
-    return path == name ||
-           (path.size() > name.size() && path.ends_with(name) && path[path.size() - name.size() - 1] == '/');
-}
-
 } // namespace
 
 std::optional<UserProcedureHandler> GameProcedures(const std::vector<std::string>& files, const ReadGameFile& read)
@@ -45,7 +38,7 @@ std::optional<UserProcedureHandler> GameProcedures(const std::vector<std::string
     for (const std::string& path : files)
     {
         std::vector<uint8_t> data;
-        if (!Names(path, kProjectPath) || !read(path, data))
+        if (!NamesFile(path, kProjectPath) || !read(path, data))
         {
             continue;
         }
@@ -74,7 +67,7 @@ std::optional<UserProcedureHandler> GameProcedures(const std::vector<std::string
             std::string("audio/userproc/conv/") + (number < 10 ? "0" : "") + std::to_string(number) + ".msgpack";
         const auto names_table = [&name](const std::string& path)
         {
-            return Names(path, name);
+            return NamesFile(path, name);
         };
         const auto table = std::find_if(files.begin(), files.end(), names_table);
         std::vector<uint8_t> data;

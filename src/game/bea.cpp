@@ -104,6 +104,7 @@ bool BeaArchive::Read(std::span<const uint8_t> data, const Asset& asset, std::ve
         out.assign(first, first + static_cast<std::ptrdiff_t>(asset.size));
         return true;
     }
+
     if (asset.compression != Asset::kZstandard || asset.size > (uint64_t{1} << 34))
     {
         return false;
@@ -125,6 +126,7 @@ bool BeaArchive::ReadHead(std::span<const uint8_t> data, const Asset& asset, std
         out.assign(first, first + static_cast<std::ptrdiff_t>(count));
         return true;
     }
+
     if (asset.compression != Asset::kZstandard)
     {
         return false;
@@ -150,6 +152,7 @@ bool BeaArchive::ReadHead(std::span<const uint8_t> data, const Asset& asset, std
             break;
         }
     }
+
     ZSTD_freeDStream(stream);
     out.resize(to.pos);
 

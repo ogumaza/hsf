@@ -15,6 +15,7 @@
 
 #include "ntdlib/jaudio/rarc.h"
 #include "ntdlib/jaudio1/engine.h"
+#include "ntdlib/yaz0.h"
 
 #include "hsf/format.h"
 #include "hsf/jaudio.h"
@@ -83,8 +84,8 @@ std::optional<std::string> LoadJaudio1Files(const ArchiveDescriptor& d, const Fi
     if (conductors != nullptr)
     {
         std::vector<uint8_t> decoded;
-        for (const ntdlib::jaudio::ArchiveFile& entry : ntdlib::jaudio::ReadRarc(
-                 ntdlib::jaudio::DecodeIfYaz0(*conductors, decoded), ntdlib::jaudio::kWideRarcEntrySize))
+        for (const ntdlib::jaudio::ArchiveFile& entry :
+             ntdlib::jaudio::ReadRarc(ntdlib::DecodeIfYaz0(*conductors, decoded), ntdlib::jaudio::kWideRarcEntrySize))
         {
             out->conductors.try_emplace(entry.name, entry.data.begin(), entry.data.end());
         }
@@ -97,13 +98,13 @@ std::optional<std::string> LoadJaudio1Files(const ArchiveDescriptor& d, const Fi
 inline std::optional<std::string> StartJaudio1Sequence(jaudio1::Engine& engine, const Jaudio1Files& files,
                                                        const JaudioLibrary2& library, uint32_t sound)
 {
-    if ((sound & 0xc0000000u) != JaudioLibrary2::kPieceSection)
+    if ((sound & kSoundSectionMask) != JaudioLibrary2::kPieceSection)
     {
         return engine.StartEffect(library.effect_sequence, library.effect_sequence_volume, sound);
     }
 
-    const uint32_t place = sound & 0xffff;
-    if ((sound & 0x3fff0000u) != 0 || place >= library.pieces.size())
+    const uint32_t place = sound & kSoundPlaceMask;
+    if ((sound & kSoundZeroMask) != 0 || place >= library.pieces.size())
     {
         return std::string("the descriptor has no such piece");
     }

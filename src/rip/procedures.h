@@ -6,18 +6,15 @@
 #pragma once
 
 #include <cstdint>
-#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "hsf/format.h"
+#include "rip/game_paths.h"
 
 namespace hsf::rip
 {
-
-// Reads one of the game's files by its path. Returns false if it can't.
-using ReadGameFile = std::function<bool(const std::string& path, std::vector<uint8_t>& data)>;
 
 // The handler of user procedures for a game's files, or nothing for another game. `files` lists the paths of the
 // game's files. The game is known by its project archive, _Resident/AddonAudioProject.fspj, by the archive's size and

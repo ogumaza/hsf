@@ -12,6 +12,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ntdlib/jac/engine.h"
@@ -37,6 +38,24 @@
 
 namespace hsf
 {
+namespace
+{
+
+// Runs a sub-frame of 2.5 ms on the engine of a JAudio2 or JAudio1 model: 80 stereo pairs of the DSP's output at
+// 32 kHz. AudioOut plays them as 120 pairs at 48 kHz. The first sub-frame gives 119. `model.silent` is set when the
+// sub-frame's output is silence.
+template <typename Model>
+bool RunSubframe(Model& model, std::vector<int16_t>& out)
+{
+    model.engine.RunSubframe();
+    const std::span<const int16_t> output = model.engine.Output();
+    model.silent = std::all_of(output.begin(), output.end(), [](int16_t sample) { return sample == 0; });
+    model.out.Push(output, out);
+
+    return true;
+}
+
+} // namespace
 
 struct Player::SourceTraits
 {
@@ -132,6 +151,7 @@ struct Player::SourceTraits
             {
                 return "an add-on archive: " + *err;
             }
+
             archives.addons.push_back(std::move(*added));
         }
 
@@ -163,6 +183,7 @@ struct Player::SourceTraits
         {
             model.tail.Frame(model.model.renderer.DeviceOutput());
         }
+
         ++model.frame;
 
         return model.script->Apply(*model.model.engine, model.frame);
@@ -308,16 +329,9 @@ struct Player::JaudioTraits
         return std::nullopt;
     }
 
-    // A sub-frame of 2.5 ms: 80 stereo pairs of the DSP's output at 32 kHz. AudioOut plays them as 120 pairs at 48
-    // kHz. The first sub-frame gives 119.
     static bool RunFrame(Model& model, std::vector<int16_t>& out)
     {
-        model.engine.RunSubframe();
-        const std::span<const int16_t> output = model.engine.Output();
-        model.silent = std::all_of(output.begin(), output.end(), [](int16_t sample) { return sample == 0; });
-        model.out.Push(output, out);
-
-        return true;
+        return RunSubframe(model, out);
     }
 
     // The sound has finished once the sequence has ended, no DSP channel plays and the output is silence. The FX lines
@@ -411,15 +425,9 @@ struct Player::Jaudio1Traits
         return std::nullopt;
     }
 
-    // A sub-frame of 2.5 ms, as for JAudio2.
     static bool RunFrame(Model& model, std::vector<int16_t>& out)
     {
-        model.engine.RunSubframe();
-        const std::span<const int16_t> output = model.engine.Output();
-        model.silent = std::all_of(output.begin(), output.end(), [](int16_t sample) { return sample == 0; });
-        model.out.Push(output, out);
-
-        return true;
+        return RunSubframe(model, out);
     }
 
     // The sound has finished once the sequence or the effect has ended, no DSP channel plays and the output is silence.
@@ -508,16 +516,13 @@ struct Player::JacTraits
         return std::nullopt;
     }
 
-    // The loudest sample of a silent sub-frame. The FX lines' feedback can hold quieter values for ever.
-    static constexpr int kSilence = 8;
-
     // A sub-frame of 2.5 ms, as for JAudio2: Hagi's DSP renders it, then the CPU side and the game's code run.
     static bool RunFrame(Model& model, std::vector<int16_t>& out)
     {
         model.engine.RunFrame();
         const std::span<const int16_t> output = model.engine.Output();
-        model.silent = std::all_of(output.begin(), output.end(),
-                                   [](int16_t sample) { return sample <= kSilence && sample >= -kSilence; });
+        // The FX lines' feedback can hold quieter values than xsflib's level of silence for ever.
+        model.silent = !xsflib::rip::Audible(output);
         model.out.Push(output, out);
 
         return true;
@@ -748,10 +753,12 @@ bool Player::RunStep()
     {
         return nw4r_->RunFrame(output_);
     }
+
     if (Jac())
     {
         return jac_->RunFrame(output_);
     }
+
     if (Jaudio1())
     {
         return jaudio1_->RunFrame(output_);
@@ -766,10 +773,12 @@ bool Player::Finished() const
     {
         return !nw4r_->Busy();
     }
+
     if (Jac())
     {
         return !jac_->Busy();
     }
+
     if (Jaudio1())
     {
         return !jaudio1_->Busy();

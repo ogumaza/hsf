@@ -9,7 +9,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <map>
 #include <optional>
 #include <regex>
@@ -23,12 +22,14 @@
 
 #include "ntdlib/jac/channel.h"
 #include "ntdlib/jac/engine.h"
-#include "ntdlib/jaudio2/output.h"
 #include "xsflib/ascii.h"
 #include "xsflib/rip/length.h"
+#include "xsflib/text.h"
 
 #include "hsf/jac.h"
 #include "hsf/jaudio_models.h"
+#include "rip/game_paths.h"
+#include "rip/jaudio_length.h"
 
 namespace hsf::rip
 {
@@ -127,6 +128,105 @@ constexpr uint8_t kLimited = 0x10;
 constexpr uint8_t kRefuses = 0x20;
 constexpr uint8_t kLimit = 0xf;
 
+// The priority of the action in row `row` of the actions' table.
+uint8_t PriorityOf(const EventActions& actions, std::size_t row)
+{
+    return actions.actions[row].priority;
+}
+
+// The slot that Jac_PlayEventAction picks for an action whose group has a limit (kLimited): the first free slot, but
+// the slot with the lowest priority below the action's once the group reaches its limit or no slot is free. Slot 0 if
+// no slot has a lower priority. Nothing if the action refuses that slot.
+std::optional<std::size_t> LimitedSlot(const EventActions& actions, const std::array<Slot, kSlots>& slots,
+                                       const EventAction& status)
+{
+    std::size_t target = 0;
+    while (target < kSlots && slots[target].row != 0)
+    {
+        ++target;
+    }
+
+    const std::size_t limit = (status.flags & kLimit) == 0 ? kSlots : status.flags & kLimit;
+    std::size_t playing = 0;
+    std::size_t lowest = 0;
+    uint8_t lowest_priority = status.priority;
+    for (std::size_t i = 0; i < kSlots; ++i)
+    {
+        if (slots[i].row == 0)
+        {
+            continue;
+        }
+
+        playing += slots[i].group == status.group ? 1 : 0;
+        if (lowest_priority > PriorityOf(actions, slots[i].row))
+        {
+            lowest = i;
+            lowest_priority = PriorityOf(actions, slots[i].row);
+        }
+    }
+
+    if (playing >= limit || target == kSlots)
+    {
+        if (status.flags & kRefuses)
+        {
+            return std::nullopt;
+        }
+
+        target = lowest;
+    }
+
+    return target;
+}
+
+// The slot that Jac_PlayEventAction picks for an action whose group has no limit: the first slot that an action of the
+// group holds, or else the last free slot. kSlots if there's neither. Nothing if the action refuses the slot of its
+// group.
+std::optional<std::size_t> GroupSlot(const EventActions& actions, const std::array<Slot, kSlots>& slots,
+                                     const EventAction& status)
+{
+    std::size_t last_free = kSlots;
+    for (std::size_t i = 0; i < kSlots; ++i)
+    {
+        if (slots[i].row == 0)
+        {
+            last_free = i;
+            continue;
+        }
+
+        if (slots[i].group != status.group)
+        {
+            continue;
+        }
+
+        if ((status.flags & kRefuses) && status.priority <= PriorityOf(actions, slots[i].row))
+        {
+            return std::nullopt;
+        }
+
+        return i;
+    }
+
+    return last_free;
+}
+
+// The first slot whose action has the lowest priority, if that priority is no higher than the action's. A free slot
+// counts with row 0's priority. The game does the same. kSlots if no slot qualifies.
+std::size_t LowestSlot(const EventActions& actions, const std::array<Slot, kSlots>& slots, const EventAction& status)
+{
+    std::size_t target = kSlots;
+    uint32_t lowest_priority = status.priority + 1u;
+    for (std::size_t i = 0; i < kSlots; ++i)
+    {
+        if (PriorityOf(actions, slots[i].row) < lowest_priority)
+        {
+            lowest_priority = PriorityOf(actions, slots[i].row);
+            target = i;
+        }
+    }
+
+    return target;
+}
+
 // The value that Jac_PlayEventAction sends to an event's track for `action` of an event of `type` whose slots are
 // `slots`, or nothing if it refuses the action. The value holds the slot in bits 12 and up and the action's command
 // below them. It marks the slot as the action's. Every slot's action starts in the same frame.
@@ -140,91 +240,17 @@ std::optional<uint16_t> PlayAction(const EventActions& actions, std::array<Slot,
     }
 
     const EventAction& status = actions.actions[row];
-    const auto priority = [&actions](std::size_t r)
+    const std::optional<std::size_t> slot =
+        status.flags & kLimited ? LimitedSlot(actions, slots, status) : GroupSlot(actions, slots, status);
+    if (!slot)
     {
-        return actions.actions[r].priority;
-    };
-    std::size_t target = 0;
-    while (target < kSlots && slots[target].row != 0)
-    {
-        ++target;
+        return std::nullopt;
     }
 
-    if (status.flags & kLimited)
-    {
-        const std::size_t limit = (status.flags & kLimit) == 0 ? kSlots : status.flags & kLimit;
-        std::size_t playing = 0;
-        std::size_t lowest = 0;
-        uint8_t lowest_priority = status.priority;
-        for (std::size_t i = 0; i < kSlots; ++i)
-        {
-            if (slots[i].row == 0)
-            {
-                continue;
-            }
-
-            playing += slots[i].group == status.group ? 1 : 0;
-            if (lowest_priority > priority(slots[i].row))
-            {
-                lowest = i;
-                lowest_priority = priority(slots[i].row);
-            }
-        }
-
-        if (playing >= limit || target == kSlots)
-        {
-            if (status.flags & kRefuses)
-            {
-                return std::nullopt;
-            }
-            target = lowest;
-        }
-    }
-    else
-    {
-        std::size_t last_free = kSlots;
-        std::size_t i = 0;
-        for (; i < kSlots; ++i)
-        {
-            if (slots[i].row == 0)
-            {
-                last_free = i;
-                continue;
-            }
-            if (slots[i].group != status.group)
-            {
-                continue;
-            }
-            if ((status.flags & kRefuses) && status.priority <= priority(slots[i].row))
-            {
-                return std::nullopt;
-            }
-
-            target = i;
-            break;
-        }
-
-        if (i == kSlots)
-        {
-            target = last_free;
-        }
-    }
-
+    const std::size_t target = *slot != kSlots ? *slot : LowestSlot(actions, slots, status);
     if (target == kSlots)
     {
-        uint32_t lowest_priority = status.priority + 1u;
-        for (std::size_t i = 0; i < kSlots; ++i)
-        {
-            if (priority(slots[i].row) < lowest_priority)
-            {
-                lowest_priority = priority(slots[i].row);
-                target = i;
-            }
-        }
-        if (target == kSlots)
-        {
-            return std::nullopt;
-        }
+        return std::nullopt;
     }
 
     slots[target] = {row, status.group};
@@ -248,6 +274,7 @@ std::optional<JacEffect> EventEffect(const EventActions& actions, uint8_t type, 
             effect.value = *first;
             return effect;
         }
+
         if (first)
         {
             effect.first = *first;
@@ -275,40 +302,11 @@ JacEffect MakeEffect(uint8_t kind, uint16_t value, uint16_t first = JacEffect::k
     return effect;
 }
 
-std::string Hex(uint16_t value)
-{
-    char text[8];
-    std::snprintf(text, sizeof(text), "0x%02x", static_cast<unsigned>(value));
-    return text;
-}
-
 std::string Decimal(unsigned value, int digits)
 {
     char text[16];
     std::snprintf(text, sizeof(text), "%0*u", digits, value);
     return text;
-}
-
-std::string WithoutExtension(const std::string& name)
-{
-    return name.substr(0, name.rfind('.'));
-}
-
-std::string FileName(const std::string& path)
-{
-    const std::size_t slash = path.rfind('/');
-    return slash == std::string::npos ? path : path.substr(slash + 1);
-}
-
-std::string Folder(const std::string& path)
-{
-    const std::size_t slash = path.rfind('/');
-    return slash == std::string::npos ? std::string() : path.substr(0, slash);
-}
-
-std::string InFolder(const std::string& folder, std::string_view name)
-{
-    return folder.empty() ? std::string(name) : folder + "/" + std::string(name);
 }
 
 // Whether the bank file's systems hold `scene`: a system at the scene's place with a group at the scene's.
@@ -318,93 +316,290 @@ bool HoldsScene(const std::vector<ntdlib::jaudio::WaveSystem>& systems, JacScene
                        { return system.number == scene.system && scene.scene < system.groups.size(); });
 }
 
-// The model of the C JAudio for the length analysis, as JAudio1's is (jaudio1_rip.cpp's Jaudio1LengthModel), with
-// JAudio2's rules. A frame's output is what AudioOut plays of the frame. The FX lines ring while their delays hold a
-// sample louder than kSilentSample (jac::Engine::FxRinging), and the output rings while it holds such a sample. The FX
-// lines' feedback can hold a few quieter values for ever. Every loop of the main track counts, in a subroutine or a
-// counted loop too. Such a jump counts by the levels below it: their places and counts (jac::LoopJump). Its target
-// doesn't count. A random branch can send an endless loop in a subroutine back to either of two places. Each set of
-// levels takes an ID above every target, from kInnerLoops on. A change of the levels therefore starts the count again.
-constexpr int kSilentSample = 8;
-constexpr uint32_t kInnerLoops = 0x80000000;
+// Adds the job of `id` to `selection`, at the next index.
+void AddJob(JacSelection& selection, const std::string& label, uint32_t id)
+{
+    JaudioJob job;
+    job.index = static_cast<uint32_t>(selection.jobs.size());
+    job.label = label;
+    job.id = id;
+    selection.jobs.push_back(std::move(job));
+}
 
-class JacLengthModel
+// Adds the pieces of music to `selection` (see SelectJacSounds). Returns the name of the cutscenes' music file without
+// its extension, or "demobgm" if the archive has no such file.
+std::string SelectPieces(const JacGameCode& code, const std::vector<ntdlib::jaudio::ArchiveFile>& sequences,
+                         const std::vector<ntdlib::jaudio::WaveSystem>& systems, const std::regex& only,
+                         JacSelection& selection)
+{
+    JaudioLibrary3& library = selection.library;
+    const uint16_t cutscene_music = library.startup_files[2];
+    std::string cutscene_name = "demobgm";
+    for (const ntdlib::jaudio::ArchiveFile& file : sequences)
+    {
+        if (file.id == cutscene_music)
+        {
+            cutscene_name = WithoutExtension(file.name);
+        }
+
+        if (file.id < kFirstPieceFile || file.id == cutscene_music || file.data.empty())
+        {
+            continue;
+        }
+
+        const std::string label = WithoutExtension(file.name);
+        if (file.id - kFirstPieceFile >= static_cast<int>(kPieces))
+        {
+            selection.warnings.push_back(label + " has no settings in the game's code; it's left out");
+            continue;
+        }
+
+        const JacScene scene{file.id, 0};
+        if (!HoldsScene(systems, scene))
+        {
+            selection.warnings.push_back(label + "'s wave system " + std::to_string(file.id) +
+                                         " isn't in the bank file; the piece is left out");
+            continue;
+        }
+
+        if (!std::regex_search(label, only))
+        {
+            continue;
+        }
+
+        JacPiece piece;
+        piece.file = file.id;
+        piece.playing_tracks = code.music.playing_tracks[file.id - kFirstPieceFile];
+        piece.volume = code.music.track_volumes[file.id - kFirstPieceFile];
+        piece.scene = scene;
+        AddJob(selection, label, JaudioLibrary3::kPieceSection | static_cast<uint32_t>(library.pieces.size()));
+        library.pieces.push_back(piece);
+    }
+
+    return cutscene_name;
+}
+
+// Adds the pieces of the cutscenes' music to `selection`. Each label starts with `cutscene_name`. The cutscenes' table
+// gives each cutscene's piece in the low 4 bits of its music. Bit 7 picks a stream instead, and bit 6 no music.
+void SelectParts(const JacGameCode& code, const std::string& cutscene_name,
+                 const std::vector<ntdlib::jaudio::WaveSystem>& systems, const std::regex& only,
+                 JacSelection& selection)
+{
+    JaudioLibrary3& library = selection.library;
+
+    std::set<uint16_t> parts = {kShipPart};
+    for (const Cutscene& cutscene : code.cutscenes)
+    {
+        if ((cutscene.music & 0xc0) == 0 && (cutscene.music & 0xf) != 0)
+        {
+            parts.insert(cutscene.music & 0xf);
+        }
+    }
+
+    for (const uint16_t number : parts)
+    {
+        const std::string label = cutscene_name + "-" + std::to_string(number);
+        JacPart part;
+        part.number = number;
+        if (number == kDiaryPart)
+        {
+            part.scene = kDiaryScene;
+        }
+        else if (number >= 1 && number <= kParts && (kPartsWithScenes >> (number - 1) & 1))
+        {
+            part.scene = {kPartSystem, static_cast<uint16_t>(code.music.part_scenes[number - 1])};
+        }
+        else
+        {
+            selection.warnings.push_back(label + " has no scene in the game's code; it's left out");
+            continue;
+        }
+
+        if (!HoldsScene(systems, part.scene))
+        {
+            selection.warnings.push_back(label + "'s scene isn't in the bank file; the piece is left out");
+            continue;
+        }
+
+        if (!std::regex_search(label, only))
+        {
+            continue;
+        }
+
+        AddJob(selection, label, JaudioLibrary3::kPartSection | static_cast<uint32_t>(library.parts.size()));
+        library.parts.push_back(part);
+    }
+}
+
+// Adds effects whose labels match a pattern to a selection. An effect that another one plays the same way is left out.
+class EffectChoice
 {
 public:
-    explicit JacLengthModel(jac::Engine& engine) : engine_(engine)
+    EffectChoice(JacSelection& selection, const std::regex& only) : selection_(selection), only_(only)
+    {
+    }
+
+    // Adds `effect` and its later events, unless the label doesn't match or an earlier effect plays the same way.
+    void Add(const std::string& label, const JacEffect& effect, std::vector<JacLaterEvent> later_events = {})
+    {
+        if (!taken_.insert({effect.kind, effect.type, effect.value, effect.first}).second ||
+            !std::regex_search(label, only_))
+        {
+            return;
+        }
+
+        JaudioLibrary3& library = selection_.library;
+        AddJob(selection_, label, JaudioLibrary3::kEffectSection | static_cast<uint32_t>(library.effects.size()));
+        library.effects.push_back(effect);
+        selection_.later_events.push_back(std::move(later_events));
+    }
+
+private:
+    JacSelection& selection_;
+    const std::regex& only_;
+    std::set<std::tuple<uint8_t, uint8_t, uint16_t, uint16_t>> taken_; // the kind, type, value and first of each effect
+};
+
+// The system's effect `value` as the game plays it, or nothing for one that plays no effect.
+std::optional<JacEffect> SystemEffect(uint16_t value)
+{
+    switch (value)
+    {
+    case kContainerFilled:
+        return MakeEffect(JacEffect::kCaptain, kContainerSound);
+    case kShipPartEffect:
+    case kHighScore:
+    case kResumeAll:
+    case kPlayerDownPause:
+        return std::nullopt;
+    case kPauseAll:
+        return MakeEffect(JacEffect::kSystem, kPauseSound);
+    default:
+        return MakeEffect(JacEffect::kSystem, value);
+    }
+}
+
+// Whether `row` of the effects' table has a type that TableEffect reads.
+bool KnownType(const Effect& row)
+{
+    return row.event_type == kSystemType || row.event_type == kCaptainType ||
+           (row.event_type >= 1 && row.event_type <= JacEffect::kEventTypes);
+}
+
+// The effect of `row` of the effects' table, of a known type, as the game plays it. Nothing for a row that plays no
+// effect.
+std::optional<JacEffect> TableEffect(const Effect& row, const EventActions& actions)
+{
+    const auto value = static_cast<uint16_t>(row.jaudio);
+    if (row.event_type == kSystemType)
+    {
+        return SystemEffect(value);
+    }
+
+    if (row.event_type == kCaptainType)
+    {
+        if (row.jaudio & kPikminEffect)
+        {
+            return MakeEffect(JacEffect::kPikmin, value & 0x7fff);
+        }
+
+        return MakeEffect(JacEffect::kCaptain, value, value == kPluck ? kPluckCry : JacEffect::kNone);
+    }
+
+    return EventEffect(actions, static_cast<uint8_t>(row.event_type), value);
+}
+
+// Adds the effects that the game's code plays with numbers of its own, then the formation, the crowds and a footstep.
+void AddCodeEffects(EffectChoice& effects)
+{
+    for (const uint16_t value : kCodeSystemEffects)
+    {
+        effects.Add("system-" + xsflib::Hex(value, 2), MakeEffect(JacEffect::kSystem, value));
+    }
+
+    for (const uint16_t value : kCodeCaptainEffects)
+    {
+        effects.Add("captain-" + xsflib::Hex(value, 2), MakeEffect(JacEffect::kCaptain, value));
+    }
+
+    for (uint16_t value = kFirstCodeCry; value <= kLastCodeCry; ++value)
+    {
+        effects.Add("pikmin-" + xsflib::Hex(value, 2), MakeEffect(JacEffect::kPikmin, value));
+    }
+
+    effects.Add("formation", MakeEffect(JacEffect::kFormation, kFullDistance));
+    for (uint16_t size = 1; size <= kCrowdSizes; ++size)
+    {
+        effects.Add("crowd-" + Decimal(size, 2), MakeEffect(JacEffect::kCrowd, size));
+    }
+
+    effects.Add("footstep", MakeEffect(JacEffect::kWalk, kFootstep));
+}
+
+// Adds each cutscene's sounds, in the order of their first events. A sound's finish counts the game's frames from the
+// sound's first event to the cutscene's finish (FramesToFinish). Its later events are the events after that one that
+// queue a value.
+void AddCutsceneEffects(const std::vector<Cutscene>& cutscenes, EffectChoice& effects)
+{
+    for (const Cutscene& cutscene : cutscenes)
+    {
+        for (std::size_t i = 0; i < cutscene.events.size(); ++i)
+        {
+            const CutsceneEvent& event = cutscene.events[i];
+            if (event.value < 0)
+            {
+                continue;
+            }
+
+            JacEffect effect = MakeEffect(JacEffect::kCutscene, static_cast<uint16_t>(event.value),
+                                          static_cast<uint16_t>(cutscene.number));
+            effect.type = WritesPortOne(cutscene) ? JacEffect::kCutscenePart : 0;
+            effect.finish = FramesToFinish(cutscene, i);
+            std::vector<JacLaterEvent> later_events;
+            for (std::size_t j = i + 1; j < cutscene.events.size(); ++j)
+            {
+                if (cutscene.events[j].value >= 0)
+                {
+                    later_events.push_back(
+                        {FramesBetween(cutscene, i, j), static_cast<uint16_t>(cutscene.events[j].value)});
+                }
+            }
+
+            effects.Add(
+                "cutscene-" + Decimal(cutscene.number, 3) + "-" + Decimal(static_cast<unsigned>(event.value), 2),
+                effect, std::move(later_events));
+        }
+    }
+}
+
+// The ID of the first set of levels below a jump (JacLengthModel::InnerLoop), above every target.
+constexpr uint32_t kInnerLoops = 0x80000000;
+
+// The model of the C JAudio for the length analysis (JaudioModelBase), with JAudio2's rules. A frame's output is what
+// AudioOut plays of the frame. The FX lines ring while their delays hold a sample louder than xsflib's level of silence
+// (jac::Engine::FxRinging), and the output rings while it has sound. The FX lines' feedback can hold a few quieter
+// values for ever. Every loop of the main track counts, in a subroutine or a counted loop too. Such a jump counts by
+// the levels below it: their places and counts (jac::LoopJump). Its target doesn't count. A random branch can send an
+// endless loop in a subroutine back to either of two places. Each set of levels takes an ID above every target, from
+// kInnerLoops on. A change of the levels therefore starts the count again.
+class JacLengthModel : public JaudioModelBase<jac::Engine, jac::Channels::kDspChannels, jac::kNone>
+{
+public:
+    explicit JacLengthModel(jac::Engine& engine) : JaudioModelBase(engine)
     {
     }
 
     bool RunFrame()
     {
         engine_.RunFrame();
-        output_.clear();
-        out_.Push(engine_.Output(), output_);
+        TakeOutput();
 
         return true;
     }
 
-    bool Sounded() const
-    {
-        return xsflib::rip::Audible(output_);
-    }
-
     bool Ringing() const
     {
-        return std::any_of(output_.begin(), output_.end(),
-                           [](int16_t sample) { return std::abs(int{sample}) > kSilentSample; }) ||
-               engine_.FxRinging();
-    }
-
-    std::size_t VoiceCount()
-    {
-        return jac::Channels::kDspChannels;
-    }
-
-    xsflib::rip::VoicePlace Voice(std::size_t index)
-    {
-        const jac::Engine::WavePlace place = engine_.DspChannelPlace(static_cast<uint32_t>(index));
-        return {place.playing, place.loops, place.position};
-    }
-
-    bool Active() const
-    {
-        return engine_.Playing();
-    }
-
-    bool Settled() const
-    {
-        return engine_.Held() && engine_.Waiting();
-    }
-
-    bool Stuck() const
-    {
-        return false;
-    }
-
-    bool Moving() const
-    {
-        return engine_.Moving();
-    }
-
-    uint64_t ChangedAt() const
-    {
-        return 0;
-    }
-
-    bool Busy() const
-    {
-        return engine_.Busy();
-    }
-
-    bool ChannelsChanging() const
-    {
-        return !engine_.Held();
-    }
-
-    int ActiveChannels() const
-    {
-        return engine_.ActiveChannels();
+        return Sounded() || engine_.FxRinging();
     }
 
     template <typename Hook>
@@ -438,36 +633,73 @@ private:
         return kInnerLoops + static_cast<uint32_t>(found - levels_.begin());
     }
 
-    // The main track, as JAudio2's model picks it. A track that waits for ever doesn't count.
-    uint32_t MainTrack() const
-    {
-        uint32_t first = jac::kNone;
-        for (const uint32_t track : engine_.TreeOrder())
-        {
-            if (!engine_.PlayedNotes(track) || engine_.WaitsForEver(track))
-            {
-                continue;
-            }
-
-            if (!engine_.QuietPass(track))
-            {
-                return track;
-            }
-
-            if (first == jac::kNone)
-            {
-                first = track;
-            }
-        }
-
-        return first;
-    }
-
-    jac::Engine& engine_;
-    jaudio::AudioOut out_;
-    std::vector<int16_t> output_;
     std::vector<jac::LoopJump> levels_; // the levels below the inner loops, by their IDs from kInnerLoops
 };
+
+// The later events of the sound with ID `sound`, as the model queues them. An effect's ID holds no bits above its
+// place.
+std::vector<jac::DemoEvent> DemoEventsOf(const std::vector<std::vector<JacLaterEvent>>& later_events, uint32_t sound)
+{
+    std::vector<jac::DemoEvent> events;
+    if (sound < later_events.size())
+    {
+        for (const JacLaterEvent& event : later_events[sound])
+        {
+            events.push_back({event.frames, event.value});
+        }
+    }
+
+    return events;
+}
+
+// Measures the sound with ID `sound` with the events `queued` unheard. The count of notes without a wave goes to
+// `missing_bank_notes`.
+std::optional<Timing> MeasureJacSound(const jac::SoundFiles& files, const JaudioSettings& jaudio, uint32_t sound,
+                                      const std::vector<jac::DemoEvent>& queued, uint32_t& missing_bank_notes)
+{
+    const auto run = [&]() -> std::optional<Timing>
+    {
+        jac::Engine engine(files, JacEngineSettings(jaudio));
+        if (StartJacSound(engine, jaudio.library3, sound))
+        {
+            return std::nullopt;
+        }
+
+        engine.QueueDemoEvents(queued, true);
+
+        JacLengthModel model(engine);
+        const std::optional<Timing> timing = xsflib::rip::MeasureLength(model, JaudioLengthRules());
+        missing_bank_notes = engine.MissingBankNotes();
+
+        return timing;
+    };
+
+    return xsflib::rip::TryMeasure(run);
+}
+
+// The first frame before `end_frame` in which the sound with ID `sound` plays differently with the events `queued`
+// unheard and without them. Two engines play the sound side by side. `end_frame` if they agree up to there.
+uint64_t FirstDifferentFrame(const jac::SoundFiles& files, const JaudioSettings& jaudio, uint32_t sound,
+                             const std::vector<jac::DemoEvent>& queued, uint64_t end_frame)
+{
+    jac::Engine game(files, JacEngineSettings(jaudio));
+    jac::Engine rip(files, JacEngineSettings(jaudio));
+    StartJacSound(game, jaudio.library3, sound);
+    StartJacSound(rip, jaudio.library3, sound);
+    game.QueueDemoEvents(queued, true);
+    uint64_t frame = 0;
+    for (; frame < end_frame; ++frame)
+    {
+        game.RunFrame();
+        rip.RunFrame();
+        if (!std::ranges::equal(game.Output(), rip.Output()))
+        {
+            break;
+        }
+    }
+
+    return frame;
+}
 
 } // namespace
 
@@ -476,8 +708,8 @@ std::optional<JacPaths> FindJacFiles(const std::vector<std::string>& files)
     std::optional<JacPaths> paths;
     for (const std::string& path : files)
     {
-        const std::string folder = Folder(path);
-        if (xsflib::AsciiLower(FileName(path)) != "pikibank.bx" || xsflib::AsciiLower(FileName(folder)) != "banks")
+        const std::string folder = FolderOf(path);
+        if (xsflib::AsciiLower(FileNameOf(path)) != "pikibank.bx" || xsflib::AsciiLower(FileNameOf(folder)) != "banks")
         {
             continue;
         }
@@ -485,7 +717,7 @@ std::optional<JacPaths> FindJacFiles(const std::vector<std::string>& files)
         paths.emplace();
         paths->bank = path;
         paths->waves = folder;
-        paths->sequences = InFolder(Folder(folder), "Seqs/pikiseq.arc");
+        paths->sequences = InFolder(FolderOf(folder), "Seqs/pikiseq.arc");
         const std::string sequences = xsflib::AsciiLower(paths->sequences);
         for (const std::string& other : files)
         {
@@ -504,7 +736,7 @@ std::optional<JacPaths> FindJacFiles(const std::vector<std::string>& files)
 
     for (const std::string& path : files)
     {
-        if (xsflib::AsciiLower(FileName(path)) == "main" && xsflib::AsciiLower(FileName(Folder(path))) == "exefs")
+        if (xsflib::AsciiLower(FileNameOf(path)) == "main" && xsflib::AsciiLower(FileNameOf(FolderOf(path))) == "exefs")
         {
             paths->main = path;
             break;
@@ -569,227 +801,33 @@ JacSelection SelectJacSounds(const JacGameCode& code, const std::vector<ntdlib::
     library.music_volume = code.music.music_volume;
     library.loads.assign(kLoads.begin(), kLoads.end());
 
-    const auto add_job = [&selection](const std::string& label, uint32_t id)
-    {
-        JaudioJob job;
-        job.index = static_cast<uint32_t>(selection.jobs.size());
-        job.label = label;
-        job.id = id;
-        selection.jobs.push_back(std::move(job));
-    };
-
-    // The pieces of music.
-    const uint16_t cutscene_music = library.startup_files[2];
-    std::string cutscene_name = "demobgm";
-    for (const ntdlib::jaudio::ArchiveFile& file : sequences)
-    {
-        if (file.id == cutscene_music)
-        {
-            cutscene_name = WithoutExtension(file.name);
-        }
-        if (file.id < kFirstPieceFile || file.id == cutscene_music || file.data.empty())
-        {
-            continue;
-        }
-
-        const std::string label = WithoutExtension(file.name);
-        if (file.id - kFirstPieceFile >= static_cast<int>(kPieces))
-        {
-            selection.warnings.push_back(label + " has no settings in the game's code; it's left out");
-            continue;
-        }
-
-        const JacScene scene{file.id, 0};
-        if (!HoldsScene(systems, scene))
-        {
-            selection.warnings.push_back(label + "'s wave system " + std::to_string(file.id) +
-                                         " isn't in the bank file; the piece is left out");
-            continue;
-        }
-        if (!std::regex_search(label, only))
-        {
-            continue;
-        }
-
-        JacPiece piece;
-        piece.file = file.id;
-        piece.playing_tracks = code.music.playing_tracks[file.id - kFirstPieceFile];
-        piece.volume = code.music.track_volumes[file.id - kFirstPieceFile];
-        piece.scene = scene;
-        add_job(label, JaudioLibrary3::kPieceSection | static_cast<uint32_t>(library.pieces.size()));
-        library.pieces.push_back(piece);
-    }
-
-    // The pieces of the cutscenes' music. The cutscenes' table gives each cutscene's piece in the low 4 bits of its
-    // music. Bit 7 picks a stream instead, and bit 6 no music.
-    std::set<uint16_t> parts = {kShipPart};
-    for (const Cutscene& cutscene : code.cutscenes)
-    {
-        if ((cutscene.music & 0xc0) == 0 && (cutscene.music & 0xf) != 0)
-        {
-            parts.insert(cutscene.music & 0xf);
-        }
-    }
-    for (const uint16_t number : parts)
-    {
-        const std::string label = cutscene_name + "-" + std::to_string(number);
-        JacPart part;
-        part.number = number;
-        if (number == kDiaryPart)
-        {
-            part.scene = kDiaryScene;
-        }
-        else if (number >= 1 && number <= kParts && (kPartsWithScenes >> (number - 1) & 1))
-        {
-            part.scene = {kPartSystem, static_cast<uint16_t>(code.music.part_scenes[number - 1])};
-        }
-        else
-        {
-            selection.warnings.push_back(label + " has no scene in the game's code; it's left out");
-            continue;
-        }
-
-        if (!HoldsScene(systems, part.scene))
-        {
-            selection.warnings.push_back(label + "'s scene isn't in the bank file; the piece is left out");
-            continue;
-        }
-        if (!std::regex_search(label, only))
-        {
-            continue;
-        }
-
-        add_job(label, JaudioLibrary3::kPartSection | static_cast<uint32_t>(library.parts.size()));
-        library.parts.push_back(part);
-    }
-
+    const std::string cutscene_name = SelectPieces(code, sequences, systems, only, selection);
+    SelectParts(code, cutscene_name, systems, only, selection);
     if (bgm)
     {
         return selection;
     }
 
-    // The effects. An effect that another one plays the same way is left out.
-    std::set<std::tuple<uint8_t, uint8_t, uint16_t, uint16_t>> taken;
-    const auto add_effect =
-        [&](const std::string& label, const JacEffect& effect, std::vector<JacLaterEvent> later_events = {})
-    {
-        if (!taken.insert({effect.kind, effect.type, effect.value, effect.first}).second ||
-            !std::regex_search(label, only))
-        {
-            return;
-        }
-
-        add_job(label, JaudioLibrary3::kEffectSection | static_cast<uint32_t>(library.effects.size()));
-        library.effects.push_back(effect);
-        selection.later_events.push_back(std::move(later_events));
-    };
-
-    // The system's effect `value` as the game plays it, or nothing for one that plays no effect.
-    const auto system_effect = [](uint16_t value) -> std::optional<JacEffect>
-    {
-        switch (value)
-        {
-        case kContainerFilled:
-            return MakeEffect(JacEffect::kCaptain, kContainerSound);
-        case kShipPartEffect:
-        case kHighScore:
-        case kResumeAll:
-        case kPlayerDownPause:
-            return std::nullopt;
-        case kPauseAll:
-            return MakeEffect(JacEffect::kSystem, kPauseSound);
-        default:
-            return MakeEffect(JacEffect::kSystem, value);
-        }
-    };
-
+    // The effects of the effects' table.
+    EffectChoice effects(selection, only);
     for (const Effect& row : code.effects)
     {
-        const auto value = static_cast<uint16_t>(row.jaudio);
-        std::optional<JacEffect> effect;
-        if (row.event_type == kSystemType)
-        {
-            effect = system_effect(value);
-        }
-        else if (row.event_type == kCaptainType)
-        {
-            if (row.jaudio & kPikminEffect)
-            {
-                effect = MakeEffect(JacEffect::kPikmin, value & 0x7fff);
-            }
-            else
-            {
-                effect = MakeEffect(JacEffect::kCaptain, value, value == kPluck ? kPluckCry : JacEffect::kNone);
-            }
-        }
-        else if (row.event_type >= 1 && row.event_type <= JacEffect::kEventTypes)
-        {
-            effect = EventEffect(code.actions, static_cast<uint8_t>(row.event_type), value);
-        }
-        else
+        if (!KnownType(row))
         {
             selection.warnings.push_back(row.name + " has an unknown type, " + std::to_string(row.event_type) +
                                          "; it's left out");
             continue;
         }
 
+        const std::optional<JacEffect> effect = TableEffect(row, code.actions);
         if (effect)
         {
-            add_effect(row.name, *effect);
+            effects.Add(row.name, *effect);
         }
     }
 
-    for (const uint16_t value : kCodeSystemEffects)
-    {
-        add_effect("system-" + Hex(value), MakeEffect(JacEffect::kSystem, value));
-    }
-    for (const uint16_t value : kCodeCaptainEffects)
-    {
-        add_effect("captain-" + Hex(value), MakeEffect(JacEffect::kCaptain, value));
-    }
-    for (uint16_t value = kFirstCodeCry; value <= kLastCodeCry; ++value)
-    {
-        add_effect("pikmin-" + Hex(value), MakeEffect(JacEffect::kPikmin, value));
-    }
-
-    add_effect("formation", MakeEffect(JacEffect::kFormation, kFullDistance));
-    for (uint16_t size = 1; size <= kCrowdSizes; ++size)
-    {
-        add_effect("crowd-" + Decimal(size, 2), MakeEffect(JacEffect::kCrowd, size));
-    }
-    add_effect("footstep", MakeEffect(JacEffect::kWalk, kFootstep));
-
-    // Each cutscene's sounds, in the order of their first events. A sound's finish counts the game's frames from the
-    // sound's first event to the cutscene's finish (FramesToFinish). Its later events are the events after that one
-    // that queue a value.
-    for (const Cutscene& cutscene : code.cutscenes)
-    {
-        for (std::size_t i = 0; i < cutscene.events.size(); ++i)
-        {
-            const CutsceneEvent& event = cutscene.events[i];
-            if (event.value < 0)
-            {
-                continue;
-            }
-
-            JacEffect effect = MakeEffect(JacEffect::kCutscene, static_cast<uint16_t>(event.value),
-                                          static_cast<uint16_t>(cutscene.number));
-            effect.type = WritesPortOne(cutscene) ? JacEffect::kCutscenePart : 0;
-            effect.finish = FramesToFinish(cutscene, i);
-            std::vector<JacLaterEvent> later_events;
-            for (std::size_t j = i + 1; j < cutscene.events.size(); ++j)
-            {
-                if (cutscene.events[j].value >= 0)
-                {
-                    later_events.push_back(
-                        {FramesBetween(cutscene, i, j), static_cast<uint16_t>(cutscene.events[j].value)});
-                }
-            }
-
-            add_effect("cutscene-" + Decimal(cutscene.number, 3) + "-" + Decimal(static_cast<unsigned>(event.value), 2),
-                       effect, std::move(later_events));
-        }
-    }
+    AddCodeEffects(effects);
+    AddCutsceneEffects(code.cutscenes, effects);
 
     return selection;
 }
@@ -802,43 +840,9 @@ JacLengthAnalyzer::JacLengthAnalyzer(const jac::SoundFiles& files, ArchiveDescri
 
 JaudioTiming JacLengthAnalyzer::Analyze(uint32_t sound) const
 {
-    // An effect's ID holds no bits above its place.
-    std::vector<jac::DemoEvent> events;
-    if (sound < later_events_.size())
-    {
-        for (const JacLaterEvent& event : later_events_[sound])
-        {
-            events.push_back({event.frames, event.value});
-        }
-    }
-
-    // Measures the sound with the events `queued` unheard. The count of notes without a wave goes to
-    // `missing_bank_notes`.
-    const xsflib::rip::LengthRules rules = JaudioLengthRules();
-    const auto measure = [this, sound, &rules](const std::vector<jac::DemoEvent>& queued, uint32_t& missing_bank_notes)
-    {
-        const auto run = [this, sound, &rules, &queued, &missing_bank_notes]() -> std::optional<Timing>
-        {
-            jac::Engine engine(files_, JacEngineSettings(settings_.jaudio));
-            if (StartJacSound(engine, settings_.jaudio.library3, sound))
-            {
-                return std::nullopt;
-            }
-
-            engine.QueueDemoEvents(queued, true);
-
-            JacLengthModel model(engine);
-            const std::optional<Timing> timing = xsflib::rip::MeasureLength(model, rules);
-            missing_bank_notes = engine.MissingBankNotes();
-
-            return timing;
-        };
-
-        return xsflib::rip::TryMeasure(run);
-    };
-
+    const std::vector<jac::DemoEvent> events = DemoEventsOf(later_events_, sound);
     JaudioTiming result;
-    result.timing = measure(events, result.missing_bank_notes);
+    result.timing = MeasureJacSound(files_, settings_.jaudio, sound, events, result.missing_bank_notes);
     if (events.empty() || !result.timing || result.timing->silent || result.timing->fade_ms != 0)
     {
         return result;
@@ -847,7 +851,7 @@ JaudioTiming JacLengthAnalyzer::Analyze(uint32_t sound) const
     // A second run without the events plays the sound as a player plays the rip. A sound that plays on past the end of
     // the first run is one that an event stops.
     uint32_t missing_alone = 0;
-    const std::optional<Timing> alone = measure({}, missing_alone);
+    const std::optional<Timing> alone = MeasureJacSound(files_, settings_.jaudio, sound, {}, missing_alone);
     Timing& timing = *result.timing;
     if (!alone || alone->length_ms + alone->fade_ms <= timing.length_ms)
     {
@@ -857,24 +861,10 @@ JaudioTiming JacLengthAnalyzer::Analyze(uint32_t sound) const
     // The rip of such a sound fades out from the frame in which the game's sound first differs from the rip's. The fade
     // ends where the game's sound ends, without the tail. Two engines play the sound side by side up to there, one with
     // the events unheard and one without them.
+    const xsflib::rip::LengthRules rules = JaudioLengthRules();
     const auto end_ms = timing.length_ms - static_cast<long long>(rules.tail_ms);
     const auto end_frame = static_cast<uint64_t>(static_cast<double>(end_ms) / rules.frame_ms);
-    jac::Engine game(files_, JacEngineSettings(settings_.jaudio));
-    jac::Engine rip(files_, JacEngineSettings(settings_.jaudio));
-    StartJacSound(game, settings_.jaudio.library3, sound);
-    StartJacSound(rip, settings_.jaudio.library3, sound);
-    game.QueueDemoEvents(events, true);
-    uint64_t frame = 0;
-    for (; frame < end_frame; ++frame)
-    {
-        game.RunFrame();
-        rip.RunFrame();
-        if (!std::ranges::equal(game.Output(), rip.Output()))
-        {
-            break;
-        }
-    }
-
+    const uint64_t frame = FirstDifferentFrame(files_, settings_.jaudio, sound, events, end_frame);
     timing.length_ms = std::min(static_cast<long long>(static_cast<double>(frame) * rules.frame_ms), end_ms);
     timing.fade_ms = end_ms - timing.length_ms;
 

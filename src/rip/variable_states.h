@@ -50,6 +50,11 @@ struct WaitingPiece
 // after a space (WithVariableStates). Null for any other label.
 const WaitingPiece* WaitingPieceOf(std::span<const WaitingPiece> pieces, std::string_view label);
 
+// The global variables of a rhythm piece's state (RhythmScript): its tempo, and its number. The controller hands over
+// to the piece when variable 28 takes the number.
+constexpr uint16_t kRhythmTempo = 27;
+constexpr uint16_t kRhythmNumber = 28;
+
 // The scripted start of a rhythm piece of Super Mario Party Jamboree or of Super Mario Party's Sound Stage beside the
 // mode's controller (docs/hsf.md, "Scripted starts"). `piece` and `controller` are the sounds' nn::atk item IDs, and
 // `variables` is the piece's state: variable 27 holds its tempo and 28 its number.
@@ -80,7 +85,9 @@ ScriptedStart RhythmScript(uint32_t piece, uint32_t controller, const xsflib::ps
 std::span<const WaitingPiece> WaitingPieces(std::span<const uint8_t> archive);
 
 // The jobs that rip `selected` in the states of `pieces`. A piece's job takes the piece's first state. The jobs of its
-// later states follow it, under the piece's label, a space and the state's name. The other jobs stay as they are.
+// later states follow it, under the piece's label, a space and the state's name. The other jobs stay as they are. A
+// job matches a piece by its whole label. A job of a track state, which WithStates names "LABEL state", therefore gets
+// no variables. No game's rules give a waiting piece track states.
 std::vector<ntdlib::rip::Job> WithVariableStates(std::span<const WaitingPiece> pieces,
                                                  const std::vector<ntdlib::rip::Job>& selected);
 

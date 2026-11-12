@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/rip/archive.h"
 #include "xsflib/bytes.h"
 #include "xsflib/files.h"
 #include "xsflib/testing/check.h"
@@ -405,6 +406,24 @@ void TestFolder(const fs::path& dir)
     XSFLIB_CHECK(!game.read_file("Archive/Music.nx.bea/Missing.bfsar", data));
 }
 
+// A game whose folder and files have names that aren't ASCII. The game's name and its files' paths are UTF-8, and each
+// file reads back through its path. On Windows, the names don't go through the code page.
+void TestUtf8Folder(const fs::path& dir)
+{
+    const std::string title = "\xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0"; // three katakana in UTF-8
+    const std::string audio = "Audio \xc3\xa9";                       // "Audio" and an e with an acute accent
+    WriteFile(dir / xsflib::PathFromUtf8(title) / xsflib::PathFromUtf8(audio) / "Loose.bfsar", kLoose);
+
+    GameFiles game;
+    const std::optional<std::string> error = hsf::game::LoadGame(dir / xsflib::PathFromUtf8(title), game);
+
+    XSFLIB_CHECK(!error);
+    XSFLIB_CHECK(game.name == title);
+    XSFLIB_CHECK(game.files == std::vector<std::string>{audio + "/Loose.bfsar"});
+    XSFLIB_CHECK(game.sound_archives == std::vector<std::string>{audio + "/Loose.bfsar"});
+    CheckRead(game, audio + "/Loose.bfsar", kLoose);
+}
+
 void TestUnpackedFolder(const fs::path& dir)
 {
     // A title's folder holds the RomFS. The RomFS holds the Bezel Engine archive unpacked into a folder, the game's
@@ -557,7 +576,7 @@ void TestDamagedArchives()
 {
     const std::vector<uint8_t> good = Bea(GameAssets());
     BeaArchive bea;
-    XSFLIB_CHECK(!BeaArchive::Parse(good, bea) && bea.Assets().size() == 4);
+    XSFLIB_REQUIRE(!BeaArchive::Parse(good, bea) && bea.Assets().size() == 4);
 
     // The first bytes of a compressed asset, without the rest.
     std::vector<uint8_t> head;
@@ -639,9 +658,9 @@ void TestEncrypted(const fs::path& dir)
     XSFLIB_CHECK(!hsf::game::EncryptedKind(dir / "Missing.nsp"));
 }
 
-// SarcsBeside lists the SARC archives in the sound archive's folder only: not those in the folders below it, in another
-// folder whose name starts with the same text, or with another extension. A sound archive in no folder takes those at
-// the top, and one in a Bezel Engine archive those in its folder there.
+// ntdlib::rip::SarcsBeside lists the SARC archives among a game's files in the sound archive's folder only: not those
+// in the folders below it, in another folder whose name starts with the same text, or with another extension. A sound
+// archive in no folder takes those at the top, and one in a Bezel Engine archive those in its folder there.
 void TestSarcsBeside()
 {
     hsf::game::GameFiles game;
@@ -650,11 +669,11 @@ void TestSarcsBeside()
                   "Archive/A.bea/y.sarc"};
 
     const std::vector<std::string> beside = {"SoundData/a.sarc", "SoundData/b.sarc"};
-    XSFLIB_CHECK(hsf::game::SarcsBeside(game, "SoundData/SeData.bfsar") == beside);
-    XSFLIB_CHECK(hsf::game::SarcsBeside(game, "Sound.bfsar") == std::vector<std::string>{"top.sarc"});
-    XSFLIB_CHECK(hsf::game::SarcsBeside(game, "Archive/A.bea/Sound/s.bfsar") ==
+    XSFLIB_CHECK(ntdlib::rip::SarcsBeside(game.files, "SoundData/SeData.bfsar") == beside);
+    XSFLIB_CHECK(ntdlib::rip::SarcsBeside(game.files, "Sound.bfsar") == std::vector<std::string>{"top.sarc"});
+    XSFLIB_CHECK(ntdlib::rip::SarcsBeside(game.files, "Archive/A.bea/Sound/s.bfsar") ==
                  std::vector<std::string>{"Archive/A.bea/Sound/x.sarc"});
-    XSFLIB_CHECK(hsf::game::SarcsBeside(game, "Other/s.bfsar").empty());
+    XSFLIB_CHECK(ntdlib::rip::SarcsBeside(game.files, "Other/s.bfsar").empty());
 }
 
 } // namespace
@@ -665,6 +684,7 @@ int main()
     const fs::path& dir = temp.Path();
 
     TestFolder(dir / "folder");
+    TestUtf8Folder(dir / "utf8");
     TestUnpackedFolder(dir / "unpacked");
     TestArchive(dir / "archive");
     TestInlineArchive(dir / "inline");

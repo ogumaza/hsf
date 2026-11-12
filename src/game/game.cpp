@@ -152,6 +152,7 @@ void AddEffectList(std::vector<uint8_t> bytes, GameFiles& out)
     {
         out.i3dl2_presets[preset] = parameters;
     }
+
     for (auto& [preset, effect] : raw.renderer)
     {
         out.renderer_presets[preset] = effect;
@@ -165,11 +166,23 @@ struct InArchive
     BeaArchive::Asset asset;
 };
 
-// Reads a file in a Bezel Engine archive. Returns false if it can't.
+// Reads a file in a Bezel Engine archive. Only the file's stored bytes are read: a game's archive can hold hundreds of
+// megabytes. Returns false if it can't.
 bool ReadInArchive(const InArchive& where, std::vector<uint8_t>& data)
 {
-    std::vector<uint8_t> archive;
-    return xsflib::ReadFile(where.archive, archive) && BeaArchive::Read(archive, where.asset, data);
+    BeaArchive::Asset asset = where.asset;
+    const uint64_t stored = asset.compression == BeaArchive::Asset::kStored ? asset.size : asset.stored_size;
+    std::vector<uint8_t> bytes(static_cast<std::size_t>(stored));
+    std::ifstream in(where.archive, std::ios::binary);
+    if (!in.seekg(static_cast<std::streamoff>(asset.offset)) ||
+        !in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size())))
+    {
+        return false;
+    }
+
+    asset.offset = 0;
+
+    return BeaArchive::Read(bytes, asset, data);
 }
 
 // Adds a Bezel Engine archive's files to `out` under `prefix`, and notes where each one is.
@@ -206,7 +219,7 @@ void AddArchive(const fs::path& path, const std::string& prefix, GameFiles& out,
     }
 }
 
-// A file below a folder: its path from the folder, with '/' between folders, and its path on disk.
+// A file below a folder: its path from the folder in UTF-8, with '/' between folders, and its path on disk.
 using FolderFile = std::pair<std::string, fs::path>;
 
 // Lists every file below `input` in `files`, in the order of their paths from it. Returns an error message if the
@@ -220,7 +233,8 @@ std::optional<std::string> ListFolder(const fs::path& input, std::vector<FolderF
         std::error_code type_error;
         if (it->is_regular_file(type_error))
         {
-            files.emplace_back(it->path().lexically_relative(input).generic_string(), it->path());
+            const std::u8string name = it->path().lexically_relative(input).generic_u8string();
+            files.emplace_back(std::string(name.begin(), name.end()), it->path());
         }
     }
     if (ec)
@@ -236,7 +250,7 @@ std::optional<std::string> ListFolder(const fs::path& input, std::vector<FolderF
 // Reads a folder: every file below it, and the files in its Bezel Engine archives.
 std::optional<std::string> LoadFolder(const fs::path& input, GameFiles& out)
 {
-    out.name = input.filename().string();
+    out.name = xsflib::Utf8(input.filename());
     std::vector<FolderFile> found;
     if (std::optional<std::string> error = ListFolder(input, found))
     {
@@ -306,7 +320,7 @@ std::optional<std::string> LoadFolder(const fs::path& input, GameFiles& out)
         }
 
         std::error_code error;
-        const fs::path file = root / fs::path(path);
+        const fs::path file = root / xsflib::PathFromUtf8(path);
         return fs::is_regular_file(file, error) && xsflib::ReadFile(file, data);
     };
 
@@ -321,14 +335,15 @@ std::optional<std::string> LoadBeaArchive(const fs::path& input, GameFiles& out)
     {
         return std::string("can't be read");
     }
+
     if (!BeaArchive::Is(head))
     {
         return std::string("isn't a folder, a Bezel Engine archive (.bea) or a sound archive");
     }
 
-    out.name = input.stem().string();
+    out.name = xsflib::Utf8(input.stem());
     auto in_archives = std::make_shared<std::map<std::string, InArchive>>();
-    AddArchive(input, input.filename().string() + "/", out, *in_archives);
+    AddArchive(input, xsflib::Utf8(input.filename()) + "/", out, *in_archives);
     out.read_file = [in_archives](const std::string& path, std::vector<uint8_t>& data)
     {
         const auto found_in = in_archives->find(path);
@@ -385,21 +400,30 @@ std::vector<BusEffect> StartupEffects(const GameFiles& game)
     return effects;
 }
 
-std::vector<std::string> SarcsBeside(const GameFiles& game, const std::string& archive_path)
+std::optional<uint32_t> BootVoices(const GameFiles& game)
 {
-    const std::string folder = archive_path.substr(0, archive_path.rfind('/') + 1);
-    std::vector<std::string> sarcs;
-    for (const std::string& path : game.files)
+    if (!game.voice_count || *game.voice_count < 1 ||
+        static_cast<uint32_t>(*game.voice_count) > ArchiveDescriptor::kDefaultVoices)
     {
-        if (path.starts_with(folder) && path.find('/', folder.size()) == std::string::npos && path.ends_with(".sarc"))
-        {
-            sarcs.push_back(path);
-        }
+        return std::nullopt;
     }
 
-    std::ranges::sort(sarcs);
+    return static_cast<uint32_t>(*game.voice_count);
+}
 
-    return sarcs;
+std::vector<AuxEffect> AuxEffects(std::vector<BusEffect> effects)
+{
+    std::vector<AuxEffect> out;
+    for (BusEffect& e : effects)
+    {
+        AuxEffect effect;
+        effect.bus = e.bus;
+        effect.type = e.type;
+        effect.parameters = std::move(e.parameters);
+        out.push_back(std::move(effect));
+    }
+
+    return out;
 }
 
 std::optional<std::string> EncryptedKind(const fs::path& path)
@@ -415,12 +439,13 @@ std::optional<std::string> EncryptedKind(const fs::path& path)
     {
         return std::string("an NSP");
     }
+
     if (head.size() >= 0x104 && std::memcmp(&head[0x100], "HEAD", 4) == 0)
     {
         return std::string("an XCI");
     }
 
-    const std::string extension = xsflib::AsciiLower(path.extension().string());
+    const std::string extension = xsflib::AsciiLower(xsflib::Utf8(path.extension()));
     if (extension == ".nca" || extension == ".nsz" || extension == ".xcz")
     {
         return std::string("an ") + (extension == ".nca" ? "NCA" : extension == ".nsz" ? "NSZ" : "XCZ");

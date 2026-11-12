@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 
-// HSF ripper: builds an .hsflib for one of a game's sound archives and one .minihsf per sequence, played by ntdlib's
-// model of the SDK's sound library and the console's audio renderer, and works out how long each sequence plays. For a
-// game that plays its sound with JAudio, the same on the model of JAudio.
+// HSF ripper: what the rips of a NintendoWare sound archive share. It refuses Wii U archives, names the files and works
+// out how long each sequence plays on ntdlib's model of the SDK's sound library and the console's audio renderer. The
+// rips of JAudio games are in rip/jaudio_rip.h, jaudio1_rip.h and jac_rip.h. Their length analysis is in
+// rip/jaudio_length.h. The rips of a Wii sound archive are in rip/nw4r_rip.h.
 
 #pragma once
 
@@ -11,22 +12,15 @@
 #include <optional>
 #include <span>
 
-#include "ntdlib/jaudio2/engine.h"
 #include "ntdlib/rip/archive.h"
 #include "xsflib/rip/file_names.h"
 #include "xsflib/rip/length.h"
 
 #include "hsf/format.h"
-#include "hsf/jaudio_models.h"
 #include "hsf/sar.h"
 
 namespace hsf::rip
 {
-
-// Whether `bytes` start as a Wii U sound archive: an FSAR whose byte order mark is big-endian. The readers read the
-// archive, but the archive's sequences have big-endian arguments too, and nn::atk reads them little-endian. So the
-// ripper refuses such an archive.
-bool IsWiiUArchive(std::span<const uint8_t> bytes);
 
 // HSF's types for the libraries and minis that a rip writes (ntdlib::rip's BuildArchiveLibrary and BuildMini).
 struct RipFormat
@@ -91,38 +85,6 @@ private:
     struct Impl;
 
     std::unique_ptr<Impl> impl_;
-};
-
-// What the length analysis finds of a JAudio sound: its timing, and the notes that the files can't play. With libraries
-// 1 and 2, those are the notes on banks that the files don't load. Such a sound's data isn't all there. With library 1,
-// the game stops at the first such note. With library 3, they're the notes that get no wave from the bank file. With
-// libraries 2 and 3, the game's note doesn't start. For library 2, also the numbers that the sound's sequence draws
-// from the sequences' generator.
-struct JaudioTiming
-{
-    std::optional<Timing> timing;
-    uint32_t missing_bank_notes = 0;
-    uint32_t sequence_draws = 0;
-};
-
-// The length analysis's rules for the models of JAudio: frames of one sub-frame, 2.5 ms, and LengthAnalyzer's limits in
-// them.
-xsflib::rip::LengthRules JaudioLengthRules();
-
-// Works out how long JAudio sounds play, on the model of JAudio set up as the player sets it up for a version 2
-// descriptor (hsf/jaudio.h). Analyze can be called from several threads at once.
-class JaudioLengthAnalyzer
-{
-public:
-    // `files` must outlive the analyzer.
-    JaudioLengthAnalyzer(const jaudio::SoundFiles& files, ArchiveDescriptor settings);
-
-    // As LengthAnalyzer::Analyze does, for the sound with ID `sound`. The timing is empty when the sound can't start.
-    JaudioTiming Analyze(uint32_t sound) const;
-
-private:
-    const jaudio::SoundFiles& files_;
-    ArchiveDescriptor settings_;
 };
 
 } // namespace hsf::rip
