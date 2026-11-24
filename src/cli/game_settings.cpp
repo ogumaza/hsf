@@ -28,21 +28,20 @@ namespace hsf::cli
 namespace
 {
 
-// What another console's sound archive is, from the file's first bytes `head`: "a 3DS sound archive", "a Wii sound
-// archive" or "a Wii U sound archive (big-endian FSAR)". Nothing for a Switch sound archive or any other file, a DS
-// sound archive included. The readers read a Wii U archive. Its sequences have big-endian arguments, though, and
-// nn::atk reads them little-endian.
+// What another console's sound archive is, from the file's first bytes `head`, in ntdlib's words
+// (sar::SoundArchiveKindName): "a 3DS sound archive (CSAR)", "a Wii sound archive (RSAR)" or "a Wii U sound archive
+// (big-endian FSAR)". Nothing for a Switch sound archive or any other file, a DS sound archive included. The readers
+// read a Wii U archive. Its sequences have big-endian arguments, though, and nn::atk reads them little-endian.
 std::optional<std::string> ForeignArchive(std::span<const uint8_t> head)
 {
     const std::string_view text(reinterpret_cast<const char*>(head.data()), head.size());
-    switch (ntdlib::sar::SoundArchiveKindOf(text))
+    const ntdlib::sar::SoundArchiveKind kind = ntdlib::sar::SoundArchiveKindOf(text);
+    switch (kind)
     {
     case ntdlib::sar::SoundArchiveKind::kCsar:
-        return "a 3DS sound archive";
     case ntdlib::sar::SoundArchiveKind::kRsar:
-        return "a Wii sound archive";
     case ntdlib::sar::SoundArchiveKind::kFsarBig:
-        return "a Wii U sound archive (big-endian FSAR)";
+        return std::string(ntdlib::sar::SoundArchiveKindName(kind));
     default:
         return std::nullopt;
     }

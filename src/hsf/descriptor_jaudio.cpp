@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/rounding.h"
 #include "xsflib/bytes.h"
 #include "xsflib/psf/descriptor.h"
 #include "xsflib/psf/psf.h"
@@ -86,7 +87,7 @@ bool ReadLibrary2(const std::vector<uint8_t>& data, std::size_t pos, JaudioLibra
 {
     const auto padded = [&pos]
     {
-        pos = AlignTo4(pos);
+        pos = ntdlib::AlignUp(pos, 4);
     };
     const auto u32 = [&data, &pos]() -> std::optional<uint32_t>
     {
@@ -298,7 +299,7 @@ void PutLibrary3(std::vector<uint8_t>& v, const JaudioLibrary3& l)
 bool ReadLibrary3(const std::vector<uint8_t>& data, std::size_t pos, JaudioLibrary3& l)
 {
     std::optional<std::string> index = xsflib::psf::ReadPath(data, pos);
-    pos = AlignTo4(pos);
+    pos = ntdlib::AlignUp(pos, 4);
     if (!index || pos > data.size() || data.size() - pos < kLevelsBytes)
     {
         return false;
@@ -397,7 +398,7 @@ bool ReadLibrary3(const std::vector<uint8_t>& data, std::size_t pos, JaudioLibra
 }
 
 // Why a version 2 player can't play a library 3 descriptor's settings, or nothing. Library 3 has no managers' or
-// categories' volumes, no track states and no sounds' volumes. Its FX lines are the game's.
+// categories' volumes, no track states and no sounds' volumes. The FX lines come from the game.
 std::optional<std::string> CheckLibrary3(const JaudioSettings& j)
 {
     if (!IsUnity(j.music_volume) || !IsUnity(j.effect_volume) ||
@@ -499,7 +500,7 @@ void PutJaudio(std::vector<uint8_t>& v, const JaudioSettings& j)
         }
     }
 
-    // Each sound's states go 2 to a byte, the even track in the high nibble. The game's table holds them that way.
+    // Each sound's states go 2 to a byte, the even track in the high nibble. The game's table stores them that way.
     Put32(v, static_cast<uint32_t>(j.track_states.size()));
     for (const JaudioTrackStates& sound : j.track_states)
     {
@@ -530,7 +531,7 @@ void PutJaudio(std::vector<uint8_t>& v, const JaudioSettings& j)
 
 bool ReadJaudio(const std::vector<uint8_t>& data, std::size_t pos, JaudioSettings& j)
 {
-    pos = AlignTo4(pos);
+    pos = ntdlib::AlignUp(pos, 4);
     if (pos > data.size() || data.size() - pos < kJaudioBytes)
     {
         return false;

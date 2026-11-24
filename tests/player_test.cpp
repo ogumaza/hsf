@@ -36,6 +36,7 @@
 #include "hsf/model.h"
 #include "hsf/nx.h"
 #include "hsf/sar.h"
+#include "sent_note.h"
 
 using namespace ntdlib::testing;
 using namespace xsflib::testing;
@@ -43,6 +44,9 @@ using namespace xsflib::testing;
 namespace
 {
 
+using hsf::testing::Delay;
+using hsf::testing::kSentNote;
+using hsf::testing::SquareWave;
 using ntdlib::testing::rsar_files::MakeAudibleArchive;
 
 // The archive's sounds: a note of 24 ticks that ends, the same note played over and over, the note sent only to aux
@@ -144,9 +148,9 @@ std::string WriteMini(const std::string& name, const std::string& library, uint3
     return path;
 }
 
-// Writes a .minihsf like WriteMini's, with `descriptor` in its reserved area. The descriptor names the archive of a
+// Writes a .minihsf as WriteMini does, with `descriptor` in its reserved area. The descriptor names the archive of a
 // library that WriteLibrary wrote without a group file. The set loads it last. It therefore takes the place of the
-// library's.
+// library descriptor.
 std::string WriteMiniWithDescriptor(const std::string& name, const std::string& library, uint32_t sound,
                                     hsf::ArchiveDescriptor descriptor)
 {
@@ -168,7 +172,7 @@ std::vector<int16_t> RenderAll(const std::string& path, std::size_t block = 1000
 
 // Checks seeks from snapshots in a playback of the set at `path` that takes a snapshot every `interval` frames. The
 // playback first renders the set to its end. That render has to give `straight`, the set's whole output without
-// snapshots. The snapshots then lie inside the sound, and inside the model's frames. Each seek to one of `frames`, in
+// snapshots. The snapshots are then inside the sound, and inside the model's frames. Each seek to one of `frames`, in
 // turn, starts from a snapshot after the start. A restart would drop the snapshots. Every one of them therefore has to
 // stay. After each seek, the position is the frame, and the next 1,000 frames are those of `straight`.
 void CheckSnapshotSeeks(const std::string& path, const std::vector<int16_t>& straight, uint64_t interval,
@@ -199,6 +203,20 @@ void CheckSnapshotSeeks(const std::string& path, const std::vector<int16_t>& str
                  std::equal(buffer.begin(), buffer.end(), straight.begin() + static_cast<std::ptrdiff_t>(2 * frame));
     }
     Check(landed, path + ": seeks from snapshots land where a straight render does");
+}
+
+// The stereo frames of `output` before its first sample that isn't 0: its lead. The length tags count from the first
+// sample that isn't 0 (hsf::Player::kLengthOrigin).
+std::size_t LeadOf(const std::vector<int16_t>& output)
+{
+    const auto first = std::find_if(output.begin(), output.end(), [](int16_t sample) { return sample != 0; });
+    return static_cast<std::size_t>(first - output.begin()) / 2;
+}
+
+// Whether a render played and has no sample other than 0.
+bool Silent(const std::vector<int16_t>& samples)
+{
+    return !samples.empty() && Peak(samples) == 0;
 }
 
 // The model's output for `sound` (`frames` frames), with `reverb` on aux bus A when given, and the frame in which the
@@ -236,10 +254,13 @@ void TestTagged(const TestArchive& plain, const std::string& library)
     int idle = 0;
     const std::vector<int16_t> loop = ModelOutput(plain.archive, kLoop, 600, idle);
 
-    // A tagged length and fade: 1 s, then a fade of half a second, rendered in blocks that don't divide a frame.
+    // A tagged length and fade: 1 s from the first sound, then a fade of half a second, rendered in blocks that don't
+    // divide a frame. The model's lead, under two frames, plays before the length.
     const std::string tagged_mini = WriteMini("tagged", library, kLoop, {{"length", "0:01"}, {"fade", "0.5"}});
     const std::vector<int16_t> tagged = RenderAll(tagged_mini, 1001);
-    CheckLengthAndFade(tagged, loop, 48000, 24000);
+    const std::size_t lead = LeadOf(loop);
+    XSFLIB_CHECK(lead > 0 && lead < 2 * kFrame);
+    CheckLengthAndFade(tagged, loop, lead + 48000, 24000);
 
     // A seek forward and a seek back land where the straight render does.
     CheckSeeks<hsf::Playback>(tagged_mini, kReader, tagged, {30000, 10000});
@@ -261,7 +282,7 @@ void TestUntagged(const TestArchive& plain, const std::string& library)
     // The volume tag scales every sample.
     CheckVolume(RenderAll(WriteMini("quiet", library, kNote, {{"volume", "0.5"}})), untagged, 0.5);
 
-    // A wave archive that only a group file outside the archive holds is found there.
+    // A wave archive that only a group file outside the archive contains is found there.
     const TestArchive grouped = MakeArchive(true);
     const std::string grouped_library = WriteLibrary("grouped", grouped, {});
     Check(RenderAll(WriteMini("grouped", grouped_library, kNote, {})) == untagged,
@@ -290,30 +311,16 @@ void TestI3dl2Reverb(const TestArchive& plain)
               std::equal(played.begin(), played.end() - 2 * 24000, wet.begin()),
           "a set with a reverb plays the model's output, and its tail");
 
-    // A seek from a snapshot in the reverb's tail lands where the straight render does: a snapshot holds the reverb's
-    // state.
+    // A seek from a snapshot in the reverb's tail lands where the straight render does: a snapshot contains the
+    // reverb's state.
     const auto dry_end = static_cast<uint64_t>(dry_idle) * kFrame;
     const auto wet_end = static_cast<uint64_t>(wet_idle) * kFrame;
     CheckSnapshotSeeks(reverb_mini, played, 2000, {wet_end - 1500, dry_end + 777, (dry_end + wet_end) / 2, 4321});
 }
 
-// An archive with one sequence: C4 for 250 ms, at full level on the main bus and on aux bus A. Program 0 plays a square
-// wave of 1 s that ends: 0x1000 and -0x1000 by turns, 16 samples of each.
+// An archive with one sequence, kSentNote. Program 0 plays SquareWave.
 TestArchive SquareArchive()
 {
-    const std::vector<uint8_t> kBytecode = {0xB0, 48, 0xE1, 120, 0x00, 0xD9, 127, 60, 127, 24, 0xFF};
-    std::vector<uint8_t> samples(64000);
-    for (std::size_t i = 0; i < samples.size(); i += 2)
-    {
-        const uint16_t value = (i / 32) % 2 == 0 ? 0x1000 : 0xF000;
-        samples[i] = static_cast<uint8_t>(value);
-        samples[i + 1] = static_cast<uint8_t>(value >> 8);
-    }
-    sar_files::WaveSpec wave;
-    wave.encoding = 1;
-    wave.loop_end = 32000;
-    wave.channels = {samples};
-
     sar_files::ArchiveSpec spec;
     sar_files::SoundSpec sound;
     sound.name = "SEQ_SQUARE";
@@ -323,9 +330,9 @@ TestArchive SquareArchive()
     spec.banks = {{"BANK", 1}};
     spec.wave_archives = {{"WARC", 2}};
     spec.players = {{"PLAYER", 1}};
-    spec.files = {{sar_files::Sequence(false, kBytecode, {{"Start", 0}}), "", false},
+    spec.files = {{sar_files::Sequence(false, kSentNote, {{"Start", 0}}), "", false},
                   {sar_files::Bank(false, sar_files::OneRegionBank()), "", false},
-                  {sar_files::WaveArchive(false, {sar_files::Wave(false, wave)}), "", false}};
+                  {sar_files::WaveArchive(false, {sar_files::Wave(false, SquareWave())}), "", false}};
 
     return {sar_files::Archive(false, spec), {}};
 }
@@ -336,14 +343,12 @@ TestArchive SquareArchive()
 void TestDelay()
 {
     const TestArchive square = SquareArchive();
-    hsf::AuxEffect delay;
-    delay.type = hsf::AuxEffect::kDelay;
-    delay.parameters = {1000000.0f, 400000.0f, 1.0f, 0.5f, 0.0f, 0.0f, 0.0f, 1.0f};
     hsf::ArchiveDescriptor descriptor;
-    descriptor.effects = {delay};
+    descriptor.effects = {Delay(400000.0f, 0.5f)};
     const std::string mini = WriteMini("delay", WriteLibrary("delay", square, descriptor), 0x01000000, {});
 
-    // The model's output for 20 s, its last audible frame, and whether its last 80 frames hold a sample other than 0.
+    // The model's output for 20 s, its last audible frame, and whether its last 80 frames contain a sample other than
+    // 0.
     const hsf::fsar::SoundArchive archive = hsf::fsar::SoundArchive::Load(square.archive, hsf::kSarOptions);
     hsf::atk::ArchiveModel model(archive);
     hsf::AppendEffects(*model.engine, descriptor.effects);
@@ -476,31 +481,26 @@ void TestScriptedStarts(const std::string& library)
         return RenderAll(with_script(name, kGated, {kGated, 0, std::move(steps)}));
     };
 
-    const auto silent = [](const std::vector<int16_t>& samples)
-    {
-        return !samples.empty() && Peak(samples) == 0;
-    };
-
     const ScriptStep global = ScriptStep::Write(0, 20, 5);
     const ScriptStep start = ScriptStep::Start(0, kGated);
     const ScriptStep local = ScriptStep::Write(0, 0, 5, kGated);
     const ScriptStep track = ScriptStep::Write(0, 32, 5, kGated, 0);
     Check(Peak(note) > 1000 && gated("gated", {global, start, local, track}) == note,
           "a sound's variable, a global variable and a track's variable reach the sequence");
-    Check(silent(gated("no local", {global, start, track})), "without its variable 0, the sound ends");
-    Check(silent(gated("no global", {start, local, track})), "without the global variable, the sound ends");
-    Check(silent(gated("no track", {global, start, local})), "without track 0's variable, the sound ends");
-    Check(silent(gated("other value", {global, start, local, ScriptStep::Write(0, 32, 4, kGated, 0)})),
+    Check(Silent(gated("no local", {global, start, track})), "without its variable 0, the sound ends");
+    Check(Silent(gated("no global", {start, local, track})), "without the global variable, the sound ends");
+    Check(Silent(gated("no track", {global, start, local})), "without track 0's variable, the sound ends");
+    Check(Silent(gated("other value", {global, start, local, ScriptStep::Write(0, 32, 4, kGated, 0)})),
           "a variable of another value ends the sound");
-    Check(silent(gated("other track", {global, start, local, ScriptStep::Write(0, 32, 5, kGated, 1)})),
+    Check(Silent(gated("other track", {global, start, local, ScriptStep::Write(0, 32, 5, kGated, 1)})),
           "another track's variable ends the sound");
-    Check(silent(gated("late write", {global, start, local, ScriptStep::Write(20, 32, 5, kGated, 0)})),
+    Check(Silent(gated("late write", {global, start, local, ScriptStep::Write(20, 32, 5, kGated, 0)})),
           "a write after the sound's first tick comes too late");
     const hsf::ScriptedStart of_note = {kNote,
                                         0,
                                         {global, ScriptStep::Start(0, kNote), ScriptStep::Write(0, 0, 5, kNote),
                                          ScriptStep::Write(0, 32, 5, kNote, 0)}};
-    Check(silent(RenderAll(with_script("other sound", kGated, of_note))),
+    Check(Silent(RenderAll(with_script("other sound", kGated, of_note))),
           "another sound's script leaves the sound out");
 
     // The lead-in.
@@ -538,7 +538,7 @@ void TestScriptedStarts(const std::string& library)
     CheckSnapshotSeeks(twice, played, 2000, {at / 2 + 333, 2345, at / 2 - 1500, 2777});
 }
 
-// The frames of a render that hold an audible sample, from the first to the last, or (-1, -1) for none.
+// The frames of a render that contain an audible sample, from the first to the last, or (-1, -1) for none.
 std::pair<int64_t, int64_t> AudibleFrames(const std::vector<int16_t>& samples)
 {
     int64_t first = -1;
@@ -597,13 +597,9 @@ void TestWritesInProcedures(const std::string& library)
           "a second write of kind 2 plays the note again from its frame: frames " + std::to_string(300 + again) +
               " to " + std::to_string(300 + end));
 
-    const auto silent = [](const std::vector<int16_t>& samples)
-    {
-        return !samples.empty() && AudibleFrames(samples).first < 0;
-    };
-    Check(silent(RenderAll(asks("timed write", {start, ScriptStep::Write(100, 14, -1, kAsks)}))),
+    Check(Silent(RenderAll(asks("timed write", {start, ScriptStep::Write(100, 14, -1, kAsks)}))),
           "a write of kind 1 comes too late for the test");
-    Check(silent(RenderAll(asks("other procedure", {start, ScriptStep::WriteInProcedure(100, 3, 14, -1, kAsks)}))),
+    Check(Silent(RenderAll(asks("other procedure", {start, ScriptStep::WriteInProcedure(100, 3, 14, -1, kAsks)}))),
           "a write for another procedure never takes effect");
     const std::vector<int16_t> note = RenderAll(WriteMini("note alone", library, kNote, {}));
     const std::vector<int16_t> beside = RenderAll(
@@ -619,7 +615,8 @@ void TestWritesInProcedures(const std::string& library)
 // plays the note when variable 14 then holds 1. From the constructor's state, Jamboree's handler draws 1, 0, 2, 0, 1,
 // 2, 0, 2 there, as fn_103b80 does in a run of the game's code. The note therefore plays from the first tick. Without
 // the handler, variable 14 keeps the slot, and the sound is silent. Superstars' handler reads the sound's variables 14
-// and 15, at -1, and changes nothing. Seeks land where a straight render does: the snapshots hold the handler's state.
+// and 15, at -1, and changes nothing. Seeks land where a straight render does: the snapshots contain the handler's
+// state.
 void TestUserProcedures()
 {
     const std::vector<uint8_t> kBytecode = {0xB0, 48,   0xE1, 120,  0x00, 0xC7, 0x00, 0xD4, 200,  0xF0, 0x80, 0x2E,
@@ -659,19 +656,15 @@ void TestUserProcedures()
           "Jamboree's handler draws 1 in the first call, and the note plays from the first tick: frames " +
               std::to_string(first) + " to " + std::to_string(last));
 
-    const auto silent = [](const std::vector<int16_t>& samples)
-    {
-        return !samples.empty() && AudibleFrames(samples).first < 0;
-    };
-    Check(silent(RenderAll(with_handler("draws none", hsf::UserProcedureHandler::kNone))),
+    Check(Silent(RenderAll(with_handler("draws none", hsf::UserProcedureHandler::kNone))),
           "without a handler, the variable keeps the slot, and the sound is silent");
-    Check(silent(RenderAll(with_handler("draws superstars", hsf::UserProcedureHandler::kSuperstars))),
+    Check(Silent(RenderAll(with_handler("draws superstars", hsf::UserProcedureHandler::kSuperstars))),
           "Superstars' handler reads the sound's variables and changes nothing");
 
     CheckSnapshotSeeks(jamboree, played, 2000, {30000, 10000, 49000, 73000, 47000});
 }
 
-// Sets that can't play: a group file the set doesn't hold, a sound the archive doesn't have, an item that isn't a
+// Sets that can't play: a group file the set doesn't contain, a sound the archive doesn't have, an item that isn't a
 // sound, and a descriptor's voice count beyond the most a player has.
 void TestRefusals(const TestArchive& plain, const std::string& library)
 {
@@ -703,7 +696,7 @@ void TestRefusals(const TestArchive& plain, const std::string& library)
     CheckRefusals<hsf::Playback>(refusals, kReader);
 }
 
-// Writes a library of version 3 that holds `archive`, and returns its path.
+// Writes a library of version 3 that contains `archive`, and returns its path.
 std::string WriteNw4rLibrary(const std::string& name, const std::vector<uint8_t>& archive)
 {
     const hsf::ArchiveDescriptor descriptor = hsf::ArchiveDescriptor::Nw4r({}, "Sound/test.brsar", 110400);
@@ -771,7 +764,9 @@ void TestNw4r()
         MakeAudibleArchive({0xD1, 0x7F, 0xD2, 0x7F, 0xD3, 0x7F, 60, 127, 24, 0x89, 0x00, 0x00, 6, 0xFF}, 1));
     const std::string loop = WriteMini("nw4r loop", loop_library, 0, {{"length", "0:01"}, {"fade", "0.5"}});
     const std::vector<int16_t> looped = RenderAll(loop, 1001);
-    Check(looped.size() == 2 * 72000, "a set of version 3 keeps its tagged length and fade");
+    const std::size_t lead = LeadOf(looped);
+    XSFLIB_CHECK(lead < 2 * kFrame);
+    Check(looped.size() == 2 * (lead + 72000), "a set of version 3 keeps its tagged length and fade, after its lead");
     CheckSnapshotSeeks(loop, looped, 2000, {65000, 30123, 47999, 2345, 70500});
 
     // A sound that isn't a sequence, and a layer that the player doesn't have.

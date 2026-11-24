@@ -32,7 +32,7 @@ struct ArchiveToRip
     bool game_code = false; // true for a game's archive ripped with the game's effects and rules
 
     // Finds another of the game's sound archives by its file name without the extension, for a piece whose companion
-    // it holds (rip/variable_states.h). Nothing when the game has no such archive.
+    // it contains (rip/variable_states.h). Nothing when the game has no such archive.
     std::function<std::optional<FileChunk>(std::string_view name)> find_archive;
 
     // Reads one of the game's files by its path, for a piece that follows a stream's music sync (WithSyncedPieces). A
@@ -41,7 +41,7 @@ struct ArchiveToRip
     std::function<bool(std::string_view path, std::vector<uint8_t>& data)> find_file;
 };
 
-// hsfrip's archive mode (ntdlib::rip::ArchiveRipTool). A library holds only the files that its sequences play.
+// hsfrip's archive mode (ntdlib::rip::ArchiveRipTool). A library contains only the files that its sequences play.
 const ntdlib::rip::ArchiveRipTool<hsf::rip::RipFormat, ArchiveToRip>& ArchiveTool();
 
 } // namespace hsf::cli

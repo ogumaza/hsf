@@ -18,6 +18,7 @@
 #include "ntdlib/rsar/music.h"
 #include "ntdlib/rvl/snd/rsar_options.h"
 #include "xsflib/binary.h"
+#include "xsflib/cli/length_analysis.h"
 #include "xsflib/cli/rip.h"
 #include "xsflib/psf/psf.h"
 
@@ -38,7 +39,7 @@ namespace fs = std::filesystem;
 // The SDK version of Skyward Sword HD's sdk, NintendoSDK 11.4.0, for a version 3 descriptor.
 constexpr uint32_t kSkywardSwordSdk = 110400;
 
-// What a Wii sound archive holds, such as "RSAR, 790 sequences (61 music), 2 wave sounds, 3412 streams".
+// What a Wii sound archive contains, such as "RSAR, 790 sequences (61 music), 2 wave sounds, 3412 streams".
 std::string DescribeRsar(const ntdlib::rsar::SoundArchive& archive)
 {
     std::size_t sequences = 0;
@@ -56,34 +57,6 @@ std::string DescribeRsar(const ntdlib::rsar::SoundArchive& archive)
 
     return "RSAR, " + std::to_string(sequences) + " sequences (" + std::to_string(music) + " music), " +
            std::to_string(waves) + " wave sounds, " + std::to_string(streams) + " streams";
-}
-
-// Drops the sequences whose data `archive` doesn't hold, with a line for each. Returns how many it dropped.
-std::size_t DropMissingData(const ntdlib::rsar::SoundArchive& archive, std::vector<hsf::rip::Nw4rJob>& jobs)
-{
-    std::size_t missing = 0;
-    std::vector<hsf::rip::Nw4rJob> complete;
-    for (hsf::rip::Nw4rJob& job : jobs)
-    {
-        const std::vector<std::string> lacks = ntdlib::rsar::MissingData(archive, job.index);
-        if (lacks.empty())
-        {
-            complete.push_back(std::move(job));
-            continue;
-        }
-
-        missing++;
-        std::string what;
-        for (const std::string& item : lacks)
-        {
-            what += (what.empty() ? "" : ", ") + item;
-        }
-        std::fprintf(stderr, "skipped %s: the archive doesn't hold %s\n", job.label.c_str(), what.c_str());
-    }
-
-    jobs = std::move(complete);
-
-    return missing;
 }
 
 // The part of `archive` that the sequences of `jobs` play. Nothing after an error message about the archive at
@@ -149,18 +122,24 @@ int RipRsar(FileChunk rsar, const std::string& game_name, const fs::path& out_di
         return NoSoundsSelected(path, o);
     }
 
-    const std::size_t missing = DropMissingData(archive, jobs);
+    const auto sounds = [](const hsf::rip::Nw4rJob& job)
+    {
+        return std::vector<uint32_t>{job.index};
+    };
+    const std::size_t missing = ntdlib::rsar::SkipIncomplete(jobs, archive, sounds);
     const hsf::ArchiveDescriptor descriptor = hsf::ArchiveDescriptor::Nw4r(hsf::Nw4rSettings{}, path, kSkywardSwordSdk);
     std::size_t silent = 0;
     if (o.lengths)
     {
         const auto analyze = [&archive, &descriptor](hsf::rip::Nw4rJob& job)
         {
-            job.timing = hsf::rip::AnalyzeNw4rLength(archive, descriptor.nw4r, job.index);
+            const xsflib::rip::Limit limit =
+                ntdlib::rsar::IsMusic(archive, job.index) ? xsflib::rip::Limit::kLong : xsflib::rip::Limit::kDefault;
+            job.timing = hsf::rip::AnalyzeNw4rLength(archive, descriptor.nw4r, job.index, limit);
             return true;
         };
         xsflib::cli::AnalyzeLengths(jobs, o.jobs, analyze);
-        silent = DropSilent(jobs, [](const hsf::rip::Nw4rJob&) {});
+        silent = xsflib::cli::SkipSilent(jobs);
     }
 
     const std::string skipped_text = xsflib::cli::SkippedText(missing, "data not there", silent, "sequence");
@@ -170,7 +149,7 @@ int RipRsar(FileChunk rsar, const std::string& game_name, const fs::path& out_di
         return 0;
     }
 
-    // The library holds the part of the archive that the sequences play.
+    // The library contains the part of the archive that the sequences play.
     FileChunk kept;
     kept.path = path;
     std::optional<std::vector<uint8_t>> data = SequenceData(archive, jobs, source);

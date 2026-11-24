@@ -26,7 +26,7 @@ inline std::string FileNameOf(std::string_view path)
     return std::string(slash == std::string_view::npos ? path : path.substr(slash + 1));
 }
 
-// The folder that holds the file or folder at `path`, without a final '/'. Empty at the top.
+// The folder that contains the file or folder at `path`, without a final '/'. Empty at the top.
 inline std::string FolderOf(std::string_view path)
 {
     const std::size_t slash = path.rfind('/');

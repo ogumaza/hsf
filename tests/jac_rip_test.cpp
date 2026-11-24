@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 
 // hsfrip's parts for Pikmin (src/rip/jac_rip.*): the search for the game's files, the build ID of an NSO, the settings
-// and the selection of sounds from synthetic tables. The tables hold a few rows of each kind that the selection treats
-// differently.
+// and the selection of sounds from synthetic tables. The tables contain a few rows of each kind that the selection
+// treats differently.
 
 #include "rip/jac_rip.h"
 

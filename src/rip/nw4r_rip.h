@@ -41,9 +41,10 @@ struct Nw4rJob
 std::vector<Nw4rJob> SelectNw4rSounds(const ntdlib::rsar::SoundArchive& archive, const std::regex& only, bool bgm);
 
 // The timing of the sequence sound at `index` on the model of NW4R SND on the layer of `settings`
-// (ntdlib::rvl::nx::LengthConsole), or nothing for a sound that doesn't start or that the model can't play.
+// (ntdlib::rvl::nx::LengthConsole), up to `limit`, or nothing for a sound that doesn't start or that the model can't
+// play.
 std::optional<Timing> AnalyzeNw4rLength(const ntdlib::rsar::SoundArchive& archive, const Nw4rSettings& settings,
-                                        uint32_t index);
+                                        uint32_t index, xsflib::rip::Limit limit = xsflib::rip::Limit::kDefault);
 
 // The library of a rip: `archive` in a FILE chunk at its path among the game's files, with `descriptor` (version 3)
 // naming it, and the tags.

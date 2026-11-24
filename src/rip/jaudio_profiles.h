@@ -28,10 +28,10 @@ struct JaudioVariant
     std::string name;
 };
 
-// A game whose code HSF has read: its name, the SHA-1 of its start-up archive as the game's files hold it, what its
+// A game whose code HSF has read: its name, the SHA-1 of its start-up archive as the game's files contain it, what its
 // code sets up for JAudio, and the groups of sounds that the game's code plays as other sounds. Each group is its
 // section times 256 plus its number. `bgm_params` is the path, from the start-up archive's folder, of a table of the
-// music's volumes that the game's code reads (see ReadBgmVolumes), or empty. `variants` holds the sounds' variants,
+// music's volumes that the game's code reads (see ReadBgmVolumes), or empty. `variants` contains the sounds' variants,
 // each ripped beside its sound.
 struct JaudioGame
 {
@@ -44,11 +44,11 @@ struct JaudioGame
 };
 
 // The volumes that the game's code writes into the sound table from its table of the music's volumes. Super Mario
-// Galaxy 2's `main` does that at 0x128cf0. The table is an RARC, compressed with Yaz0 or not, that holds BgmParam.bcsv:
-// a JMap table with the columns SoundIdName and Volume, in the archive's byte order. The game writes each row's volume,
-// its low byte, over the volume of the sound that the row names, if the sound's type has bit 0x40 set. Rows that name
-// no sound of `archive` change nothing. Throws xsflib::FormatError if the RARC or the table is damaged, or if the
-// RARC lacks the table.
+// Galaxy 2's `main` does that at 0x128cf0. The table is an RARC, compressed with Yaz0 or not, that contains
+// BgmParam.bcsv: a JMap table with the columns SoundIdName and Volume, in the archive's byte order. The game writes
+// each row's volume, its low byte, over the volume of the sound that the row names, if the sound's type has bit 0x40
+// set. Rows that name no sound of `archive` change nothing. Throws xsflib::FormatError if the RARC or the table is
+// damaged, or if the RARC has no table.
 std::vector<JaudioSoundVolume> ReadBgmVolumes(std::span<const uint8_t> table_archive,
                                               const ntdlib::jaudio::SoundArchive& archive);
 

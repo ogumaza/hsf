@@ -27,7 +27,7 @@ namespace hsf
 // The engine's options for a set with `descriptor`: nn::atk's voice count.
 atk::EngineOptions EngineOptionsFor(const ArchiveDescriptor& descriptor);
 
-// An I3DL2 reverb's parameters as an AuxEffect holds them: the 12 fields of nn::audio's I3dl2ReverbParameterSet, in
+// An I3DL2 reverb's parameters as an AuxEffect stores them: the 12 fields of nn::audio's I3dl2ReverbParameterSet, in
 // their order.
 std::vector<float> I3dl2Values(const audio::I3dl2ReverbParameterSet& p);
 
@@ -70,7 +70,7 @@ public:
     ~ScriptRunner();
 
     // Takes the steps of frame `frame`. Returns why a start failed: its sound isn't a sequence whose files the archive
-    // holds.
+    // contains.
     std::optional<std::string> Apply(atk::Engine& engine, uint64_t frame);
 
     // Whether a step comes after frame `frame`. The set plays on until the last step.
@@ -120,9 +120,9 @@ private:
 
 // How long the effects ring in the output once the sound has stopped (docs/hsf.md, "The model"). The length analysis
 // and the player both ask. Without a delay, the effects ring while a frame's output has a sample other than 0. The
-// renderer's delay rounds its products down. Once its line holds a negative sample, its output stays at -1 or so for
+// renderer's delay rounds its products down. Once its line contains a negative sample, its output stays at -1 or so for
 // ever. With a delay, the effects therefore ring until no frame has been audible (xsflib::rip::Audible) for the delay's
-// time, in whole frames rounded up, and one frame more. nn::atk holds the delay's time to the longest delay. With more
+// time, in whole frames rounded up, and one frame more. nn::atk limits the delay's time to the longest delay. With more
 // than one delay, the one with the most frames counts. A delay's feedback is less than 1. After a whole delay without
 // an audible frame, no echo can be audible. The renderer's reverb rounds its products down too. With a reverb, the
 // effects ring until no frame has been audible for the reverb's lines at their longest, one after another, and one

@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.20)
 # Shared version for the tools (HSF_VERSION_ARGS below). For a release, update it here and add notes in
 # docs/release-notes/.
-project(hsf VERSION 1.5.1 LANGUAGES C CXX)
+project(hsf VERSION 1.6.0 LANGUAGES C CXX)
 
 # xsflib: a library for players and rippers of the PSF family, as a submodule. Its XsflibProject.cmake sets what a
 # project built on it starts with: C++20, a release build by default, the static C runtime, the options that keep the
@@ -57,7 +57,7 @@ add_library(hsf_format STATIC
     src/hsf/format.h
     src/hsf/jaudio_settings.h
 )
-target_link_libraries(hsf_format PUBLIC hsf_common xsflib::psf)
+target_link_libraries(hsf_format PUBLIC hsf_common ntdlib::common xsflib::psf)
 target_compile_options(hsf_format PRIVATE ${HSF_WARNINGS})
 
 # What an archive descriptor sets up on the model of nn::atk, for the player and the ripper's length analysis.
@@ -136,15 +136,17 @@ add_executable(hsfrip
 target_link_libraries(hsfrip PRIVATE hsf_rip hsf_game xsflib::cli Threads::Threads)
 target_compile_options(hsfrip PRIVATE ${HSF_WARNINGS})
 xsflib_add_version(hsfrip ${HSF_VERSION_ARGS} DESCRIPTION "HSF ripper")
+# 32-bit Windows: a rip with a 32-bit hsfrip may use more than 2 GB of memory.
+xsflib_large_address_aware(hsfrip)
 
 add_executable(hsfplay src/cli/hsfplay.cpp)
 target_link_libraries(hsfplay PRIVATE hsf_player xsflib::cli)
 target_compile_options(hsfplay PRIVATE ${HSF_WARNINGS})
 xsflib_add_version(hsfplay ${HSF_VERSION_ARGS} DESCRIPTION "HSF renderer")
 
-# Windows: UTF-8 as the tools' code page, so that they can take and open paths outside the system's ANSI code page,
-# such as those of files dropped on them. macOS: a droplet app for each tool (hsfrip.app, hsfplay.app), so that files
-# can be dropped on it in the Finder.
+# Windows: UTF-8 as the tools' code page. The tools can then take and open paths outside the system's ANSI code page,
+# such as those of files dropped on them. macOS: a droplet app for each tool (hsfrip.app, hsfplay.app). Files can then
+# be dropped on it in the Finder.
 foreach (tool hsfrip hsfplay)
     xsflib_add_utf8_manifest(${tool})
     xsflib_add_droplet(${tool} VERSION ${hsf_VERSION})

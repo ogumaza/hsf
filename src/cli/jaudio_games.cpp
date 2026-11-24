@@ -21,6 +21,7 @@
 #include "ntdlib/jaudio/barc.h"
 #include "ntdlib/jaudio/bx.h"
 #include "ntdlib/nx/nso.h"
+#include "xsflib/cli/length_analysis.h"
 #include "xsflib/cli/rip.h"
 #include "xsflib/psf/psf.h"
 
@@ -49,7 +50,7 @@ namespace fs = std::filesystem;
 constexpr uint32_t kSearchDraws = 16;
 
 // The wave archives of a JAudio game, read from the game's files as the start-up archive's wave systems name them. Each
-// is read once. An archive that the game lacks stays missing.
+// is read once. An archive that isn't among the game's files stays missing.
 class JaudioWaves
 {
 public:
@@ -140,7 +141,7 @@ auto ChunkOrWave(std::vector<const FileChunk*> chunks, const std::string& waves_
     };
 }
 
-// What a JAudio2 game's sound table holds, such as "120 music sequences, 900 other sequences, 30 streams".
+// What a JAudio2 game's sound table contains, such as "120 music sequences, 900 other sequences, 30 streams".
 std::string JaudioSummary(const std::vector<ntdlib::jaudio::SoundEntry>& sounds)
 {
     const auto count = [&sounds](auto test)
@@ -188,8 +189,8 @@ void ReadMusicVolumes(const hsf::game::GameFiles& game, const std::string& start
     }
 }
 
-// The build of Pikmin's main `main` that hsfrip reads the settings from, or null with an error that lists the builds
-// it reads.
+// The build of Pikmin's `main` that hsfrip reads the settings from, or null with an error that lists the builds it
+// reads.
 const hsf::rip::JacBuild* JacBuildOf(const FileChunk& main)
 {
     const std::string build_id = hsf::rip::NsoBuildId(main.data);
@@ -213,7 +214,8 @@ const hsf::rip::JacBuild* JacBuildOf(const FileChunk& main)
     return build;
 }
 
-// Reads into `waves` every wave archive that `systems` name. Warns once for each archive that the game lacks.
+// Reads into `waves` every wave archive that `systems` name. Warns once for each archive that isn't among the game's
+// files.
 void ReadWaveSystems(const std::vector<ntdlib::jaudio::WaveSystem>& systems, JaudioWaves& waves)
 {
     std::vector<std::string> missing;
@@ -271,28 +273,22 @@ struct Skipped
 // a line for each. Returns how many of each it dropped.
 Skipped DropUnplayable(std::vector<hsf::rip::JaudioJob>& jobs)
 {
-    Skipped skipped;
-    std::vector<hsf::rip::JaudioJob> kept;
-    for (hsf::rip::JaudioJob& job : jobs)
+    const auto missing_banks = [](const hsf::rip::JaudioJob& job)
     {
-        if (job.missing_bank_notes != 0)
+        if (job.missing_bank_notes == 0)
         {
-            skipped.missing++;
-            std::fprintf(stderr, "skipped %s: it plays notes on banks that the start-up archive doesn't load\n",
-                         job.label.c_str());
+            return false;
         }
-        else if (job.timing && job.timing->silent)
-        {
-            skipped.silent++;
-            std::fprintf(stderr, "skipped %s: it makes no sound\n", job.label.c_str());
-        }
-        else
-        {
-            kept.push_back(std::move(job));
-        }
-    }
 
-    jobs = std::move(kept);
+        std::fprintf(stderr, "skipped %s: it plays notes on banks that the start-up archive doesn't load\n",
+                     job.label.c_str());
+
+        return true;
+    };
+
+    Skipped skipped;
+    skipped.missing = std::erase_if(jobs, missing_banks);
+    skipped.silent = xsflib::cli::SkipSilent(jobs);
 
     return skipped;
 }
@@ -369,7 +365,8 @@ std::optional<std::size_t> AnalyzeJacJobs(std::vector<hsf::rip::JaudioJob>& jobs
     };
     xsflib::cli::AnalyzeLengths(jobs, threads, analyze);
 
-    const auto warn_missing = [](const hsf::rip::JaudioJob& job)
+    const std::size_t silent = xsflib::cli::SkipSilent(jobs);
+    for (const hsf::rip::JaudioJob& job : jobs)
     {
         if (job.missing_bank_notes != 0)
         {
@@ -378,9 +375,9 @@ std::optional<std::size_t> AnalyzeJacJobs(std::vector<hsf::rip::JaudioJob>& jobs
                          "game\n",
                          job.label.c_str());
         }
-    };
+    }
 
-    return DropSilent(jobs, warn_missing);
+    return silent;
 }
 
 // Measures a JAudio2 game's sounds on `threads` threads, and drops the sounds that can't play (DropUnplayable). A
@@ -410,7 +407,7 @@ void PrintWarnings(const std::vector<std::string>& warnings)
     }
 }
 
-// What a rip of Pikmin 2 holds, such as "20 pieces of music, 5 variants of them and 900 sound effects".
+// What a rip of Pikmin 2 contains, such as "20 pieces of music, 5 variants of them and 900 sound effects".
 std::string Jaudio1Summary(const hsf::rip::Jaudio1Selection& selection)
 {
     const std::size_t pieces = selection.library.pieces.size();
@@ -420,7 +417,7 @@ std::string Jaudio1Summary(const hsf::rip::Jaudio1Selection& selection)
            std::to_string(selection.jobs.size() - pieces - variants) + " sound effects";
 }
 
-// What a rip of Pikmin holds, such as "20 pieces of music, 8 pieces of the cutscenes' music and 400 sound effects".
+// What a rip of Pikmin contains, such as "20 pieces of music, 8 pieces of the cutscenes' music and 400 sound effects".
 std::string JacSummary(const hsf::rip::JacSelection& selection)
 {
     const std::size_t pieces = selection.library.pieces.size();
@@ -486,8 +483,8 @@ std::optional<JacGame> ReadJacGame(const std::string& input, const hsf::game::Ga
     if (paths.main.empty())
     {
         std::fprintf(stderr,
-                     "error: %s: Pikmin's sound settings are in the game's code, the ExeFS's main, and the input\n"
-                     "       lacks it. Give hsfrip a folder that holds both the game's RomFS and its ExeFS, as\n"
+                     "error: %s: Pikmin's sound settings are in the game's code, the ExeFS's main. The input has\n"
+                     "       no main. Give hsfrip a folder that holds both the game's RomFS and its ExeFS, as\n"
                      "       romfs/ and exefs/.\n",
                      input.c_str());
         return std::nullopt;
@@ -767,7 +764,7 @@ int RipJacGame(const std::string& input, const hsf::game::GameFiles& game, const
                  std::string(build->version).c_str());
     PrintWarnings(selection.warnings);
 
-    // The library holds every wave archive that a wave system names.
+    // The library contains every wave archive that a wave system names.
     JaudioWaves waves(game, paths.waves);
     ReadWaveSystems(jac->systems, waves);
 

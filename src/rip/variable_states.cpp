@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <map>
 #include <mutex>
-#include <utility>
 
 #include "ntdlib/nx/bex/rhythm_modes.h"
 
@@ -101,36 +100,22 @@ ScriptedStart RhythmScript(uint32_t piece, uint32_t controller, const xsflib::ps
 std::vector<ntdlib::rip::Job> WithVariableStates(std::span<const WaitingPiece> pieces,
                                                  const std::vector<ntdlib::rip::Job>& selected)
 {
-    std::vector<ntdlib::rip::Job> jobs;
-    for (const ntdlib::rip::Job& job : selected)
+    const auto states_of = [pieces](const ntdlib::rip::Job& job)
     {
         const auto piece =
             std::find_if(pieces.begin(), pieces.end(), [&job](const WaitingPiece& p) { return p.label == job.label; });
-        if (piece == pieces.end())
+
+        return piece == pieces.end() ? std::span<const VariableState>{} : std::span<const VariableState>(piece->states);
+    };
+    const auto apply = [](const VariableState& state, ntdlib::rip::Job& job)
+    {
+        for (const StateVariable& v : state.variables)
         {
-            jobs.push_back(job);
-            continue;
+            job.variables[v.variable] = v.value;
         }
+    };
 
-        for (const VariableState& state : piece->states)
-        {
-            ntdlib::rip::Job in_state = job;
-            if (!state.name.empty())
-            {
-                in_state.label += " ";
-                in_state.label += state.name;
-            }
-
-            for (const StateVariable& v : state.variables)
-            {
-                in_state.variables[v.variable] = v.value;
-            }
-
-            jobs.push_back(std::move(in_state));
-        }
-    }
-
-    return jobs;
+    return ntdlib::rip::WithStates(selected, states_of, apply);
 }
 
 } // namespace hsf::rip

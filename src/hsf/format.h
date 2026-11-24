@@ -168,7 +168,7 @@ struct ScriptStep
     // The nn::atk item ID of the sound that a start starts, in its archive, or of the sound whose variable or track's
     // variable a write sets. A write of kind 1 to a global variable has 0. A write of kind 2 names the sound whose
     // procedure call it waits for, for a global variable too. A script starts each item ID once. An item ID therefore
-    // names one sound, whichever archive holds it.
+    // names one sound, whichever archive contains it.
     uint32_t sound = 0;
 
     // A start of `sound` at `frame`, from the set's archive or from add-on archive `archive`.
@@ -332,7 +332,7 @@ struct ArchiveDescriptor
 using xsflib::psf::FileChunk;
 using ProgramBuilder = xsflib::psf::StreamingProgramBuilder;
 
-// HSF's traits for xsflib's sets (xsflib/psf/set.h): archive mode only, each file held once, and a sound in every set.
+// HSF's traits for xsflib's sets (xsflib/psf/set.h): archive mode only, each file kept once, and a sound in every set.
 struct SetFormat
 {
     using ProcessDescriptor = void;

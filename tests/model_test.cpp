@@ -2,7 +2,7 @@
 
 // Tests the rules for how long the effects ring after a sequence (EffectTail, hsf/model.h): without a delay, with
 // a delay and with a reverb. Then the length analysis of a note sent to a delay whose rounding leaves -1 in the
-// output for ever.
+// output for ever, and the time of a sound's first sample that isn't 0.
 
 #include "hsf/model.h"
 
@@ -18,31 +18,25 @@
 #include <vector>
 
 #include "ntdlib/nx/atk/engine.h"
-#include "ntdlib/testing/sar_files.h"
+#include "ntdlib/testing/length_cases.h"
 #include "xsflib/rip/length.h"
 #include "xsflib/testing/check.h"
+#include "xsflib/testing/timing.h"
 
 #include "hsf/format.h"
 #include "hsf/nx.h"
 #include "hsf/sar.h"
 #include "rip/rip.h"
+#include "sent_note.h"
 
 using namespace ntdlib::testing;
 using namespace xsflib::testing;
+using hsf::testing::Delay;
+using hsf::testing::kSentNote;
+using hsf::testing::SquareWave;
 
 namespace
 {
-
-// A delay on aux bus A: `delay` µs of up to 1 s, a feedback of `feedback`, and the bus's sound at full level with no
-// dry part, on 2 channels.
-hsf::AuxEffect Delay(float delay, float feedback)
-{
-    hsf::AuxEffect effect;
-    effect.type = hsf::AuxEffect::kDelay;
-    effect.parameters = {1000000.0f, delay, 1.0f, feedback, 0.0f, 0.0f, 0.0f, 1.0f};
-
-    return effect;
-}
 
 // A frame of 240 stereo pairs, each sample `value`.
 std::vector<int16_t> Frame(int16_t value)
@@ -73,7 +67,7 @@ void TestTailWithoutDelay()
 
 // With a delay of 250 ms (50 frames), the effects ring for 50 frames after the last audible frame. Frames of -1 and 8,
 // below the level of sound, don't ring. The 51st frame ends the ringing. A delay of 250,001 µs rings a frame longer. Of
-// two delays, the longer counts. nn::atk holds a delay to its longest delay. A longer one therefore counts as the
+// two delays, the longer counts. nn::atk limits a delay to its longest delay. A longer one therefore counts as the
 // longest.
 void TestTailWithDelay()
 {
@@ -137,43 +131,15 @@ void TestTailWithReverb()
     }
 }
 
-// A little-endian archive with one sequence: C4 for 250 ms, at full level on the main bus and on aux bus A. Program 0
-// plays a square wave of 1 s that ends: 0x1000 and -0x1000 by turns, 16 samples of each.
-std::vector<uint8_t> SentNoteArchive()
+// A little-endian archive with one sequence, `bytecode` (kSentNote by default). Program 0 plays SquareWave.
+std::vector<uint8_t> SentNoteArchive(const std::vector<uint8_t>& bytecode = kSentNote)
 {
-    const std::vector<uint8_t> kBytecode = {0xB0, 48, 0xE1, 120, 0x00, 0xD9, 127, 60, 127, 24, 0xFF};
-    std::vector<uint8_t> samples(64000);
-    for (std::size_t i = 0; i < samples.size(); i += 2)
-    {
-        const uint16_t value = (i / 32) % 2 == 0 ? 0x1000 : 0xF000;
-        samples[i] = static_cast<uint8_t>(value);
-        samples[i + 1] = static_cast<uint8_t>(value >> 8);
-    }
-    sar_files::WaveSpec wave;
-    wave.encoding = 1;
-    wave.loop_end = 32000;
-    wave.channels = {samples};
-
-    sar_files::ArchiveSpec spec;
-    spec.banks = {{"BANK", 0}};
-    spec.wave_archives = {{"WARC", 1}};
-    spec.players = {{"PLAYER", 1}};
-    spec.files = {{sar_files::Bank(false, sar_files::OneRegionBank()), "", false},
-                  {sar_files::WaveArchive(false, {sar_files::Wave(false, wave)}), "", false},
-                  {sar_files::Sequence(false, kBytecode, {{"Start", 0}}), "", false}};
-    sar_files::SoundSpec sound;
-    sound.name = "SEQ_SENT";
-    sound.volume = 127;
-    sound.banks = {0};
-    sound.file = 2;
-    spec.sounds = {sound};
-
-    return sar_files::Archive(false, spec);
+    return length_cases::SequenceArchive(ntdlib::sar::Flavor::kNx, "SEQ_SENT", bytecode, 1, SquareWave());
 }
 
 // A note sent to a delay of 400 ms with a feedback of 0.5. Its echoes come 400 ms apart, with silence between them. The
-// delay rounds down. Its output therefore never returns to 0. The analysis still ends: at the last audible frame, and
-// the 0.5 s after it. That frame comes from a run of the model for 20 s.
+// delay rounds down. Its output therefore never returns to 0. The analysis still ends: at the end of the last audible
+// frame. That frame comes from a run of the model for 20 s.
 void TestDelayRings()
 {
     hsf::ArchiveDescriptor settings;
@@ -192,6 +158,10 @@ void TestDelayRings()
     const auto audible_quieter = [](int16_t sample)
     {
         return std::abs(std::round(static_cast<double>(sample) * 0.25)) > xsflib::rip::kSilenceLevel;
+    };
+    const auto nonzero = [](int16_t sample)
+    {
+        return sample != 0;
     };
     for (uint64_t frame = 0; frame < 4000; ++frame)
     {
@@ -214,10 +184,6 @@ void TestDelayRings()
             ++quiet_run;
         }
 
-        const auto nonzero = [](int16_t sample)
-        {
-            return sample != 0;
-        };
         ringing = ringing || (frame >= 3920 && std::any_of(output.begin(), output.end(), nonzero));
     }
 
@@ -225,23 +191,73 @@ void TestDelayRings()
     const std::optional<hsf::rip::Timing> timing = analyzer.Analyze(0);
 
     XSFLIB_CHECK(gap && ringing && last_audible > 160 && last_audible < 3000);
-    const auto expected = static_cast<long long>((last_audible + 1) * 5 + 500);
-    Check(timing && !timing->silent && timing->fade_ms == 0 && timing->length_ms == expected,
-          "a sound sent to a delay ends 0.5 s after its last audible echo, " + std::to_string(expected) + " ms, not " +
-              std::to_string(timing ? timing->length_ms : -1));
+    const auto expected = static_cast<long long>((last_audible + 1) * 5);
+    CheckTiming("a sound sent to a delay ends at the end of its last audible echo, " + std::to_string(expected) + " ms",
+                timing, expected, expected, 0);
 
     // The player scales the output by the mini's volume tag. The analysis judges the output at that volume.
     const std::optional<hsf::rip::Timing> quieter =
         analyzer.Analyze(0, ntdlib::rip::kFullTrackVolumes, nullptr, nullptr, 0.25f);
-    const auto expected_quieter = static_cast<long long>((last_audible_quieter + 1) * 5 + 500);
+    const auto expected_quieter = static_cast<long long>((last_audible_quieter + 1) * 5);
     XSFLIB_CHECK(last_audible_quieter > 0 && last_audible_quieter < last_audible);
     Check(quieter && !quieter->silent && quieter->length_ms == expected_quieter,
-          "at a volume of 0.25, the sound ends 0.5 s after its last echo that's audible at that volume, " +
+          "at a volume of 0.25, the sound ends at the end of its last echo that's audible at that volume, " +
               std::to_string(expected_quieter) + " ms, not " + std::to_string(quieter ? quieter->length_ms : -1));
 
     const std::optional<hsf::rip::Timing> muted =
         analyzer.Analyze(0, ntdlib::rip::kFullTrackVolumes, nullptr, nullptr, 0.0f);
     Check(muted && muted->silent, "at a volume of 0, the sound is silent");
+}
+
+// The first sample that isn't 0, from a run of the model for 1 s: the time of its stereo pair, with a frame's 240 pairs
+// sharing its 5 ms. The analysis gives that time rounded to the millisecond. The sequence plays C4 at velocity 8, then
+// again at velocity 127 after a wait. The player looks for the first sound in its samples before it applies the mini's
+// volume. At a volume that rounds the first 200 ms of sound to 0, the analysis still gives the time of the first pair.
+void TestFirstSample()
+{
+    const std::vector<uint8_t> bytes =
+        SentNoteArchive({0xB0, 48, 0xE1, 120, 0x00, 0xD9, 127, 60, 8, 24, 0x80, 24, 60, 127, 24, 0xFF});
+    const hsf::fsar::SoundArchive archive = hsf::fsar::SoundArchive::Load(bytes, hsf::kSarOptions);
+    hsf::atk::ArchiveModel model(archive, hsf::EngineOptionsFor({}));
+    model.engine->StartSequence(0);
+    std::vector<int16_t> output;
+    for (int frame = 0; frame < 200; ++frame)
+    {
+        model.engine->RunFrame();
+        const std::span<const int16_t> frame_output = model.renderer.DeviceOutput();
+        output.insert(output.end(), frame_output.begin(), frame_output.end());
+    }
+
+    const auto first = std::find_if(output.begin(), output.end(), [](int16_t sample) { return sample != 0; });
+    XSFLIB_CHECK(first != output.end());
+    const auto pair = static_cast<std::size_t>(first - output.begin()) / 2;
+    const auto expected = static_cast<long long>(static_cast<double>(pair) * 5.0 / 240.0 + 0.5);
+    const auto louder = [](int16_t a, int16_t b)
+    {
+        return std::abs(a) < std::abs(b);
+    };
+    constexpr std::size_t kQuietPairs = 9600; // 200 ms
+    XSFLIB_REQUIRE(output.end() - first > static_cast<std::ptrdiff_t>(2 * kQuietPairs));
+    const auto quiet_end = first + static_cast<std::ptrdiff_t>(2 * kQuietPairs);
+    const int quiet_peak = std::abs(*std::max_element(first, quiet_end, louder));
+    const int peak = std::abs(*std::max_element(output.begin(), output.end(), louder));
+    const float volume = 0.4f / static_cast<float>(quiet_peak);
+    XSFLIB_CHECK(expected < 200 && static_cast<float>(peak) * volume > static_cast<float>(xsflib::rip::kSilenceLevel));
+
+    const hsf::rip::LengthAnalyzer analyzer(hsf::fsar::SoundArchive::Load(bytes, hsf::kSarOptions));
+    const std::optional<hsf::rip::Timing> full = analyzer.Analyze(0);
+    const std::optional<hsf::rip::Timing> quiet =
+        analyzer.Analyze(0, ntdlib::rip::kFullTrackVolumes, nullptr, nullptr, volume);
+
+    const auto ms = [](const std::optional<hsf::rip::Timing>& timing)
+    {
+        return std::to_string(timing ? timing->first_sample_ms.value_or(-1) : -1) + " ms";
+    };
+    Check(full && full->first_sample_ms == expected,
+          "the first sample comes at " + std::to_string(expected) + " ms, not " + ms(full));
+    Check(quiet && !quiet->silent && quiet->first_sample_ms == expected,
+          "at a volume that rounds the first 200 ms to 0, the first sample still comes at " + std::to_string(expected) +
+              " ms, not " + ms(quiet));
 }
 
 } // namespace
@@ -252,6 +268,7 @@ int main()
     TestTailWithDelay();
     TestTailWithReverb();
     TestDelayRings();
+    TestFirstSample();
 
     return Summary("model");
 }

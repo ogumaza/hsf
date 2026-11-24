@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 
 // The length analysis of a JAudio sound, on the model of JAudio2 (hsf::jaudio). The models of JAudio1 and the C JAudio
-// use the rules and the base class JaudioModelBase in this file too.
+// use the rules in this file too, and its base classes: SubframeLengthModel for JAudio1, JaudioModelBase for the C
+// JAudio.
 
 #pragma once
 
@@ -34,9 +35,13 @@ struct JaudioTiming
     uint32_t sequence_draws = 0;
 };
 
-// The length analysis's rules for the models of JAudio: frames of one sub-frame, 2.5 ms, and LengthAnalyzer's limits in
-// them.
-xsflib::rip::LengthRules JaudioLengthRules();
+// A frame of the length analysis of JAudio: one sub-frame, 2.5 ms.
+constexpr double kJaudioFrameMs = 2.5;
+
+// The length analysis's rules for the models of JAudio: frames of one sub-frame (kJaudioFrameMs), and LengthAnalyzer's
+// limits in them. With `limit` kLong, the analysis runs to xsflib's 3,600 s (xsflib::rip::WithLongLimit). The analyzers
+// pick it for music, the sounds that --bgm picks. A sound at either limit gets 600 s and the fade.
+xsflib::rip::LengthRules JaudioLengthRules(xsflib::rip::Limit limit = xsflib::rip::Limit::kDefault);
 
 // The parts that the length models of JAudio2, JAudio1 and the C JAudio share (xsflib::rip::MeasureLength). `Engine`
 // is the model's engine, `kVoices` the count of its DSP channels and `kNoTrack` its value for no track. The voices are
@@ -102,6 +107,24 @@ public:
         return engine_.ActiveChannels();
     }
 
+    // The milliseconds from the start of the sub-frame just run to the first sample that isn't 0 in what AudioOut plays
+    // of it, on either side, or nothing when every sample is 0 (xsflib::rip::MeasureLength). The player renders the
+    // same samples at 48 kHz. AudioOut gives the first sub-frame one pair fewer than the others. The time therefore
+    // comes from the pairs before the sample, and can come a pair before the sub-frame's start.
+    std::optional<double> FirstSampleMs() const
+    {
+        const auto first = std::find_if(output_.begin(), output_.end(), [](int16_t sample) { return sample != 0; });
+        if (first == output_.end())
+        {
+            return std::nullopt;
+        }
+
+        const uint64_t pair = pairs_before_ + static_cast<uint64_t>(first - output_.begin()) / 2;
+        const double sample_ms = static_cast<double>(pair) * 1000.0 / static_cast<double>(kPlayerSampleRate);
+
+        return sample_ms - static_cast<double>(frames_ - 1) * kJaudioFrameMs;
+    }
+
 protected:
     explicit JaudioModelBase(Engine& engine) : engine_(engine)
     {
@@ -110,6 +133,8 @@ protected:
     // Takes what AudioOut plays of the frame or sub-frame that the engine has just run.
     void TakeOutput()
     {
+        pairs_before_ += output_.size() / 2;
+        ++frames_;
         output_.clear();
         out_.Push(engine_.Output(), output_);
     }
@@ -153,6 +178,48 @@ protected:
 
 private:
     jaudio::AudioOut out_;
+    uint64_t pairs_before_ = 0; // the pairs that AudioOut played before the current output
+    uint64_t frames_ = 0;       // the sub-frames taken, the current one included
+};
+
+// The length model of the JAudio engines whose frame is one sub-frame (xsflib::rip::MeasureLength): JAudio2's and
+// JAudio1's. A frame's output is what AudioOut plays of the sub-frame. The FX lines ring while the engine's FxRinging
+// returns true. A loop is a jump back of the main track (JaudioModelBase::MainTrack), outside a subroutine. A pass that
+// started no note counts only while the sound holds its notes (the engine's Held). A sound effect that holds a note
+// until the game stops it makes such passes.
+template <typename Engine, std::size_t kVoices, uint32_t kNoTrack>
+class SubframeLengthModel : public JaudioModelBase<Engine, kVoices, kNoTrack>
+{
+public:
+    explicit SubframeLengthModel(Engine& engine) : JaudioModelBase<Engine, kVoices, kNoTrack>(engine)
+    {
+    }
+
+    bool RunFrame()
+    {
+        this->engine_.RunSubframe();
+        this->TakeOutput();
+
+        return true;
+    }
+
+    bool Ringing() const
+    {
+        return this->AnySample() || this->engine_.FxRinging();
+    }
+
+    template <typename Hook>
+    void OnLoop(Hook hook)
+    {
+        this->engine_.SetLoopHook(
+            [this, hook](uint32_t track, uint32_t target, bool played)
+            {
+                if (track == this->MainTrack() && (played || this->engine_.Held()))
+                {
+                    hook(static_cast<int>(track), target);
+                }
+            });
+    }
 };
 
 // Works out how long JAudio sounds play, on the model of JAudio set up as the player sets it up for a version 2

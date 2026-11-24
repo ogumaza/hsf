@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/rounding.h"
 #include "xsflib/bytes.h"
 #include "xsflib/psf/descriptor.h"
 #include "xsflib/psf/psf.h"
@@ -38,7 +39,7 @@ void PutNw4r(std::vector<uint8_t>& v, const Nw4rSettings& n)
 // Reads version 3's fields at `pos`, after the paths and their padding. False if `data` ends first.
 bool ReadNw4r(const std::vector<uint8_t>& data, std::size_t pos, Nw4rSettings& n)
 {
-    pos = detail::AlignTo4(pos);
+    pos = ntdlib::AlignUp(pos, 4);
     if (pos > data.size() || data.size() - pos < kNw4rBytes)
     {
         return false;
@@ -190,7 +191,7 @@ std::vector<uint8_t> ArchiveDescriptor::Serialize() const
 
     // Versions 2 and 3 keep version 1's layout up to here. An older player then reads the version, and refuses it. A
     // version 1 descriptor's track volumes follow the paths, with their flag, and its scripted starts follow those,
-    // with theirs. Its user procedures come last, with their flag. A player that doesn't know a flag refuses the
+    // with theirs. Its user procedures come last, with their flag. A player that doesn't support a flag refuses the
     // descriptor.
     if (version == kJaudioVersion)
     {
@@ -275,7 +276,7 @@ std::optional<ArchiveDescriptor> ArchiveDescriptor::Parse(const std::vector<uint
     // Version 1's track volumes follow the paths' padding.
     if (d.version == kVersion && (d.flags & kFlagTrackVolumes) != 0)
     {
-        pos = detail::AlignTo4(pos);
+        pos = ntdlib::AlignUp(pos, 4);
         if (!xsflib::psf::ReadTrackVolumes(data, pos, d.track_volumes))
         {
             return std::nullopt;

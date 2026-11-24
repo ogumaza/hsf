@@ -2,7 +2,7 @@
 
 // Tables in the main of Pikmin's Switch release that set how its C JAudio plays the cutscenes' sounds and the game's
 // effects: the cutscenes' table, the actions of the events, and the game's table of effects. Each address counts from
-// the module's start. The builds of main hold the tables at different addresses (JacBuild). The caller finds main's
+// the module's start. The builds of main keep the tables at different addresses (JacBuild). The caller finds main's
 // build by its build ID first. The loader writes each pointer in the tables, for a relative relocation.
 
 #pragma once
@@ -23,7 +23,7 @@
 namespace hsf::rip
 {
 
-// Where a build of main holds each table below.
+// Where a build of main keeps each table below.
 struct JacTableAddresses
 {
     uint64_t cutscenes = 0;
@@ -42,7 +42,7 @@ struct JacTableAddresses
 };
 
 // A build of main that hsfrip reads: its release's version, its build ID (the first 20 bytes of the module's ID, in
-// hex) and where it holds the tables.
+// hex) and where it keeps the tables.
 struct JacBuild
 {
     std::string_view version;
@@ -58,8 +58,8 @@ inline constexpr JacBuild kJacBuild100 = {"1.0.0",
                                            0x5be8f0, 0x5be91c, 0x5be948, 0x5be238, 0x6af7f0, 0x5bfa40}};
 
 // Version 1.1.0, an update. The update adds Dutch, Korean and Chinese text, fonts and textures, and changes no sound
-// file. Version 1.1.0's tables hold the same bytes as version 1.0.0's, at other addresses. These functions read them,
-// in the order of the tables below: Jac_StartDemo (0x262b70) and Jac_DemoFrame (0x263110), Jac_PlayEventAction
+// file. Version 1.1.0's tables contain the same bytes as version 1.0.0's, at other addresses. These functions read
+// them, in the order of the tables below: Jac_StartDemo (0x262b70) and Jac_DemoFrame (0x263110), Jac_PlayEventAction
 // (0x263ef0), SeSystem's functions (0x7d704 to 0x7d74c), SeContext::playSound (0x7c784) and stopSound (0x7c8cc),
 // Jac_Start (0x2683c0, through the pointer at 0x746830), the function at 0x265e80, the setter of the options' levels
 // (0x2662d0), __Prepare_BGM (0x263020), the audio thread's start-up (0x268280) and the function at 0x278bd0 (version
@@ -86,7 +86,7 @@ inline constexpr std::size_t kCutsceneRow = 16;
 inline constexpr std::size_t kEventTypes = 8;
 
 // The actions of the events (ACTION_STATUS): 6 bytes for each action. Jac_PlayEventAction (0x2628e0) reads them. The
-// game doesn't store their number. The GameCube's release holds the same 278 actions.
+// game doesn't store their number. The GameCube's release has the same 278 actions.
 inline constexpr std::size_t kActions = 278;
 inline constexpr std::size_t kActionRow = 6;
 
@@ -107,9 +107,9 @@ std::span<const uint8_t> MainBytes(const ntdlib::nx::Nso& main, uint64_t address
 std::string MainString(const ntdlib::nx::Nso& main, uint64_t address, std::string_view what);
 
 // The pointers that the loader writes into `main` for its relative relocations (R_AARCH64_RELATIVE), by the address
-// of each. The word at 4 of the text segment is the address of the module's MOD0 header. The header's word at 4 is the
-// place of the dynamic section, counted from the header. The section's DT_RELA and DT_RELASZ give the relocations.
-// Throws xsflib::FormatError if any of them is missing or out of main's segments.
+// of each. The DT_RELA and DT_RELASZ entries of the module's dynamic section (ntdlib's nx::DynamicEntries) give the
+// relocations. Throws xsflib::FormatError if the module has no MOD0 header, or if the section, either entry or the
+// relocations are missing or out of main's segments.
 std::map<uint64_t, uint64_t> RelativePointers(const ntdlib::nx::Nso& main);
 
 // A timed event of a cutscene. When the cutscene reaches `frame`, Jac_DemoFrame acts on `value`. A value from -7 to -1
@@ -213,7 +213,7 @@ inline constexpr std::size_t kIndexCountAt = 16;
 inline constexpr std::size_t kIndexEntriesAt = 36;
 inline constexpr std::size_t kIndexEntry = 32;
 
-// The sequence index as main holds it at `at`: its header and its entries. Throws xsflib::FormatError if the index
+// The sequence index as main stores it at `at`: its header and its entries. Throws xsflib::FormatError if the index
 // doesn't start with "BARC", or if it runs out of main's segments.
 std::vector<uint8_t> ReadSequenceIndex(const ntdlib::nx::Nso& main, const JacTableAddresses& at);
 
@@ -255,9 +255,9 @@ MusicTables ReadMusicTables(const ntdlib::nx::Nso& main, const JacTableAddresses
                             const std::map<uint64_t, uint64_t>& pointers);
 
 // The settings of the FX lines that the audio thread's start-up (0x266c70) gives the DSP: 0x20 bytes for each of the 4
-// lines. A line's settings hold its mode at +0 (0 for off), the places in the table of buses of the two buses that it
-// feeds at +2 and +6, its levels into them at +4 and +8, its delay in sub-frames at +0xc and its filter's 8
-// coefficients at +0x10. The table of buses holds the DSP's address of each bus, 16 bits each. Its last address, 0,
+// lines. A line's settings contain its mode at +0 (0 for off), the places in the table of buses of the two buses that
+// it feeds at +2 and +6, its levels into them at +4 and +8, its delay in sub-frames at +0xc and its filter's 8
+// coefficients at +0x10. The table of buses contains the DSP's address of each bus, 16 bits each. Its last address, 0,
 // feeds no bus. The start-up gives each line a buffer of its delay.
 inline constexpr std::size_t kFxLineSettings = 0x20;
 inline constexpr std::size_t kBuses = 12;

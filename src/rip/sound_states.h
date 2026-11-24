@@ -3,7 +3,7 @@
 // The rips of a sound archive's sounds in the states that a game's code gives them (ntdlib/sar/game_rules.h). A game's
 // code may turn tracks of a piece down as the piece plays, through the sound's handle (nn::atk's SetTrackVolume). It
 // may put a reverb on aux bus B while a sound plays. A rip of such a sound plays it in the state that the game starts
-// it in. Each later state gets a rip too. The rip's descriptor holds the state's track volumes (docs/hsf.md, "Track
+// it in. Each later state gets a rip too. The rip's descriptor contains the state's track volumes (docs/hsf.md, "Track
 // volumes") and its effects.
 
 #pragma once

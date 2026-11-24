@@ -97,8 +97,8 @@ constexpr std::array<CodeLayer, 8> kBattleLayers = {{
     {"PikBattlD", 0x8000},
 }};
 
-// What the game's code sets up for a piece. `muted` holds the tracks that the piece's directors mute, or nothing for
-// a piece whose directors take the track maps. `layers` holds the layers of the directors that take tracks given in
+// What the game's code sets up for a piece. `muted` contains the tracks that the piece's directors mute, or nothing for
+// a piece whose directors take the track maps. `layers` contains the layers of the directors that take tracks given in
 // the code. A piece of class 3 plays with `conductor`.
 struct PieceCode
 {
@@ -237,8 +237,8 @@ constexpr std::array<PieceCode, 29> kPieces = {
 };
 
 // The piece that a conductor plays (ConductorList::getSeqAndWaveFromConductor): the families' pieces by the start of
-// the conductor's name, and new_NN for new_NN_M. The game names the piece of cavekeyget.cnd itself. caveboss.cnd and
-// iron.cnd, which the game never plays, play the pieces of their names: caveboss and a_iron.
+// the conductor's name, and new_NN for new_NN_M. The game names the piece of cavekeyget.cnd itself. The game never
+// plays caveboss.cnd and iron.cnd. They play the pieces of their names: caveboss and a_iron.
 std::optional<std::string> ConductedPiece(std::string_view conductor)
 {
     constexpr std::array<std::string_view, 7> kFamilies = {"cavesoil",  "cavemetal",   "caveconc", "cavetile",
@@ -355,45 +355,24 @@ uint8_t LeadingNumber(std::string_view token)
     return static_cast<uint8_t>(value);
 }
 
-// The model of JAudio1 for the length analysis, as JAudio2's is (JaudioLengthModel in jaudio_length.cpp), with
-// JAudio2's rules. The FX lines ring while their delays hold a sample louder than 8 (jaudio1::Engine::FxRinging).
-// Without `loops`, no loop counts: a piece that a conductor plays never repeats.
-class Jaudio1LengthModel : public JaudioModelBase<jaudio1::Engine, jaudio1::Voices::kDspChannels, jaudio1::Track::kNone>
+// The model of JAudio1 for the length analysis (SubframeLengthModel), with JAudio2's rules. The FX lines ring while
+// their delays contain a sample louder than 8 (jaudio1::Engine::FxRinging). Without `loops`, no loop counts: a piece
+// that a conductor plays never repeats.
+class Jaudio1LengthModel
+    : public SubframeLengthModel<jaudio1::Engine, jaudio1::Voices::kDspChannels, jaudio1::Track::kNone>
 {
 public:
-    Jaudio1LengthModel(jaudio1::Engine& engine, bool loops) : JaudioModelBase(engine), loops_(loops)
+    Jaudio1LengthModel(jaudio1::Engine& engine, bool loops) : SubframeLengthModel(engine), loops_(loops)
     {
-    }
-
-    bool RunFrame()
-    {
-        engine_.RunSubframe();
-        TakeOutput();
-
-        return true;
-    }
-
-    bool Ringing() const
-    {
-        return AnySample() || engine_.FxRinging();
     }
 
     template <typename Hook>
     void OnLoop(Hook hook)
     {
-        if (!loops_)
+        if (loops_)
         {
-            return;
+            SubframeLengthModel::OnLoop(hook);
         }
-
-        engine_.SetLoopHook(
-            [this, hook](uint32_t track, uint32_t target, bool played)
-            {
-                if (track == MainTrack() && (played || engine_.Held()))
-                {
-                    hook(static_cast<int>(track), target);
-                }
-            });
     }
 
 private:
@@ -787,15 +766,12 @@ std::optional<std::string> ReadJaudio1GameText(const Jaudio1Paths& paths, const 
         }
     }
 
-    // The name file's sounds have little-endian IDs. The first name of a key counts.
+    // The name file's sounds have little-endian IDs.
     if (read(paths.names, data))
     {
         try
         {
-            for (const nj::AsnSound& sound : nj::ReadAsnSounds(data, false))
-            {
-                text.names.try_emplace(nj::AsnNameKey(sound.id), sound.name);
-            }
+            text.names = nj::ReadAsnNames(data, false);
         }
         catch (const xsflib::FormatError& e)
         {
@@ -811,6 +787,26 @@ Jaudio1Selection SelectJaudio1Sounds(const Jaudio1Files& files, const Jaudio1Gam
 {
     Jaudio1Choice choice(files, text, only);
     return choice.Select(bgm);
+}
+
+Jaudio1Measure Jaudio1MeasureOf(const JaudioLibrary2& library, uint32_t sound)
+{
+    Jaudio1Measure how;
+    if ((sound & kSoundSectionMask) != JaudioLibrary2::kPieceSection)
+    {
+        return how;
+    }
+
+    if (library.pieces[sound & kSoundPlaceMask].kind == JaudioPiece::kConducted)
+    {
+        how.loops = false;
+        how.warns_at_limit = false;
+        return how;
+    }
+
+    how.limit = xsflib::rip::Limit::kLong;
+
+    return how;
 }
 
 Jaudio1LengthAnalyzer::Jaudio1LengthAnalyzer(const Jaudio1Files& files, ArchiveDescriptor settings)
@@ -830,10 +826,16 @@ JaudioTiming Jaudio1LengthAnalyzer::Analyze(uint32_t sound, std::optional<uint32
             return std::nullopt;
         }
 
-        const bool conducted = (sound & kSoundSectionMask) == JaudioLibrary2::kPieceSection &&
-                               library.pieces[sound & kSoundPlaceMask].kind == JaudioPiece::kConducted;
-        Jaudio1LengthModel model(engine, !conducted);
-        const std::optional<Timing> timing = xsflib::rip::MeasureLength(model, JaudioLengthRules());
+        const Jaudio1Measure how = Jaudio1MeasureOf(library, sound);
+        Jaudio1LengthModel model(engine, how.loops);
+        std::optional<Timing> timing = xsflib::rip::MeasureLength(model, JaudioLengthRules(how.limit));
+        if (timing && timing->at_limit && !how.warns_at_limit)
+        {
+            // The sound plays the limit's length from its first sound, as the tags of a timing at the limit give it.
+            timing->at_limit = false;
+            timing->length_ms += timing->first_sample_ms.value_or(0);
+        }
+
         result.missing_bank_notes = engine.MissingBankNotes();
         result.sequence_draws = engine.SequenceDraws();
 

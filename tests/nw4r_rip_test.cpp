@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 // Tests a Wii sound archive's parts (rip/nw4r_rip.h): its sequences, a loop's length on Skyward Sword HD's layer,
-// and the copy of the archive that a library holds (ntdlib's rsar/cut.h).
+// and the copy of the archive that a library contains (ntdlib's rsar/cut.h).
 
 #include "rip/nw4r_rip.h"
 
@@ -18,6 +18,7 @@
 #include "ntdlib/testing/rsar_files.h"
 #include "ntdlib/testing/sar_files.h"
 #include "xsflib/testing/check.h"
+#include "xsflib/testing/timing.h"
 
 #include "rip/rip.h"
 
@@ -50,10 +51,9 @@ void TestNw4r()
 
     // Two loops of 250 ms, then the fade.
     const std::optional<hsf::rip::Timing> timing = hsf::rip::AnalyzeNw4rLength(archive, {}, 0);
-    Check(timing && timing->length_ms >= 490 && timing->length_ms <= 510 && timing->fade_ms == 10000,
-          "two loops of 24 ticks on the layer, " + std::to_string(timing ? timing->length_ms : -1) + " ms");
+    CheckTiming("two loops of 24 ticks on the layer", timing, 490, 510, 7000);
 
-    // The copy holds the sequence's files as the archive does, and plays them the same.
+    // The copy contains the sequence's files as the archive does, and plays them the same.
     const std::vector<uint8_t> kept = ntdlib::rsar::KeepSequenceData(archive, {0}, ntdlib::rvl::snd::kRsarOptions);
     const auto cut = ntdlib::rsar::SoundArchive::Load(kept, ntdlib::rvl::snd::kRsarOptions);
     const auto same = [&archive, &cut](uint32_t file_id)

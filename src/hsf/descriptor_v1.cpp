@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/rounding.h"
 #include "xsflib/bytes.h"
 #include "xsflib/psf/descriptor.h"
 #include "xsflib/psf/psf.h"
@@ -301,7 +302,7 @@ void PutScripts(std::vector<uint8_t>& v, const std::vector<ScriptedStart>& scrip
 bool ReadScripts(const std::vector<uint8_t>& data, std::size_t& pos, std::vector<ScriptedStart>& scripts,
                  std::vector<AddonArchive>& addons)
 {
-    pos = AlignTo4(pos);
+    pos = ntdlib::AlignUp(pos, 4);
     if (pos > data.size() || data.size() - pos < 4)
     {
         return false;
@@ -360,7 +361,7 @@ bool ReadScripts(const std::vector<uint8_t>& data, std::size_t& pos, std::vector
     addons.resize(addon_count);
     for (AddonArchive& addon : addons)
     {
-        pos = AlignTo4(pos);
+        pos = ntdlib::AlignUp(pos, 4);
         if (pos > data.size() || !xsflib::psf::ReadArchivePaths(data, pos, addon))
         {
             return false;
@@ -386,7 +387,7 @@ void PutProcedures(std::vector<uint8_t>& v, const UserProcedureHandler& procedur
 
 bool ReadProcedures(const std::vector<uint8_t>& data, std::size_t pos, UserProcedureHandler& procedures)
 {
-    pos = AlignTo4(pos);
+    pos = ntdlib::AlignUp(pos, 4);
     if (pos > data.size() || data.size() - pos < kProceduresBytes)
     {
         return false;

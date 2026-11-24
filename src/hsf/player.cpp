@@ -521,7 +521,7 @@ struct Player::JacTraits
     {
         model.engine.RunFrame();
         const std::span<const int16_t> output = model.engine.Output();
-        // The FX lines' feedback can hold quieter values than xsflib's level of silence for ever.
+        // The FX lines' feedback can keep quieter values than xsflib's level of silence for ever.
         model.silent = !xsflib::rip::Audible(output);
         model.out.Push(output, out);
 

@@ -2,7 +2,7 @@
 
 // The pieces of music that wait for values that the game gives their sequences' variables, and the states they play
 // in. A rip of such a piece plays it in the state that the game starts it in. Each later state that stays set gets a
-// rip too. The rip's descriptor holds the values (docs/hsf.md, "Scripted starts").
+// rip too. The rip's descriptor contains the values (docs/hsf.md, "Scripted starts").
 
 #pragma once
 
@@ -36,8 +36,9 @@ struct VariableState
 
 // A piece that waits for its variables: its label in the sound archive, its states and its companion. The first state
 // is the state that the game starts the piece in. The companion is the label of a sound that the game plays beside the
-// piece, and that plays a part under it, or empty. When the piece's archive doesn't hold it, the game's sound archive
-// named `companion_archive` (its file name without the extension) does. The game plays that archive as an add-on.
+// piece, and that plays a part under it, or empty. When the piece's archive doesn't contain it, the game's sound
+// archive named `companion_archive` (its file name without the extension) does. The game plays that archive as an
+// add-on.
 struct WaitingPiece
 {
     std::string_view label;
@@ -80,13 +81,13 @@ constexpr uint16_t kRhythmNumber = 28;
 ScriptedStart RhythmScript(uint32_t piece, uint32_t controller, const xsflib::psf::Variables& variables,
                            uint16_t controller_archive = ScriptStep::kNone);
 
-// The waiting pieces of the sound archive `archive`, which a table recognizes by the archive's size and SHA-1. None for
-// any other archive.
+// The waiting pieces of the sound archive `archive`. A table recognizes the archive by its size and SHA-1. None for any
+// other archive.
 std::span<const WaitingPiece> WaitingPieces(std::span<const uint8_t> archive);
 
 // The jobs that rip `selected` in the states of `pieces`. A piece's job takes the piece's first state. The jobs of its
-// later states follow it, under the piece's label, a space and the state's name. The other jobs stay as they are. A
-// job matches a piece by its whole label. A job of a track state, which WithStates names "LABEL state", therefore gets
+// later states follow it, under the piece's label, a space and the state's name. The other jobs stay as they are. A job
+// matches a piece by its whole label. WithStates names a job of a track state "LABEL state". Such a job therefore gets
 // no variables. No game's rules give a waiting piece track states.
 std::vector<ntdlib::rip::Job> WithVariableStates(std::span<const WaitingPiece> pieces,
                                                  const std::vector<ntdlib::rip::Job>& selected);

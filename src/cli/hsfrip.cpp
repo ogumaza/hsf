@@ -5,7 +5,7 @@
 // usage: hsfrip [options] <input> [<input> ...]
 //   <input>          a Switch game's files or a sound archive (.bfsar, or the Wii's .brsar that Skyward Sword HD
 //                    plays). The game's files are a folder (its RomFS, once it's extracted) or a Bezel Engine archive
-//                    (.bea). An NSP, XCI or NCA holds them encrypted, and is refused.
+//                    (.bea). An NSP, XCI or NCA contains them encrypted, and is refused.
 //   -o, --output DIR the folder the rips go in (default: a folder next to each input, with the input's name and "_hsf"
 //                    added)
 //   --list           list each game's sound archives, or what an archive holds, then stop
@@ -30,7 +30,7 @@
 // isn't all there are listed and skipped. So are those that make no sound: those whose volume in the archive is 0, and
 // those that the length analysis finds never sound. The inputs are ripped one after another. An input that fails
 // doesn't stop the rest. Dropping files or folders on the program gives it them as inputs. A game without a Switch
-// sound archive or JAudio's files may hold Wii sound archives (.brsar). Skyward Sword HD does. Each one is ripped in
+// sound archive or JAudio's files may contain Wii sound archives (.brsar). Skyward Sword HD does. Each one is ripped in
 // the same way, with a library of the part of the archive that its sequences play.
 
 #include "cli/hsfrip.h"
@@ -237,11 +237,11 @@ int RipGame(const std::string& input, const fs::path& out_dir, const Options& o,
         std::fprintf(stderr, "the game's sound sheets give levels for %zu sounds\n", game.sound_levels.Count());
     }
 
-    // A group file anywhere among the game's files. A file holds the group when the file's name is the group's file
+    // A group file anywhere among the game's files. A file contains the group when the file's name is the group's file
     // name in any case.
     const auto find_group = [&game](const std::string& name)
     {
-        return ntdlib::rip::FindGroupFile<FileChunk>(game.files, game.read_file, name);
+        return ntdlib::rip::FindGroupFile<FileChunk>(game.files, game.read_file, name, ntdlib::sar::Flavor::kNx);
     };
 
     // A game can keep the group files of a sound archive in the SARC archives in the folder of the sound archive, under
@@ -272,7 +272,7 @@ int RipLooseArchive(const std::string& input, const fs::path& out_dir, const Opt
     ArchiveToRip rip;
     rip.settings = OptionSettings(o);
 
-    // A loose archive's add-ons lie beside it, with the same extension.
+    // A loose archive's add-ons are beside it, with the same extension.
     const fs::path loose = InputPath(input);
     rip.find_archive = [loose](std::string_view name) -> std::optional<FileChunk>
     {

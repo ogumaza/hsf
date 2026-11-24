@@ -35,14 +35,6 @@ using hsf::WritePsf;
 
 constexpr uint8_t kVersion = hsf::kPsfVersionHsf;
 
-// The error LoadSet gives for `path`, or an empty string if the set loads.
-std::string LoadError(const std::string& path, const FileReader& reader)
-{
-    LoadedSet set;
-    const auto err = hsf::LoadSet(path, reader, set);
-    return err ? *err : std::string();
-}
-
 // An I3DL2 reverb on aux bus `bus`, with parameters 1 to 12.
 hsf::AuxEffect Reverb(uint32_t bus)
 {
@@ -65,7 +57,7 @@ bool Refuses(const ArchiveDescriptor& d, Change change)
     return odd.Check().has_value();
 }
 
-// Checks that a copy of `d` that `change(d)` has changed fails Check with an error that holds `message`.
+// Checks that a copy of `d` that `change(d)` has changed fails Check with an error that contains `message`.
 template <class Change>
 void CheckRefused(const ArchiveDescriptor& d, Change change, std::string_view message)
 {
@@ -248,7 +240,7 @@ void TestReverbEffect()
     XSFLIB_CHECK(back && back->effects.size() == 2 && back->effects[1].type == hsf::AuxEffect::kReverb &&
                  back->effects[1].bus == 1 && back->effects[1].parameters == reverb.parameters);
 
-    // The limits of the times and the modes are accepted. Gains outside 0 to 1 are too: nn::atk holds them.
+    // The limits of the times and the modes are accepted. Gains outside 0 to 1 are too: nn::atk clamps them.
     struct Change
     {
         std::size_t parameter;
@@ -874,8 +866,8 @@ void TestJaudioLibrary3()
         fields.insert(fields.end(), bytes);
     };
     put({23, 0});
-    const std::string_view index = "exefs/main/pikiseq.barc";
-    fields.insert(fields.end(), index.begin(), index.end());
+    const std::string_view kIndex = "exefs/main/pikiseq.barc";
+    fields.insert(fields.end(), kIndex.begin(), kIndex.end());
     put({0, 0, 0});                                     // zeros to a multiple of 4
     put({0, 0, 1, 0, 13, 0, 2, 0});                     // the start-up files
     put({0x20, 0x4e, 0x40, 0x1f});                      // the levels
@@ -978,10 +970,10 @@ void TestLoadSet()
     fs["dir/nosound.hsflib"] = WritePsf(kVersion, archive.Serialize(), {}, {});
     fs["dir/v4.hsflib"] = WritePsf(kVersion, v4.Serialize(), {}, {});
 
-    XSFLIB_CHECK(LoadError("dir/z.miniwsf", reader).find("not an HSF file") != std::string::npos);
-    XSFLIB_CHECK(LoadError("dir/w.minihsf", reader).starts_with("no archive descriptor"));
-    XSFLIB_CHECK(LoadError("dir/nosound.hsflib", reader).starts_with("no sound selected"));
-    XSFLIB_CHECK(LoadError("dir/v4.hsflib", reader).find("version 4") != std::string::npos);
+    XSFLIB_CHECK(LoadError<hsf::SetFormat>("dir/z.miniwsf", reader).find("not an HSF file") != std::string::npos);
+    XSFLIB_CHECK(LoadError<hsf::SetFormat>("dir/w.minihsf", reader).starts_with("no archive descriptor"));
+    XSFLIB_CHECK(LoadError<hsf::SetFormat>("dir/nosound.hsflib", reader).starts_with("no sound selected"));
+    XSFLIB_CHECK(LoadError<hsf::SetFormat>("dir/v4.hsflib", reader).find("version 4") != std::string::npos);
 
     // A version 2 set loads with its settings.
     ArchiveDescriptor jaudio = ArchiveDescriptor::Jaudio({});

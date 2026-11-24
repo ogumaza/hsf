@@ -2,7 +2,7 @@
 
 // A Switch game's files, as hsfrip reads them: a folder (a game's RomFS once it's extracted, or any folder of its
 // files), or one Bezel Engine archive (.bea). The files inside the folder's Bezel Engine archives count as the game's
-// files too. A game's NSP and XCI files hold its files encrypted, and are refused.
+// files too. A game's NSP and XCI files contain its files encrypted, and are refused.
 
 #pragma once
 

@@ -7,12 +7,16 @@
 //                      it). It takes a single input.
 //   --length T         override the length tag (seconds, m:s or h:m:s)
 //   --fade T           override the fade tag
-//   --default T        length when there's no length tag (default and fade: PlaybackOptions)
+//   --default T        length when there's no length tag
+//   --raw              render the file as it is, with no skip and no added silence
 //   --info             print the tags and loaded files, and don't render
 //   --version          print the version
 //
-// The files are rendered one after another. A file that fails doesn't stop the rest. A .hsflib among them is skipped.
-// It's a library that the others load. Dropping files on the program gives it the files as inputs.
+// By default, a render plays the file the way a soundtrack album plays a track. It skips the silence before the first
+// sound, and adds 0.5 s of silence before the track and 1 s after it. `--help` lists the options that change this
+// (xsflib/cli/play.h). The files are rendered one after another. A file that fails doesn't stop the rest. A .hsflib
+// among them is skipped. It's a library that the others load. Dropping files on the program gives it the files as
+// inputs.
 
 #include <cstdio>
 #include <string>
@@ -28,10 +32,11 @@ namespace
 // The help's description of what the tool does.
 constexpr char kDescription[] =
     "Renders each .minihsf file at the output's 48000 Hz to a WAV file next to it. The render\n"
-    "lasts for the file's length and fade tags. Libraries (.hsflib) are skipped: the .minihsf\n"
-    "files load them. You can also drop files on the program.\n";
+    "plays the file's length and fade tags from its first sound, with silence before and after\n"
+    "it. Libraries (.hsflib) are skipped: the .minihsf files load them. You can also drop files\n"
+    "on the program.\n";
 
-// What the set holds, for the summary line of --info.
+// What the set contains, for the summary line of --info.
 std::string DescribeSet(hsf::Playback& playback)
 {
     const hsf::LoadedSet& set = playback.GetPlayer().GetLoadedSet();

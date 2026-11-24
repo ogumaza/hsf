@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 
 // The tables in the main of Pikmin's Switch release (src/rip/jac_tables.*), read from a synthetic module. Its three
-// segments sit at the addresses of version 1.0.0's main, and it holds the tables where that build holds them. The text
-// segment holds a MOD0 header, a dynamic section and the relocations. The read-only segment holds the first actions,
-// the actions and the effects' names. The data segment holds the game's table of effects, the cutscenes' table and the
-// cutscenes' events. A second module adds the sequence index, the music's tables and the FX lines. The test then
-// damages the modules in each way that the readers refuse. It also finds each build of main by its build ID, and reads
-// two tables from other addresses.
+// segments sit at the addresses of version 1.0.0's main, and it keeps the tables where that build keeps them. The text
+// segment contains a MOD0 header, a dynamic section and the relocations. The read-only segment contains the first
+// actions, the actions and the effects' names. The data segment contains the game's table of effects, the cutscenes'
+// table and the cutscenes' events. A second module adds the sequence index, the music's tables and the FX lines. The
+// test then damages the modules in each way that the readers refuse. It also finds each build of main by its build ID,
+// and reads two tables from other addresses.
 
 #include "rip/jac_tables.h"
 
@@ -31,7 +31,7 @@ namespace
 
 namespace rip = hsf::rip;
 
-// Where the synthetic modules hold the tables.
+// Where the synthetic modules keep the tables.
 constexpr rip::JacTableAddresses kAt = rip::kJacBuild100.at;
 
 // The synthetic module's layout.
@@ -123,8 +123,8 @@ void Finish(Module& module)
     Finish(module, 24 * module.relocations.size());
 }
 
-// The values that the synthetic tables hold: each action's, each effect's name, and each cutscene's values besides its
-// events.
+// The values in the synthetic tables: the values of each action, the name of each effect, and the values of each
+// cutscene besides its events.
 rip::EventAction ActionOf(std::size_t row)
 {
     return {static_cast<uint8_t>(row % 0x40), static_cast<uint8_t>(row % 5), static_cast<uint8_t>(row % 31),
@@ -221,7 +221,7 @@ Module GoodModule()
     Put16(module, at, 1);
     Put16(module, at + 2, 7);
 
-    // A relocation of another type, which the readers leave out.
+    // A relocation of another type. The readers leave it out.
     module.relocations.push_back({kDataAt, kGlobalData, kNamesAt});
     Finish(module);
 
@@ -432,9 +432,9 @@ std::string ErrorAfter(Damage damage)
 void TestDamage()
 {
     // The module's header and its dynamic section.
-    XSFLIB_CHECK(ErrorAfter([](Module& m) { Put32(m, kMod0At, 0); }) == "main has no MOD0 header");
+    XSFLIB_CHECK(ErrorAfter([](Module& m) { Put32(m, kMod0At, 0); }) == "the module has no MOD0 header");
     XSFLIB_CHECK(ErrorAfter([](Module& m) { Put32(m, 4, static_cast<uint32_t>(kTextSize)); }) ==
-                 "main's segments don't hold the module's header");
+                 "the module has no MOD0 header");
     XSFLIB_CHECK(ErrorAfter([](Module& m) { Put64(m, kDynamicAt + 16, 0); }) ==
                  "main's dynamic section has no DT_RELA or no DT_RELASZ");
     XSFLIB_CHECK(ErrorAfter([](Module& m) { Finish(m, 24 * m.relocations.size() + 1); }) ==
@@ -480,8 +480,8 @@ void TestDamage()
     XSFLIB_CHECK(ErrorAfter(unended) == "main's segments don't hold the name of effect 9");
 }
 
-// The second module's segments are longer. Its read-only segment holds each piece's sets of child tracks and volumes
-// at these addresses, and the table of buses. Its data segment holds the sequence index, the pointers of the music's
+// The second module's segments are longer. Its read-only segment contains each piece's sets of child tracks and volumes
+// at these addresses, and the table of buses. Its data segment contains the sequence index, the pointers of the music's
 // tables and the FX lines.
 constexpr std::size_t kLongRodataSize = 0x9000;
 constexpr std::size_t kLongDataSize = 0x23000;
@@ -527,7 +527,7 @@ uint16_t BusOf(std::size_t place)
     return place + 1 < rip::kBuses ? static_cast<uint16_t>(0x100 * (place + 1) + 0x40) : uint16_t{0};
 }
 
-// FX line i feeds the bus at place 2i and the last place, which feeds no bus.
+// FX line i feeds the bus at place 2i and the last place. The last place feeds no bus.
 hsf::JaudioFxLine LineOf(std::size_t line)
 {
     hsf::JaudioFxLine settings;
@@ -688,7 +688,7 @@ void TestMusicDamage()
 {
     XSFLIB_CHECK(MusicErrorAfter([](Module&) {}).empty());
 
-    // The sequence index without its tag, and with more sequences than the data segment holds.
+    // The sequence index without its tag, and with more sequences than the data segment contains.
     XSFLIB_CHECK(MusicErrorAfter([](Module& m) { *At(m, kAt.sequence_index) = 'b'; }) ==
                  "main's sequence index doesn't start with BARC");
     XSFLIB_CHECK(MusicErrorAfter([](Module& m) { Put32(m, kAt.sequence_index + rip::kIndexCountAt, 1000); }) ==
@@ -718,7 +718,7 @@ void TestMusicDamage()
     XSFLIB_CHECK(MusicErrorAfter([](Module& m) { m.nso.rodata.bytes.resize(kAt.buses + 4 - kRodataAt); }) ==
                  "main's segments don't hold the table of the DSP's buses");
 
-    // The data segment cut in FX line 3's settings. The sequence index lies past them.
+    // The data segment cut in the settings of FX line 3. The sequence index is past them.
     Module cut = MusicModule();
     cut.nso.data.bytes.resize(kAt.fx_lines + rip::kFxLineSettings * 3 + 4 - kDataAt);
     XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { rip::ReadFxLines(cut.nso, kAt); }) ==

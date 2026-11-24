@@ -67,7 +67,7 @@ std::vector<Nw4rJob> SelectNw4rSounds(const ntdlib::rsar::SoundArchive& archive,
 }
 
 std::optional<Timing> AnalyzeNw4rLength(const ntdlib::rsar::SoundArchive& archive, const Nw4rSettings& settings,
-                                        uint32_t index)
+                                        uint32_t index, xsflib::rip::Limit limit)
 {
     using LengthConsole = ntdlib::rvl::nx::LengthConsole;
     const auto make_model = [&archive, &settings]
@@ -77,9 +77,9 @@ std::optional<Timing> AnalyzeNw4rLength(const ntdlib::rsar::SoundArchive& archiv
         model->Start(archive);
         return model;
     };
-    const auto measure = [&make_model, index]
+    const auto measure = [&make_model, index, limit]
     {
-        return ntdlib::nwsnd::MeasureSequence<LengthConsole>(make_model, index);
+        return ntdlib::nwsnd::MeasureSequence<LengthConsole>(make_model, index, {}, limit);
     };
 
     return xsflib::rip::TryMeasure(measure);

@@ -51,7 +51,7 @@ atk::EffectBase::ChannelMode ChannelMode(float mode)
 }
 
 // nn::atk's delay with a delay's parameters (DelayParameter). The longest delay and the channel mode come first.
-// nn::atk takes them only before the delay is added, and holds the delay to the longest delay.
+// nn::atk takes them only before the delay is added, and limits the delay to the longest delay.
 std::unique_ptr<atk::EffectDelay> MakeDelay(const std::vector<float>& p)
 {
     auto delay = std::make_unique<atk::EffectDelay>();
@@ -85,7 +85,7 @@ std::unique_ptr<atk::EffectLightLimiter> MakeLightLimiter(const std::vector<floa
 }
 
 // nn::atk's reverb with a reverb's parameters (ReverbParameter). The channel mode comes first. nn::atk takes it only
-// before the reverb is added. The setters hold the gains, the ratio and the times as Clubhouse Games' nn::atk does.
+// before the reverb is added. The setters clamp the gains, the ratio and the times as Clubhouse Games' nn::atk does.
 std::unique_ptr<atk::EffectReverb> MakeReverb(const std::vector<float>& p)
 {
     auto reverb = std::make_unique<atk::EffectReverb>();
@@ -369,7 +369,7 @@ EffectTail::EffectTail(const std::vector<AuxEffect>& effects)
             continue;
         }
 
-        // nn::atk holds the delay to the longest delay.
+        // nn::atk limits the delay to the longest delay.
         const auto delay =
             static_cast<int64_t>(std::min(effect.parameters[kDelayTime], effect.parameters[kDelayTimeMax]));
         const auto frames = static_cast<uint64_t>((delay + kFrameMicroseconds - 1) / kFrameMicroseconds);

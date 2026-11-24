@@ -1,22 +1,21 @@
 // SPDX-License-Identifier: MIT
 
-// The parts of hsfrip that its rips of each kind of input share: the options, what a rip does when its selection holds
-// no sound, the drop of the sounds that make none, and the writing of a rip.
+// The parts of hsfrip that its rips of each kind of input share: the options, what a rip does when its selection
+// contains no sound, and the writing of a rip.
 
 #pragma once
 
-#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <optional>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include "ntdlib/rip/archive.h"
 #include "xsflib/cli/rip.h"
 #include "xsflib/psf/psf.h"
+#include "xsflib/rip/length_tags.h"
 #include "xsflib/rip/tool.h"
 
 #include "hsf/format.h"
@@ -34,8 +33,8 @@ struct Options : xsflib::cli::RipOptions
     int voices = 0; // 0: the game's voice count, or 96
 };
 
-// The exit code when a selection of sounds holds none. An --only or --bgm that matches nothing is an error. Otherwise
-// the input has nothing to rip. `source` is the file that the sounds come from.
+// The exit code when a selection of sounds contains none. An --only or --bgm that matches nothing is an error.
+// Otherwise the input has nothing to rip. `source` is the file that the sounds come from.
 inline int NoSoundsSelected(const std::string& source, const Options& o)
 {
     if (!o.only_text.empty() || o.bgm)
@@ -45,31 +44,6 @@ inline int NoSoundsSelected(const std::string& source, const Options& o)
 
     std::fprintf(stderr, "%s: nothing to rip\n", source.c_str());
     return 0;
-}
-
-// Drops the jobs that the length analysis found make no sound, each with a message, and calls `on_kept(job)` for each
-// job that stays. Returns how many it dropped.
-template <class Job, class OnKept>
-std::size_t DropSilent(std::vector<Job>& jobs, OnKept on_kept)
-{
-    std::size_t silent = 0;
-    std::vector<Job> kept;
-    for (Job& job : jobs)
-    {
-        if (job.timing && job.timing->silent)
-        {
-            silent++;
-            std::fprintf(stderr, "skipped %s: it makes no sound\n", job.label.c_str());
-            continue;
-        }
-
-        on_kept(job);
-        kept.push_back(std::move(job));
-    }
-
-    jobs = std::move(kept);
-
-    return silent;
 }
 
 // Writes the rip of the archive or file at `path` into the folder of `out_dir` named after it: the library that
@@ -96,7 +70,8 @@ int WriteRip(const std::string& path, const std::string& game_name, const std::v
     {
         return build_mini(job, *lib_name, tags);
     };
-    const int written = xsflib::cli::WriteMinis(rip_dir, names, jobs, common, "hsf_sound", build);
+    const int written =
+        xsflib::cli::WriteMinis(rip_dir, names, jobs, common, xsflib::rip::LengthFrom::kFirstSound, "hsf_sound", build);
     if (written < 0)
     {
         return 1;

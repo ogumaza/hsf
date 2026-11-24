@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-// Tests the descriptors of the JAudio games' variants (JobDescriptor, rip/jaudio_rip.h) and the tracks of Pikmin 2's
-// layers (LayerTracks, rip/jaudio1_rip.h).
+// Tests the descriptors of the JAudio games' variants (JobDescriptor, rip/jaudio_rip.h), the tracks of Pikmin 2's
+// layers (LayerTracks, rip/jaudio1_rip.h) and how the length analysis measures Pikmin 2's sounds (Jaudio1MeasureOf).
 
 #include "rip/jaudio_rip.h"
 
@@ -15,8 +15,8 @@ using namespace xsflib::testing;
 namespace
 {
 
-// A variant's descriptor is the library's, with the variant's track states for its sound, or with its muted tracks for
-// its piece. Nothing else changes.
+// The descriptor of a variant is the library descriptor, with the track states of the variant for its sound, or with
+// its muted tracks for its piece. Nothing else changes.
 void TestJobDescriptor()
 {
     hsf::ArchiveDescriptor library;
@@ -67,12 +67,35 @@ void TestLayerTracks()
     Check(hsf::rip::LayerTracks(wide, 5) == 0, "a layer past the 16th track has none");
 }
 
+// A piece of music runs to the long limit. A piece that a conductor plays never repeats: it keeps the default limit,
+// its loops don't count, and it reaches the limit with no warning. An effect keeps the default limit.
+void TestMeasure()
+{
+    hsf::JaudioLibrary2 library;
+    library.pieces.resize(2);
+    library.pieces[1].kind = hsf::JaudioPiece::kConducted;
+    library.pieces[1].conductor = "caveconc_00_0.cnd";
+
+    const hsf::rip::Jaudio1Measure piece = hsf::rip::Jaudio1MeasureOf(library, hsf::JaudioLibrary2::kPieceSection);
+    const hsf::rip::Jaudio1Measure conducted =
+        hsf::rip::Jaudio1MeasureOf(library, hsf::JaudioLibrary2::kPieceSection | 1);
+    const hsf::rip::Jaudio1Measure effect = hsf::rip::Jaudio1MeasureOf(library, 0x0800 | 0x12);
+
+    Check(piece.loops && piece.limit == xsflib::rip::Limit::kLong && piece.warns_at_limit,
+          "a piece runs to the long limit");
+    Check(!conducted.loops && conducted.limit == xsflib::rip::Limit::kDefault && !conducted.warns_at_limit,
+          "a conducted piece keeps the default limit, with no warning");
+    Check(effect.loops && effect.limit == xsflib::rip::Limit::kDefault && effect.warns_at_limit,
+          "an effect keeps the default limit");
+}
+
 } // namespace
 
 int main()
 {
     TestJobDescriptor();
     TestLayerTracks();
+    TestMeasure();
 
     return Summary("jaudio_rip");
 }

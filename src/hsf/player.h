@@ -26,7 +26,7 @@ namespace hsf
 // The player. Loading, starting, rendering, the state and the tags' length, fade and volume come from xsflib's
 // PlayerBase, and archive mode's steps from its ArchiveSource. Start starts the sound on the model, with the set's
 // effects on the aux buses. It can be called again to restart from the beginning. The first Start moves the bytes of
-// the sound archive and the group files out of the set and into the source's archive. A large archive is then held
+// the sound archive and the group files out of the set and into the source's archive. A large archive is then kept
 // once. The sound has finished once the sequence has ended, no channel sounds and a frame's output was silent. The
 // effects have then died away too. FinishedFrame gives the frame count at the end of that frame. The player takes
 // snapshots of the nn::atk model and of NW4R SND's model. xsflib's Playback seeks with them. It takes none of the
@@ -41,6 +41,9 @@ public:
 
     // The rate players report: 48,000 Hz.
     static constexpr int kSampleRate = kPlayerSampleRate;
+
+    // The length tags of a rip count from its first sound: the first sample that isn't 0.
+    static constexpr xsflib::player::LengthOrigin kLengthOrigin = xsflib::player::LengthOrigin::kFirstSound;
 
     Player();
     Player(const Player&) = delete;

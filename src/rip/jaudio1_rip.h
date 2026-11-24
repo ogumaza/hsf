@@ -16,6 +16,8 @@
 #include <string>
 #include <vector>
 
+#include "xsflib/rip/length.h"
+
 #include "hsf/format.h"
 #include "hsf/jaudio1.h"
 #include "rip/jaudio_length.h"
@@ -25,9 +27,9 @@
 namespace hsf::rip
 {
 
-// Pikmin 2's files that a rip reads, by their paths among the game's files. The folder AudioRes holds the start-up
+// Pikmin 2's files that a rip reads, by their paths among the game's files. The folder AudioRes contains the start-up
 // archive (an AAF), the sequence archive (Seqs/Seq.arc), the wave archives (Banks), the conductor archive
-// (Conductor.arc) and the sounds' names (an .asn file). The folder user beside it holds the game's list of its music
+// (Conductor.arc) and the sounds' names (an .asn file). The folder user beside it contains the game's list of its music
 // (Totaka/BgmList.txt) and the track maps.
 struct Jaudio1Paths
 {
@@ -80,7 +82,7 @@ struct Jaudio1GameText
 };
 
 // Reads what a rip takes from the game's files besides its sound files. The name file may be missing. Returns an error
-// for another file that the game lacks or that can't be read.
+// for another file that is missing from the game's files or can't be read.
 std::optional<std::string> ReadJaudio1GameText(const Jaudio1Paths& paths, const ReadGameFile& read,
                                                Jaudio1GameText& text);
 
@@ -92,15 +94,29 @@ struct Jaudio1Selection
     std::vector<std::string> warnings;
 };
 
-// Pikmin 2's sounds whose labels match `only`: each piece of music that a file of the sequence archive holds, with
+// Pikmin 2's sounds whose labels match `only`: each piece of music that a file of the sequence archive contains, with
 // what the game's code sets up for it, then the effects of the sound table. A piece of the cave music plays once with
 // each of its conductors. With `bgm`, only the music. A piece's ID is section 2 and its place in the descriptor's list.
-// An effect's ID is the sound table's, with bit 11 set (the game keeps the effect until it ends). A piece is named
-// after its file, a piece of the cave music after its conductor, and an effect as the name file names it, or after
-// its category and index. Each layer of a piece with a track map gives a variant of the piece, named after the piece
-// and the layer, if both names match `only`. The variants come last.
+// An effect's ID is its index in the sound table, with bit 11 set (the game keeps the effect until it ends). A piece is
+// named after its file, a piece of the cave music after its conductor, and an effect as the name file names it, or
+// after its category and index. Each layer of a piece with a track map gives a variant of the piece, named after the
+// piece and the layer, if both names match `only`. The variants come last.
 Jaudio1Selection SelectJaudio1Sounds(const Jaudio1Files& files, const Jaudio1GameText& text, const std::regex& only,
                                      bool bgm);
+
+// How the length analysis measures a sound of Pikmin 2.
+struct Jaudio1Measure
+{
+    bool loops = true;                                       // whether the sound's loops count
+    xsflib::rip::Limit limit = xsflib::rip::Limit::kDefault; // how long the analysis plays the sound at most
+    bool warns_at_limit = true; // whether a sound that plays to the limit keeps xsflib::rip::Timing::at_limit
+};
+
+// How the length analysis measures the sound with ID `sound` of `library`. A piece of music runs to the long limit. A
+// piece that a conductor plays never repeats: its loops don't count, and it keeps the default limit. It plays to that
+// limit by design, with no warning, and its tags are those of a timing at the limit: the limit's length and the fade of
+// a loop. An effect keeps the default limit.
+Jaudio1Measure Jaudio1MeasureOf(const JaudioLibrary2& library, uint32_t sound);
 
 // Works out how long the sounds of a library 2 descriptor play, on the model of JAudio1 set up as the player sets it
 // up (hsf/jaudio1.h). Analyze can be called from several threads at once.
@@ -110,9 +126,9 @@ public:
     // `files` must outlive the analyzer.
     Jaudio1LengthAnalyzer(const Jaudio1Files& files, ArchiveDescriptor settings);
 
-    // As JaudioLengthAnalyzer::Analyze does, for the sound with ID `sound`. A piece that a conductor plays never
-    // repeats: its loops don't count. The timing is empty when the sound can't start. With `draws`, the sound starts
-    // after that many draws from the sequences' generator, in place of the descriptor's draws for it.
+    // As JaudioLengthAnalyzer::Analyze does, for the sound with ID `sound`, measured as Jaudio1MeasureOf says. The
+    // timing is empty when the sound can't start. With `draws`, the sound starts after that many draws from the
+    // sequences' generator, in place of the descriptor's draws for it.
     JaudioTiming Analyze(uint32_t sound, std::optional<uint32_t> draws = std::nullopt) const;
 
 private:

@@ -11,6 +11,7 @@
 #include <exception>
 #include <map>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <utility>
@@ -19,6 +20,7 @@
 #include "ntdlib/nx/bex/music_sync.h"
 #include "ntdlib/rip/archive.h"
 #include "ntdlib/rip/archive_mode.h"
+#include "ntdlib/sar/game_rules.h"
 #include "xsflib/cli/rip.h"
 
 #include "hsf/format.h"
@@ -35,10 +37,8 @@ namespace
 
 using ntdlib::rip::Job;
 
-// The latest start, in frames of 5 ms, that the nn::atk ripper tries for a sound that never sounds and whose sequence
-// draws a number, and the frames after each start in which the sound has to sound (AnalyzeLengths). A branch that one
-// draw in ten takes would have to be missed 400 times in a row.
-constexpr uint32_t kStartDelays = 400;
+// The frames of 5 ms after each later start in which a sound that draws a number has to sound (AnalyzeLengths). The
+// latest start is ntdlib's sar::kStartDelays.
 constexpr uint32_t kStartWindow = 2000;
 
 // The waiting pieces of the archives that the rip has begun, by the archive's path. The rip cuts an archive down to the
@@ -88,8 +88,8 @@ std::vector<uint32_t> CompanionsInArchive(const ArchiveToRip& to_rip, const hsf:
     return companions;
 }
 
-// The add-on archive that holds a waiting piece's companion when the piece's archive doesn't: the game's archive that
-// the table names, cut down to the files that the companion plays, and the companion's index in it.
+// The add-on archive that contains a waiting piece's companion when the piece's archive doesn't: the game's archive
+// that the table names, cut down to the files that the companion plays, and the companion's index in it.
 struct CompanionAddon
 {
     FileChunk archive;
@@ -126,7 +126,7 @@ std::optional<CompanionAddon> CompanionAddonOf(const ArchiveToRip& to_rip, const
     return CompanionAddon{std::move(*found), *companion};
 }
 
-// The add-on archives that the companions of an archive's waiting pieces need, each once.
+// The add-on archives that the companions of an archive's waiting pieces require, each once.
 std::vector<FileChunk> CompanionAddonsOf(const ArchiveToRip& to_rip)
 {
     std::vector<FileChunk> addons;
@@ -169,17 +169,18 @@ std::map<std::string, SyncedRip>& SyncedRips()
     return rips;
 }
 
-// The fade of a synced rip: 10 s, in frames of 5 ms.
-constexpr uint32_t kSyncedFadeFrames = 2000;
+// The frames of 5 ms that a synced rip's script goes on writing the sync after the pass and the loop: 10 s. They cover
+// the fade of a loop, 7 s, and a longer fade that a player's settings give.
+constexpr uint32_t kSyncedExtraFrames = 2000;
 
 // The jobs that rip each synced piece of `to_rip`'s archive over the streams that it follows, in place of the piece's
 // job. The game starts the piece while a board's stream plays, and the piece reads that stream's beat and chord
 // through user procedures 2 to 4 (docs/hsf.md, "Ripping"). A stream's job has the piece's label, a space and the
 // stream's label. Its script starts the piece at frame 0 with the stream, and gives procedures 2 to 4 their writes as
 // writes of kind 2 (ntdlib::nx::bex::PlaySynced). It plays one pass over the stream's regions in the order of the jump
-// setting, then the loop once more, and fades over 10 s while the loop plays again. The stream itself isn't part of
-// the rip. A piece keeps its job when the game's files hold none of its streams. It then plays nothing, and the length
-// analysis finds it silent.
+// setting, then the loop once more, and fades over 7 s while the loop plays again. The stream itself isn't part of
+// the rip. A piece keeps its job when the game's files contain none of its streams. It then plays nothing, and the
+// length analysis finds it silent.
 std::vector<Job> WithSyncedPieces(const ArchiveToRip& to_rip, std::vector<Job> jobs)
 {
     SyncedRips().clear();
@@ -215,7 +216,7 @@ std::vector<Job> WithSyncedPieces(const ArchiveToRip& to_rip, std::vector<Job> j
             ntdlib::nx::bex::SyncedPlay play;
             try
             {
-                play = ntdlib::nx::bex::PlaySynced(*piece, stream_file, jump_setting, kSyncedFadeFrames);
+                play = ntdlib::nx::bex::PlaySynced(*piece, stream_file, jump_setting, kSyncedExtraFrames);
             }
             catch (const std::exception& e)
             {
@@ -232,7 +233,7 @@ std::vector<Job> WithSyncedPieces(const ArchiveToRip& to_rip, std::vector<Job> j
                     write.frame, static_cast<uint8_t>(write.procedure), write.variable, write.value, sound));
             }
 
-            rip.timing = xsflib::rip::LoopAt(play.frames, 5.0, kSyncedFadeFrames * 5.0);
+            rip.timing = xsflib::rip::LoopAt(play.frames, 5.0, xsflib::rip::LengthRules().fade_ms);
 
             Job synced = job;
             synced.label = job.label + " " + std::string(stream.label);
@@ -285,14 +286,14 @@ hsf::ScriptedStart ScriptOf(const Job& job)
 // spreads the analyses over several threads. A sound that never sounds may wait for a value that the game's code gives
 // its variables. The analysis then tries the values that the archive's rules give (Job::start_states), and keeps the
 // first with which the sound sounds. A sound may also take a branch with no sound on a number that its sequence draws
-// at random. nn::atk's random numbers step once a frame, so the draw depends on when the game starts the sound. The
-// analysis then looks for the first start, up to kStartDelays frames later, in which the sound sounds within
-// kStartWindow frames. The job starts there (Job::start_frame). Its mini's descriptor gives the values or the start.
-// A synced rip takes its length from its stream (WithSyncedPieces).
+// at random. nn::atk's random numbers step once a frame. The draw therefore depends on when the game starts the sound.
+// The analysis then looks for the first start, up to sar::kStartDelays frames later, in which the sound sounds within
+// kStartWindow frames. The job starts there (Job::start_frame). Its mini's descriptor gives the values or the start. A
+// synced rip takes its length from its stream (WithSyncedPieces), and its first sample from a run of its script.
 void AnalyzeLengths(std::vector<Job>& jobs, hsf::fsar::SoundArchive archive, const hsf::ArchiveDescriptor& settings,
                     unsigned threads)
 {
-    // A job with a reverb on aux bus B plays with it (rip/sound_states.h). An archive's rules hold at most a few
+    // A job with a reverb on aux bus B plays with it (rip/sound_states.h). An archive's rules contain at most a few
     // reverbs.
     std::map<const ntdlib::sar::ReverbPreset*, hsf::ArchiveDescriptor> with_reverb;
     for (const Job& job : jobs)
@@ -303,19 +304,37 @@ void AnalyzeLengths(std::vector<Job>& jobs, hsf::fsar::SoundArchive archive, con
         }
     }
 
-    const hsf::rip::LengthAnalyzer analyzer(std::move(archive), settings);
-    const auto analyze = [&analyzer, &with_reverb](Job& job)
+    // Music runs to the long limit, the sounds that --bgm leaves out to the default.
+    std::set<uint32_t> music;
+    for (const Job& job : jobs)
     {
+        if (ntdlib::rip::IsMusic(archive, job.index))
+        {
+            music.insert(job.index);
+        }
+    }
+
+    const hsf::rip::LengthAnalyzer analyzer(std::move(archive), settings);
+    const auto analyze = [&analyzer, &with_reverb, &music](Job& job)
+    {
+        const xsflib::rip::Limit limit =
+            music.contains(job.index) ? xsflib::rip::Limit::kLong : xsflib::rip::Limit::kDefault;
+        const auto reverb = with_reverb.find(job.bus_b_reverb);
+        const hsf::ArchiveDescriptor* job_settings = reverb == with_reverb.end() ? nullptr : &reverb->second;
         if (const auto synced = SyncedRips().find(job.label); synced != SyncedRips().end())
         {
-            job.timing = synced->second.timing;
+            // A rip that makes no sound before its fade is silent.
+            const xsflib::rip::Timing& timing = synced->second.timing;
+            const auto frames = static_cast<uint32_t>(timing.length_ms / 5);
+            const std::optional<long long> first =
+                analyzer.FirstSampleMs(synced->second.script, job.track_volumes, frames, job_settings);
+            job.timing = first ? timing : xsflib::rip::Timing{.silent = true};
+            job.timing->first_sample_ms = first;
             return true;
         }
 
-        const auto reverb = with_reverb.find(job.bus_b_reverb);
-        const hsf::ArchiveDescriptor* job_settings = reverb == with_reverb.end() ? nullptr : &reverb->second;
         hsf::ScriptedStart script = ScriptOf(job);
-        job.timing = analyzer.Analyze(job.index, job.track_volumes, &script, job_settings, job.volume);
+        job.timing = analyzer.Analyze(job.index, job.track_volumes, &script, job_settings, job.volume, limit);
         if (!job.timing || !job.timing->silent)
         {
             return true;
@@ -333,7 +352,7 @@ void AnalyzeLengths(std::vector<Job>& jobs, hsf::fsar::SoundArchive archive, con
 
             const hsf::ScriptedStart start = ScriptOf(in_state);
             const std::optional<hsf::rip::Timing> timing =
-                analyzer.Analyze(job.index, job.track_volumes, &start, job_settings, job.volume);
+                analyzer.Analyze(job.index, job.track_volumes, &start, job_settings, job.volume, limit);
             if (timing && !timing->silent)
             {
                 job.variables = std::move(in_state.variables);
@@ -343,12 +362,12 @@ void AnalyzeLengths(std::vector<Job>& jobs, hsf::fsar::SoundArchive archive, con
         }
 
         const std::optional<uint32_t> delay =
-            analyzer.SoundingDelay(script, job.track_volumes, kStartDelays, kStartWindow, job_settings);
+            analyzer.SoundingDelay(script, job.track_volumes, ntdlib::sar::kStartDelays, kStartWindow, job_settings);
         if (delay)
         {
             job.start_frame += *delay;
             script = ScriptOf(job);
-            job.timing = analyzer.Analyze(job.index, job.track_volumes, &script, job_settings, job.volume);
+            job.timing = analyzer.Analyze(job.index, job.track_volumes, &script, job_settings, job.volume, limit);
         }
 
         return true;
@@ -357,10 +376,10 @@ void AnalyzeLengths(std::vector<Job>& jobs, hsf::fsar::SoundArchive archive, con
 }
 
 // The scripted start of a rhythm piece's mini: the piece beside its companion (rip/variable_states.h, RhythmScript),
-// with the lead-in that ends as the companion hands over to the piece, and the add-on archive that holds the companion
-// when the piece's archive doesn't. The piece then plays from the output's first frames, just like a piece that starts
-// alone. Nothing for a job whose piece has no companion that the rip can find, or when the hand-over doesn't come
-// within 30 s.
+// with the lead-in that ends as the companion hands over to the piece, and the add-on archive that contains the
+// companion when the piece's archive doesn't. The piece then plays from the output's first frames, just like a piece
+// that starts alone. Nothing for a job whose piece has no companion that the rip can find, or when the hand-over
+// doesn't come within 30 s.
 struct CompanionStart
 {
     hsf::ScriptedStart script;
@@ -434,7 +453,7 @@ std::optional<CompanionStart> CompanionScriptOf(const ArchiveToRip& to_rip, cons
 // volumes, scripted start (docs/hsf.md, "Track volumes" and "Scripted starts") and effects (rip/sound_states.h). A
 // rhythm piece starts beside its companion (CompanionScriptOf). Its length comes from the piece alone (ScriptOf). A
 // synced rip has its script (WithSyncedPieces). The set loads that descriptor last. It therefore takes the place of the
-// library's. Every other job gets no reserved area.
+// library descriptor. Every other job gets no reserved area.
 std::vector<uint8_t> MiniReserved(const ArchiveToRip& to_rip, const Job& job)
 {
     const hsf::ArchiveDescriptor with_reverb = hsf::rip::WithBusBReverb(to_rip.settings, job.bus_b_reverb);
@@ -544,8 +563,8 @@ const ntdlib::rip::ArchiveRipTool<hsf::rip::RipFormat, ArchiveToRip>& ArchiveToo
         // The hsf_sound tag gives the sound's label (docs/hsf.md).
         t.sound_tag_holds_sound_label = true;
 
-        // A library also holds the add-on archives that its waiting pieces' companions need (CompanionAddonsOf).
-        // The minis' descriptors list them. The library's descriptor doesn't.
+        // A library also contains the add-on archives that the companions of its waiting pieces require
+        // (CompanionAddonsOf). The minis' descriptors list them. The library descriptor doesn't.
         t.build_library = [](const ArchiveToRip& to_rip, std::span<const uint32_t>, const xsflib::psf::Tags& tags)
         {
             const hsf::ArchiveDescriptor settings =

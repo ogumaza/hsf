@@ -4,14 +4,14 @@ HSF is under the MIT licence (`LICENSE`). HSF's dependencies have the following 
 
 | Component | Licence | Use in HSF |
 |---|---|---|
-| xsflib, Copyright (c) 2026 the xsflib authors | MIT (`externals/xsflib/LICENSE`) | In `externals/xsflib`, a submodule, compiled into every HSF program. It holds the PSF container, playback, the frames of the play and rip tools, and the rippers' length analysis. |
-| ntdlib, Copyright (c) 2026 the ntdlib authors | MIT (`externals/ntdlib/LICENSE`) | In `externals/ntdlib`, a submodule, compiled into every HSF program. It holds the sound archive readers, the model of the sound library's sequences, channels, voices, envelopes and LFOs with its tables, and the ripper's archive-mode parts. |
+| xsflib, Copyright (c) 2026 the xsflib authors | MIT (`externals/xsflib/LICENSE`) | In `externals/xsflib`, a submodule, compiled into every HSF program. It contains the PSF container, playback, the frames of the play and rip tools, and the rippers' length analysis. |
+| ntdlib, Copyright (c) 2026 the ntdlib authors | MIT (`externals/ntdlib/LICENSE`) | In `externals/ntdlib`, a submodule, compiled into every HSF program. It contains the sound archive readers, the model of the sound library's sequences, channels, voices, envelopes and LFOs with its tables, and the ripper's archive-mode parts. |
 | seqlib, Copyright (c) 2026 the seqlib authors | MIT (`externals/xsflib/externals/seqlib/LICENSE`) | In `externals/xsflib/externals/seqlib`, a submodule of xsflib. Only the tests use it: their checks come from it, through `xsflib::testing`. |
 | [Zstandard](https://github.com/facebook/zstd), Copyright (c) Meta Platforms, Inc. and affiliates | BSD-3-Clause | Bezel Engine's archives (.bea). The system's copy is used, or v1.5.7 is downloaded when configuring. |
 | [zlib](https://zlib.net), Copyright (C) 1995-2026 Jean-loup Gailly and Mark Adler | zlib | The PSF container. The system's copy is used, or v1.4 is downloaded when configuring. |
 | [libFLAC](https://xiph.org/flac/), Copyright the Xiph.Org Foundation | BSD-3-Clause | FLAC output in `hsfplay`. The system's copy is used, or 1.5.0 is downloaded when configuring. |
 | [foobar2000 SDK](https://www.foobar2000.org/SDK), Copyright Peter Pawlowski | BSD-style (the SDK's `sdk-license.txt`, and `pfc-license.txt` for its pfc library) | Only for `plugins/foobar2000`. Not included here. The SDK is supplied when building the component. |
-| [XMPlay plugin SDK](https://www.un4seen.com/xmplay.html), from Un4seen Developments | None stated | Only for `plugins/xmplay`. Not included here. The SDK is supplied when building the plugin. CI downloads it from un4seen.com. The plugin uses only the SDK's declarations of XMPlay's interface. |
+| [XMPlay plugin SDK](https://www.un4seen.com/xmplay.html), from Un4seen Developments | None stated | Only for `plugins/xmplay`. Not included here. The SDK is supplied when building the plugin. CI downloads it from un4seen.com. The plugin uses only the declarations of XMPlay's interface in the SDK. |
 
 Binary distributions must include the MIT notices of HSF, xsflib and ntdlib. The Zstandard notice is required when
 Zstandard is linked in: `hsfrip` links it, and `hsfplay`, the foobar2000 component and the XMPlay plugin don't. The
@@ -25,18 +25,18 @@ only into tests. No code from the XMPlay plugin SDK goes into the XMPlay plugin.
 - [yuzu](https://github.com/yuzu-emu/yuzu) (GPL-3.0) and [Ryujinx](https://github.com/Ryujinx/Ryujinx) (MIT) are
   references for how the Switch's audio renderer behaves. No code is taken from them. The model of the renderer, now in
   ntdlib's `nx` module, was written from a description of their behaviour by someone who hasn't read their source for
-  it, and from a study of the renderer's build for the CPU that games' `sdk` modules hold.
+  it, and from a study of the renderer's build for the CPU in games' `sdk` modules.
 
 ## Game data
 
 Nothing in this repository licenses game data. Rips (`.hsflib`) contain a game's sound archive. It belongs to its
 copyright holders.
 
-ntdlib's `nwsnd/tables.h` holds the numeric tables that `nn::atk` uses: powers of two, decibel levels, envelope attack
-multipliers, pan curves, low-pass cutoffs and their filters, biquad filter coefficients and sines. ntdlib's
-`src/nx/audio/tables.h` holds the audio renderer's tables: the coefficients of its sample-rate converters, and the I3DL2
-reverb's delays, early reflections, powers of ten and sines. The models use the exact values to reproduce the console's
-output.
+ntdlib's `nwsnd/tables.h` contains the numeric tables that `nn::atk` uses: powers of two, decibel levels, envelope
+attack multipliers, pan curves, low-pass cutoffs and their filters, biquad filter coefficients and sines. ntdlib's
+`src/nx/audio/tables.h` contains the audio renderer's tables: the coefficients of its sample-rate converters, and the
+I3DL2 reverb's delays, early reflections, powers of ten and sines. The models use the exact values to reproduce the
+console's output.
 
 ## Licence texts
 

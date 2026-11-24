@@ -16,25 +16,17 @@ std::vector<ntdlib::rip::Job> WithStates(const ntdlib::sar::ArchiveRules& rules,
         return selected;
     }
 
-    std::vector<ntdlib::rip::Job> jobs;
-    for (const ntdlib::rip::Job& job : selected)
+    const auto states_of = [&rules](const ntdlib::rip::Job& job)
     {
-        for (const ntdlib::sar::SoundState& state : ntdlib::sar::StatesOf(rules, job.label))
-        {
-            ntdlib::rip::Job in_state = job;
-            if (!state.name.empty())
-            {
-                in_state.label += " ";
-                in_state.label += state.name;
-            }
+        return ntdlib::sar::StatesOf(rules, job.label);
+    };
+    const auto apply = [&rules](const ntdlib::sar::SoundState& state, ntdlib::rip::Job& job)
+    {
+        job.track_volumes = ntdlib::rip::TrackVolumesOf(state.muted);
+        job.bus_b_reverb = rules.FindBusBPreset(state.bus_b);
+    };
 
-            in_state.track_volumes = ntdlib::rip::TrackVolumesOf(state.muted);
-            in_state.bus_b_reverb = rules.FindBusBPreset(state.bus_b);
-            jobs.push_back(std::move(in_state));
-        }
-    }
-
-    return jobs;
+    return ntdlib::rip::WithStates(selected, states_of, apply);
 }
 
 ArchiveDescriptor WithBusBReverb(const ArchiveDescriptor& settings, const ntdlib::sar::ReverbPreset* reverb)

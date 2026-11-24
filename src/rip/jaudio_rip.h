@@ -43,7 +43,7 @@ bool IsStartupArchive(std::span<const uint8_t> data);
 std::optional<JaudioPaths> FindJaudioFiles(const std::vector<std::string>& files, const ReadGameFile& read);
 
 // A sound to rip: its index in the sound table, its label, its ID, its timing once the length analysis has worked it
-// out, and the notes that the files can't play (JaudioTiming). A variant's job holds the variant's track states, or
+// out, and the notes that the files can't play (JaudioTiming). A variant's job contains the variant's track states, or
 // in library 2 the tracks that the variant's piece mutes.
 struct JaudioJob
 {
@@ -58,13 +58,13 @@ struct JaudioJob
     std::string sound_label; // a variant: the label of the sound that it plays, for the hsf_sound tag
 };
 
-// Whether `job` is a variant of a sound. A variant's mini holds its descriptor (JobDescriptor).
+// Whether `job` is a variant of a sound. A variant's mini contains its descriptor (JobDescriptor).
 inline bool IsVariant(const JaudioJob& job)
 {
     return job.track_states || job.muted_tracks;
 }
 
-// The sounds of the sound table that play sequences that the files hold, in the table's order, whose labels match
+// The sounds of the sound table that play sequences that the files contain, in the table's order, whose labels match
 // `only`. With `bgm`, only music: the sounds of section 1. The game plays them through its sequence manager. The
 // groups that `game` replaces are left out. Each of `game`'s variants of a sound follows the sound, if the variant's
 // label matches `only`. `game` may be null.
@@ -79,13 +79,13 @@ ArchiveDescriptor JobDescriptor(ArchiveDescriptor descriptor, const JaudioJob& j
 std::string JaudioLabel(const ntdlib::jaudio::SoundEntry& sound);
 
 // The library of a rip: the start-up archive, the sequence archive and the files in `waves`, in FILE chunks at their
-// paths among the game's files, with `descriptor` (version 2) naming them, and the tags. `waves` holds the wave
+// paths among the game's files, with `descriptor` (version 2) naming them, and the tags. `waves` contains the wave
 // archives, and then Pikmin 2's conductor archive or Pikmin's sequence index.
 std::vector<uint8_t> BuildJaudioLibrary(const FileChunk& startup, const std::optional<FileChunk>& sequences,
                                         const std::vector<FileChunk>& waves, ArchiveDescriptor descriptor,
                                         const xsflib::psf::Tags& tags);
 
-// A mini that plays `job`'s sound from the library `lib_name`. A variant's mini holds the variant's descriptor
+// A mini that plays `job`'s sound from the library `lib_name`. A variant's mini contains the variant's descriptor
 // (JobDescriptor of `descriptor`, the library's). As the last descriptor that a set loads, it takes the library's
 // place.
 std::vector<uint8_t> BuildJaudioMini(const JaudioJob& job, const ArchiveDescriptor& descriptor,

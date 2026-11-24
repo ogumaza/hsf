@@ -4,7 +4,7 @@
 // compressed assets, a data sheet with a sound effect list, and a boot.lua, and puts them in a folder with a loose
 // sound archive. It checks what LoadGame finds in the folder and in the archive alone: the files, the sound archives,
 // the voice count and the I3DL2 reverbs, and that each file reads back as it was written. The test also loads a title's
-// folder whose archive was unpacked. That folder holds three boot.lua files at two depths. A list in WarioWare: Move
+// folder whose archive was unpacked. That folder contains three boot.lua files at two depths. A list in WarioWare: Move
 // It!'s form gives an I3DL2 reverb, a delay and a light limiter. Sound sheets give their sounds' levels. Damaged
 // archives and sheets must be refused, and the encrypted forms a game comes in must be recognised. The SARC archives
 // beside a sound archive must be found among a game's files.
@@ -177,9 +177,9 @@ struct RecordSpec
 };
 
 // A data sheet with a list called `list`, of records of `size` bytes: a little-endian AArch64 ELF relocatable object.
-// Section 1 holds the records and their count, section 2 the names, sections 3 and 4 the symbols and their names, and
-// section 5 a relocation for each record's pointer to its name, against section 2's symbol. `first_record`, if set, is
-// another symbol that names the first record.
+// Section 1 contains the records and their count, section 2 the names, sections 3 and 4 the symbols and their names,
+// and section 5 a relocation for each record's pointer to its name, against section 2's symbol. `first_record`, if set,
+// is another symbol that names the first record.
 std::vector<uint8_t> SheetOf(const std::string& list, std::size_t size, const std::vector<RecordSpec>& specs,
                              const std::string& first_record = "")
 {
@@ -315,14 +315,14 @@ std::vector<uint8_t> RawEffectSheet(const std::vector<RawEffectSpec>& effects)
     return SheetOf("s_RawEffectDataList", 0xB8, records);
 }
 
-// Writes `data` to the file at `path` after making the folders that hold it.
+// Writes `data` to the file at `path` after making the folders that contain it.
 void WriteFile(const fs::path& path, const std::vector<uint8_t>& data)
 {
     fs::create_directories(path.parent_path());
     XSFLIB_CHECK(!xsflib::WriteFile(path, data));
 }
 
-// What the game's files hold, by their paths in the game.
+// What the game's files contain, by their paths in the game.
 const std::vector<uint8_t> kStored = SoundArchive(0x11);
 const std::vector<uint8_t> kPacked = SoundArchive(0x22);
 const std::vector<uint8_t> kLoose = SoundArchive(0x33);
@@ -363,7 +363,7 @@ void CheckPresets(const GameFiles& game)
     XSFLIB_CHECK(game.i3dl2_presets.contains("Hall") && game.i3dl2_presets.at("Hall") == hall);
 }
 
-// Reads `path` from the game's files, and checks that it holds `expected`.
+// Reads `path` from the game's files, and checks that it contains `expected`.
 void CheckRead(const GameFiles& game, const std::string& path, const std::vector<uint8_t>& expected)
 {
     std::vector<uint8_t> data;
@@ -426,9 +426,9 @@ void TestUtf8Folder(const fs::path& dir)
 
 void TestUnpackedFolder(const fs::path& dir)
 {
-    // A title's folder holds the RomFS. The RomFS holds the Bezel Engine archive unpacked into a folder, the game's
-    // boot.lua at the top, two deeper decoys named boot.lua and the sound effect list as a loose file. The walk reads
-    // one decoy before the game's boot.lua and the other after it.
+    // A title's folder contains the RomFS. The RomFS contains the Bezel Engine archive unpacked into a folder, the
+    // game's boot.lua at the top, two deeper decoys named boot.lua and the sound effect list as a loose file. The walk
+    // reads one decoy before the game's boot.lua and the other after it.
     const fs::path romfs = dir / "title" / "romfs";
     WriteFile(romfs / "boot.lua", Bytes("engine:SetVoiceCountMax(72)\n"));
     WriteFile(romfs / "Scripts" / "boot.lua", Bytes("engine:SetVoiceCountMax(10)\n"));
@@ -471,7 +471,7 @@ void TestArchive(const fs::path& dir)
     XSFLIB_CHECK(hsf::game::LoadGame(dir / "Missing.bea", game).has_value());
 }
 
-// Super Mario Party Jamboree's layout: the asset table holds the assets' headers. A damaged one is refused.
+// Super Mario Party Jamboree's layout: the asset table contains the assets' headers. A damaged one is refused.
 void TestInlineArchive(const fs::path& dir)
 {
     const std::vector<uint8_t> bea = Bea(GameAssets(), Layout::kInline);

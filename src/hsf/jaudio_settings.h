@@ -93,7 +93,7 @@ struct JaudioLibrary2
 
     uint16_t effect_sequence = 0;         // the file of the sequence archive that plays the effects, by its number
     uint8_t effect_sequence_volume = 127; // its volume in the game's list of its music, 0 to 127
-    std::string conductor_archive;        // the FILE chunk that holds the conductor archive, or empty for none
+    std::string conductor_archive;        // the FILE chunk that contains the conductor archive, or empty for none
     std::vector<JaudioPiece> pieces;
     std::vector<JaudioDraws> draws; // the sounds that start after draws, each sound once
 
@@ -197,10 +197,10 @@ struct JaudioLibrary3
     // The sequences that the game starts on the first handles as it starts.
     static constexpr std::size_t kStartupHandles = 4;
 
-    // The most that a level of a port holds.
+    // The highest level of a port.
     static constexpr uint16_t kMaxLevel = 0x7fff;
 
-    std::string sequence_index; // the FILE chunk that holds the sequence index
+    std::string sequence_index; // the FILE chunk that contains the sequence index
     std::array<uint16_t, kStartupHandles> startup_files{0, 1, 13, 2};
     uint16_t effect_level = 0;   // what the game writes to port 0 of the effects' sequences
     uint16_t cutscene_level = 0; // what it writes to port 2 of the cutscenes' sequence

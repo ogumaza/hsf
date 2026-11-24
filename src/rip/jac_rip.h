@@ -33,9 +33,9 @@ class SoundFiles;
 namespace hsf::rip
 {
 
-// Pikmin's files that a rip reads, by their paths among the game's files. The RomFS's folder SndData holds the bank
-// file (Banks/pikibank.bx), the wave archives (Banks) and the sequence archive (Seqs/pikiseq.arc). The ExeFS holds the
-// game's code, main. `main` is empty when the game's files lack it.
+// Pikmin's files that a rip reads, by their paths among the game's files. The RomFS's folder SndData contains the bank
+// file (Banks/pikibank.bx), the wave archives (Banks) and the sequence archive (Seqs/pikiseq.arc). The ExeFS contains
+// the game's code, main. `main` is empty when the game's files have no main.
 struct JacPaths
 {
     std::string bank;
@@ -67,13 +67,13 @@ struct JacGameCode
     bool operator==(const JacGameCode&) const = default;
 };
 
-// The FILE chunk of a rip that holds the sequence index. No file of a RomFS can have its path.
+// The FILE chunk of a rip that contains the sequence index. No file of a RomFS can have its path.
 inline constexpr std::string_view kJacSequenceIndexPath = "exefs/pikiseq.hed";
 
 // The DSP's level that the game gives the DSP's mixer as it starts (Jac_Start, 0x266f5c): 1.5, in 4.12.
 inline constexpr uint32_t kJacDspLevel = 6144;
 
-// Reads what a rip takes from main, a build that holds the tables at `at`. Throws xsflib::FormatError if main is
+// Reads what a rip takes from main, a build that has the tables at `at`. Throws xsflib::FormatError if main is
 // damaged or one of the tables runs out of main's segments.
 JacGameCode ReadJacGameCode(const ntdlib::nx::Nso& main, const JacTableAddresses& at);
 
@@ -90,8 +90,8 @@ struct JacLaterEvent
 };
 
 // The sounds of a rip of Pikmin, and the descriptor's lists of what they play. For each of the library's effects, in
-// their order, `later_events` holds the later events of a cutscene's sound: the cutscene's events after the sound's
-// that queue a value, in their order. It holds none for the other effects.
+// their order, `later_events` contains the later events of a cutscene's sound: the cutscene's events after the sound's
+// that queue a value, in their order. It contains none for the other effects.
 struct JacSelection
 {
     std::vector<JaudioJob> jobs;
@@ -105,10 +105,10 @@ struct JacSelection
 //
 // The pieces of music come first: each file of the sequence archive from file 2 on, but the cutscenes' music. A piece
 // is named after its file, without the extension. Its scene is scene 0 of the wave system of its file's number, as the
-// game sets it for the piece. A piece whose system the bank file lacks is left out. The pieces of the cutscenes' music
-// follow: those that the cutscenes' table names, and the piece that plays as a part of the ship appears (piece 8). Such
-// a piece is named after the cutscenes' music, a hyphen and its number, as demobgm-2. The game sets piece 2's waves
-// with the diary's scenes as its title screen starts. The piece's scene is the diary's first scene.
+// game sets it for the piece. A piece whose system isn't in the bank file is left out. The pieces of the cutscenes'
+// music follow: those that the cutscenes' table names, and the piece that plays as a part of the ship appears (piece
+// 8). Such a piece is named after the cutscenes' music, a hyphen and its number, as demobgm-2. The game sets piece 2's
+// waves with the diary's scenes as its title screen starts. The piece's scene is the diary's first scene.
 //
 // The effects follow, in the order of their kinds. Each row of the game's table of effects is an effect named as the
 // row names it. The system's effects that the game plays as other sounds take those sounds: one of the captain's, or

@@ -166,8 +166,8 @@ struct InArchive
     BeaArchive::Asset asset;
 };
 
-// Reads a file in a Bezel Engine archive. Only the file's stored bytes are read: a game's archive can hold hundreds of
-// megabytes. Returns false if it can't.
+// Reads a file in a Bezel Engine archive. Only the file's stored bytes are read: a game's archive can contain hundreds
+// of megabytes. Returns false if it can't.
 bool ReadInArchive(const InArchive& where, std::vector<uint8_t>& data)
 {
     BeaArchive::Asset asset = where.asset;
@@ -294,7 +294,7 @@ std::optional<std::string> LoadFolder(const fs::path& input, GameFiles& out)
         else if (path.filename() == kBoot)
         {
             // The game's boot.lua is the one nearest the folder's top. The folder may be the RomFS or a folder that
-            // holds it.
+            // contains it.
             const std::ptrdiff_t depth = std::count(name.begin(), name.end(), '/');
             if (boot == nullptr || depth < boot_depth)
             {

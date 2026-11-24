@@ -103,7 +103,7 @@ void TestSoundStates()
 
 // A waiting piece's job takes its first state's variables. The jobs of its later states follow it, with the state's
 // name after the piece's label. The other jobs stay as they are, and keep their track volumes. An archive that no table
-// holds has no waiting pieces.
+// contains has no waiting pieces.
 void TestVariableStates()
 {
     const std::vector<hsf::rip::WaitingPiece> pieces = {

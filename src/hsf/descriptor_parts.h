@@ -2,7 +2,8 @@
 
 // The parts of the archive descriptor that format.cpp writes, reads and checks by version: version 2's JAudio settings
 // (descriptor_jaudio.cpp) and version 1's blocks after the paths (descriptor_v1.cpp). Also the helpers that their
-// readers and checks share. Only format.cpp, descriptor_jaudio.cpp and descriptor_v1.cpp include this header.
+// readers and checks share. A path or a block ends with zeros to a multiple of 4 bytes (ntdlib::AlignUp). Only
+// format.cpp, descriptor_jaudio.cpp and descriptor_v1.cpp include this header.
 
 #pragma once
 
@@ -21,12 +22,6 @@
 namespace hsf::detail
 {
 
-// The end of the zeros after a path or a block at `pos`: `pos` rounded up to a multiple of 4 bytes.
-constexpr std::size_t AlignTo4(std::size_t pos)
-{
-    return (pos + 3) & ~std::size_t{3};
-}
-
 // Whether `volume` is 1: a volume that leaves a sound as it is.
 constexpr bool IsUnity(float volume)
 {
@@ -40,7 +35,7 @@ inline bool IsVolume(float volume)
 }
 
 // Reads little-endian values in turn from a descriptor's data at `pos`, and moves `pos` past each. The caller has
-// checked that the data holds every value that it reads.
+// checked that the data contains every value that it reads.
 class LeCursor
 {
 public:

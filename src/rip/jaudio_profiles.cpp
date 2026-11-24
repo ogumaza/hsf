@@ -25,7 +25,7 @@ namespace
 
 namespace nj = ntdlib::jaudio;
 
-// The track states as the game's table holds them, two to a byte, the even track in the high nibble.
+// The track states as the game's table stores them, two to a byte, the even track in the high nibble.
 JaudioTrackStates States(uint32_t sound, const std::array<uint8_t, 8>& packed)
 {
     JaudioTrackStates states;
@@ -49,7 +49,7 @@ void AddTrackStates(JaudioSettings& s, std::span<const std::pair<uint32_t, std::
 }
 
 // A later state of a piece of music that has a setting: the piece's index in group 0 of section 1, the states of its
-// setting that give it, and its track states as the game's table holds them.
+// setting that give it, and its track states as the game's table stores them.
 struct LaterState
 {
     uint32_t index = 0;
@@ -124,9 +124,9 @@ JaudioGame Galaxy()
     }};
     AddTrackStates(s, kStates);
 
-    // The later states of AudBgmSetting: each setting holds 8 states of 10 bytes, from cMuteState. A piece takes other
-    // states as the game goes on. The BGM manager then fades each track to the state's level (0x1b27b8). Each state
-    // below differs from the piece's first state. A state that fades out every track is left out.
+    // The later states of AudBgmSetting: each setting contains 8 states of 10 bytes, from cMuteState. A piece takes
+    // other states as the game goes on. The BGM manager then fades each track to the state's level (0x1b27b8). Each
+    // state below differs from the piece's first state. A state that fades out every track is left out.
     //
     // A track state of 7 keeps the track's level where the state before left it (0x1b2ba0). States 1 to 4 of piece
     // 0x38 keep track 1, the only track that any state plays. They leave it as the first state or state 6 left it, and
@@ -172,7 +172,7 @@ JaudioGame Galaxy2()
     JaudioSettings& s = game.settings;
 
     // AudParams: the output gain 0.9 (0x745a14), the volumes of the sequence manager and the effect manager
-    // (0x745a20 and 0x745a24), and the first volume set of the categories (0x746f5c). All match the first game's.
+    // (0x745a20 and 0x745a24), and the first volume set of the categories (0x746f5c). All match the first game.
     s.dsp_level = 0x3999;
     s.music_volume = 1.2f;
     s.effect_volume = 1.2f;
@@ -240,7 +240,7 @@ JaudioGame Galaxy2()
     }};
     AddTrackStates(s, kStates);
 
-    // The later states of AudBgmSetting (getMuteState, 0x1254f0): each setting holds 11 states of 10 bytes. A piece
+    // The later states of AudBgmSetting (getMuteState, 0x1254f0): each setting contains 11 states of 10 bytes. A piece
     // takes other states as the game goes on. The BGM manager then fades each track to the state's level
     // (changeTrackMuteState, 0x12216c). Each state below differs from the piece's first state. A state that fades out
     // every track is left out. In most of the pieces, states 8 to 10 add track 15. The last 2 bytes of a state are the

@@ -15,22 +15,26 @@ a folder inside it, and restart XMPlay.
 ## Features
 
 - Tags become XMPlay's tags: `game` as album and `year` as date. The Message info window lists every tag except
-  `_lib`, `length`, `fade`, `volume` and `utf8`.
-- Length and fade come from the `length` and `fade` tags. Files without a length tag play for the default length and
-  fade. They stop early when the sound ends by itself.
-- The plugin's options page, among the decoders in XMPlay's options: default length and fade, endless playback, and
-  rendering ahead. XMPlay stores the settings.
+  `_lib`, `length`, `fade`, `loop_start`, `loop_length`, `volume` and `utf8`.
+- Length and fade come from the `length` and `fade` tags, counted from the first sound. By default, each track plays
+  the way a soundtrack album plays it: the silence before the first sound is skipped, and 0.5 s of silence comes before
+  the track and 1 s after it. Files without a length tag play for the default length and fade. They stop early when
+  the sound ends by itself.
+- The plugin's options page, among the decoders in XMPlay's options: default length and fade, the fade's curve,
+  endless playback, rendering ahead, and the eight settings of album playback: "Skip silence at the start", "Silence
+  before a track", "Loops", "One pass for long loops", "Fade length", "Silence after a track", "Ignore length and fade
+  tags" and "Skip silence at the end". XMPlay stores the settings.
 - During playback, the plugin renders ahead on a separate thread as fast as the CPU allows. It buffers up to 10 minutes
-  and 10 seconds of audio (about 112 MiB). That's enough for the longest track that `hsfrip`'s length analysis
-  produces. Seeking within the buffer is instant. Seeking further ahead waits for rendering to reach the requested
-  position. Rendering ahead keeps one CPU core busy until it reaches the end of the track or the buffer limit. Audio
-  falls out of the buffer only in a longer track or in endless playback. Such tracks also save the player's state every
-  2 seconds. Seeking back before the buffered audio restores the latest state before the target and renders from there.
-  At most 128 states are kept. The intervals between them grow as the track continues. With rendering ahead turned off,
-  every track saves states. Seeking ahead then renders up to the target.
+  and 10 seconds of audio (about 112 MiB). That holds a whole track of up to 10 minutes and its fade. `hsfrip` gives a
+  longer length only to music whose two passes take longer. Seeking within the buffer is instant. Seeking further ahead
+  waits for rendering to reach the requested position. Rendering ahead keeps one CPU core busy until it reaches the end
+  of the track or the buffer limit. Audio falls out of the buffer only in a longer track or in endless playback. Such
+  tracks also save the player's state every 2 seconds. Seeking back before the buffered audio restores the latest state
+  before the target and renders from there. At most 128 states are kept. The intervals between them grow as the track
+  continues. With rendering ahead turned off, every track saves states. Seeking ahead then renders up to the target.
 - Output is 16-bit stereo at 48,000 Hz. That's the rate of the Switch's audio renderer. The output isn't resampled.
-- When a track starts, the plugin loads the track's `.hsflib`. A `.hsflib` holds the files of the sound archive that the
-  rip plays. The tracks of a game with a large archive therefore take longer to start and use more memory.
+- When a track starts, the plugin loads the track's `.hsflib`. A `.hsflib` contains the files of the sound archive that
+  the rip plays. The tracks of a game with a large archive therefore take longer to start and use more memory.
 
 ## Building
 
@@ -41,7 +45,7 @@ repository. It downloads the XMPlay plugin SDK from un4seen.com (`externals/xsfl
 
 **On Windows:** you need Visual Studio 2022 or later with the C++ workload and the "C++ Clang tools for Windows"
 component, plus CMake 3.20 or later. Download the XMPlay plugin SDK (<https://www.un4seen.com/files/xmp-sdk.zip>) and
-unpack it. Use the folder that holds `xmpin.h` as the SDK path below.
+unpack it. Use the folder that contains `xmpin.h` as the SDK path below.
 
 ```
 cmake -S . -B build-xmplay -A Win32 -T ClangCL -DXMPLAY_SDK_DIR=C:/path/to/xmp-sdk
@@ -60,4 +64,4 @@ largest sound archives.
 
 Like the rest of HSF, the plugin is MIT-licensed. It uses xsflib (MIT), ntdlib (MIT) and zlib. Ship `LICENSE` and
 `THIRD-PARTY-NOTICES.md` (or their text) with a build. The XMPlay plugin SDK states no licence. The plugin uses only
-the SDK's declarations of XMPlay's interface. No code from the SDK goes into it.
+the declarations of XMPlay's interface in the SDK. No code from the SDK goes into it.

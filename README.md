@@ -2,22 +2,22 @@
 
 HSF is a PSF-family music rip format for Nintendo Switch sequenced audio: the music that Switch games play from
 NintendoWare sound archives (`.bfsar`), and the sequenced sound of the Switch releases of the Super Mario Galaxy games,
-Pikmin, Pikmin 2 and The Legend of Zelda: Skyward Sword.
+Pikmin, Pikmin 2 and The Legend of Zelda: Skyward Sword HD.
 
-A rip holds a game's sound archive. HSF's player plays it with a model of the SDK's sound library (`nn::atk`) and of the
-console's audio renderer. The renderer mixes the sound outside the game, in the system. The model does the same
+A rip contains a game's sound archive. HSF's player plays it with a model of the SDK's sound library (`nn::atk`) and of
+the console's audio renderer. The renderer mixes the sound outside the game, in the system. The model does the same
 arithmetic as the console. It also runs the effects that a game puts on the sound library's aux buses, such as an I3DL2
 reverb. `docs/hsf.md` specifies the format.
 
-The Super Mario Galaxy games play their sound with JAudio2, the sound library of Nintendo's GameCube and Wii games. Their
-Switch releases run it natively, with an emulation of its DSP program. A rip of one of them holds the game's JAudio
-files, and the player plays them on a model of JAudio2 and of the emulation. These rips are version 2 of the format.
-Pikmin 2's Switch release, in Pikmin 1+2, plays its sound the same way with JAudio1, the version of JAudio before
-JAudio2. The player plays its rips on a model of JAudio1. Pikmin's Switch release, also in Pikmin 1+2, plays its sound
-with the C JAudio, the version before JAudio1. The player plays its rips on a model of the C JAudio.
+The Super Mario Galaxy games play their sound with JAudio2, the sound library of Nintendo's GameCube and Wii games.
+Their Switch releases run it natively, with an emulation of its DSP program. A rip of one of them contains the game's
+JAudio files, and the player plays them on a model of JAudio2 and of the emulation. These rips are version 2 of the
+format. Pikmin 2's Switch release, in Pikmin 1+2, plays its sound the same way with JAudio1, the version of JAudio
+before JAudio2. The player plays its rips on a model of JAudio1. Pikmin's Switch release, also in Pikmin 1+2, plays its
+sound with the C JAudio, the version before JAudio1. The player plays its rips on a model of the C JAudio.
 
 The Legend of Zelda: Skyward Sword HD is the Wii game recompiled for the Switch. It plays its sound with NW4R SND, the
-Wii's sound library, and a layer in its code mixes the Wii's voices on the Switch's audio renderer. A rip of it holds
+Wii's sound library, and a layer in its code mixes the Wii's voices on the Switch's audio renderer. A rip of it contains
 part of the game's Wii sound archive, and the player plays it on a model of NW4R SND, of the layer and of the renderer.
 These rips are version 3 of the format.
 
@@ -27,8 +27,8 @@ HSF comes with a ripper (`hsfrip`), a command-line renderer (`hsfplay`), a fooba
 
 | Tool | Description |
 |---|---|
-| `hsfrip [options] <input>...` | Rips each input into an `.hsflib` and a `.minihsf` for each sequence. Each `.minihsf` is tagged with the sequence's length and fade. The rip goes in a folder next to the input, with the input's name and `_hsf` added. `-o` names another folder. An `.hsflib` that differs from one of the same name in the folder gets the next free name, such as `<name>_2.hsflib`. The rips already in the folder then still play. To replace earlier rips, rip into an empty folder. An input is a Switch game's files or a sound archive (`.bfsar`). The game's files are a folder (its RomFS, once it's extracted) or a Bezel Engine archive (`.bea`). Each of a game's sound archives gets a folder of its own. `--list` lists a game's sound archives and what each holds, `--only REGEX` rips the sounds whose labels match, `--bgm` rips the music, and `--help` shows the rest. Sequences that make no sound (such as placeholders, and sequences that only set values for the game) are listed and skipped. |
-| `hsfplay [options] <file>...` | Renders each `.minihsf` at 48,000 Hz to a WAV file next to it. The render lasts for the tagged length and fade. `-o FILE` writes FILE instead. The file's extension selects WAV or FLAC. `--length` and `--fade` override the tags. `--info` shows a file's tags and the files it loads. |
+| `hsfrip [options] <input>...` | Rips each input into an `.hsflib` and a `.minihsf` for each sequence. Each `.minihsf` is tagged with the sequence's length and fade, counted from its first sound: two passes and a 7-second fade for a loop, with the tags `loop_start` and `loop_length`, and the last sound and a 1-second fade for a sequence that ends. The rip goes in a folder next to the input, with the input's name and `_hsf` added. `-o` names another folder. An `.hsflib` that differs from one of the same name in the folder gets the next free name, such as `<name>_2.hsflib`. The rips already in the folder then still play. To replace earlier rips, rip into an empty folder. An input is a Switch game's files or a sound archive (`.bfsar`). The game's files are a folder (its RomFS, once it's extracted) or a Bezel Engine archive (`.bea`). Each of a game's sound archives gets a folder of its own. `--list` lists a game's sound archives and what each holds, `--only REGEX` rips the sounds whose labels match, `--bgm` rips the music, and `--help` shows the rest. Sequences that make no sound (such as placeholders, and sequences that only set values for the game) are listed and skipped. |
+| `hsfplay [options] <file>...` | Renders each `.minihsf` at 48,000 Hz to a WAV file next to it. The render plays a track the way a soundtrack album does: it skips the silence before the first sound, plays 0.5 s of silence, the tagged length and fade, and 1 s of silence after it. `--raw` renders the file as it is, and `--help` lists the options that change the silences, the loops and the fade. `-o FILE` writes FILE instead. The file's extension selects WAV or FLAC. `--length` and `--fade` override the tags. `--fade-exponent P` sets the fade's curve, from 0.5 to 4: 1 fades linearly, and the default, 2, fades with the square of the time left in the fade. Most soundtrack albums fade that way. `--info` shows a file's tags and the files it loads. |
 | `foo_input_hsf` | The foobar2000 component, for foobar2000 on Windows and macOS. The component plays `.minihsf` and `.hsf` files, and shows and edits their tags. Rendering ahead during playback makes seeking quick. `plugins/foobar2000/README.md` describes how to build it. |
 | `xmp-hsf` | The XMPlay plugin, a 32-bit DLL for XMPlay on Windows. The plugin plays `.minihsf` and `.hsf` files, and shows their tags. Rendering ahead during playback makes seeking quick. `plugins/xmplay/README.md` describes how to build it. |
 
@@ -37,8 +37,9 @@ in it. Games on Bezel Engine keep nearly all their files, sound archives include
 the files inside them. For a Bezel Engine game, `hsfrip` also takes what the game's files set for its sound: the voice
 count in `boot.lua`, and the effects that the game puts on the aux buses. WarioWare: Get It Together! puts a reverb on
 aux bus A. WarioWare: Move It! puts a delay on aux bus A, a reverb on aux bus B and a light limiter on aux bus C. Both
-games keep each sound's level in their sound sheets, outside the sound archive. `hsfrip` writes it as the mini's `volume`
-tag. A game comes as an NSP or an XCI file. Such a file holds the game's files encrypted, and `hsfrip` doesn't read it.
+games keep each sound's level in their sound sheets, outside the sound archive. `hsfrip` writes it as the mini's
+`volume` tag. A game comes as an NSP or an XCI file. Such a file contains the game's files encrypted, and `hsfrip`
+doesn't read it.
 
 WarioWare: Move It! shortens its delay when the game speeds up: it divides the delay by the game's speed. A rip has the
 delay at the game's normal speed. The game also turns its output down on a TV. It plays at half of full scale there,
@@ -48,8 +49,8 @@ earlier players refuse the game's rips with a message: they don't have the delay
 
 Some of WarioWare: Get It Together!'s microgames turn tracks of their music up and down as the microgame goes on: the
 guitar, the three spotlight dances, the windmill and its success music, the dance, and Super Wario Co's results. A rip
-of such a piece plays it as the game starts it. Each later state gets a rip too. Its name is the piece's, followed by
-the state, such as `BGM_P_Guitar 60 percent`. `docs/hsf.md` lists the states. The state's tracks play from the start.
+of such a piece plays it as the game starts it. Each later state gets a rip too. Its name is the piece's name, followed
+by the state, such as `BGM_P_Guitar 60 percent`. `docs/hsf.md` lists the states. The state's tracks play from the start.
 HSF 1.3.0 and earlier players refuse the rips that turn tracks down, with a message. They can't set a track's volume.
 Without the volumes, they would play every track at full volume. The game never plays those pieces that way.
 
@@ -67,30 +68,30 @@ such a piece starts the controller and the piece as the game does. Jamboree's st
 follows its beats and chords. It gets a rip over each of the boards' streams, named after both, such as
 `SQ_BGM_STAR_MELODY SM_BGM_BD01_MAIN_JMP`. The stream itself isn't part of the rip. Some sounds of Jamboree and of Mario
 Party Superstars pick a variant at random through the game's code. The player runs that code, but the game seeds it from
-its clock. A rip can't know that seed and plays the same variant every time. Some sound effects stay silent unless the
+its clock. A rip can't record that seed. It plays the same variant every time. Some sound effects stay silent unless the
 game gives them a value as it starts them, such as the surface under a footstep. Their rips start them with a value that
 the game gives. `docs/hsf.md` says more. HSF 1.3.0 and earlier players refuse these rips with a message.
 
 Some games keep groups of their sounds in group files (`.bfgrp`) outside the sound archive. The archive lists those
 group files by name. `hsfrip` looks for them by those names among the game's files. For a sound archive given on its
 own, `hsfrip` looks in the archive's folder and the folders below it. A game can also keep its group files in SARC
-archives (`.sarc`) under other names, as Super Mario 3D World + Bowser's Fury does. While a group is still missing,
+archives (`.sarc`) under other names. Super Mario 3D World + Bowser's Fury does. While a group is still missing,
 `hsfrip` reads the group files in the SARC archives in the sound archive's folder too. Sequences whose banks or waves
 are in a group file that isn't found are skipped.
 
 For Super Mario Galaxy and Super Mario Galaxy 2, give `hsfrip` the game's RomFS folder. `hsfrip` finds the game's
 JAudio files in its `AudioRes` folder. It rips each sound that plays a sequence, the music and the sound effects, into
 one folder. `--bgm` rips the music. The levels, the effects and the states that each piece of music gives its tracks as
-it starts come from the game's code. HSF holds them for the two games and recognises each game by its files. For
+it starts come from the game's code. HSF contains them for the two games and recognises each game by its files. For
 another JAudio2 game, `hsfrip` warns and takes JAudio2's defaults. Some things differ from the game:
 
 - The games play much of their music as streams: audio files that HSF doesn't play. `hsfrip` leaves the streams out.
-  Some pieces of music are layers that play beside a stream. The rip of such a piece holds the layer alone. A layer
+  Some pieces of music are layers that play beside a stream. The rip of such a piece contains the layer alone. A layer
   that starts silent is skipped.
 - The game changes some settings as it goes on: the levels of a scene, the effects of some of Super Mario Galaxy 2's
-  stages, and the tracks that a piece of music plays. A rip has the settings that the game sets up as it starts and
-  as each piece starts. In both games, a piece of music that plays other tracks in a later state also gets a rip of
-  each such state. The rip's name is the piece's, followed by the numbers of the states in the game's table, such as
+  stages, and the tracks that a piece of music plays. A rip has the settings that the game sets up as it starts and as
+  each piece starts. In both games, a piece of music that plays other tracks in a later state also gets a rip of each
+  such state. Such a rip is named after the piece, with the numbers of the states in the game's table after it, such as
   `states 8 to 10`. The state's tracks play from the start. A state can keep some tracks at the levels that the state
   before left. In Super Mario Galaxy's three Comet Observatory pieces, such states bring in one of two layers and keep
   the other. Each layer gets a rip of its own, named after the state that brings it in. The two layers together get no
@@ -115,14 +116,14 @@ from the game:
   game draws others each time it plays the piece.
 - The game never plays some of the pieces in its files: `2pbattle`, `a_zawinul01`, `c_result`, the six `ff_` jingles,
   `id_test`, `result` and `u_result`. `hsfrip` rips all of them but `result`. That piece plays programs that its bank
-  lacks. It makes no sound. With `--no-length`, the rip holds it, silent. No track map names `a_zawinul01` or the
-  pieces that `caveboss` and `iron` play. Their rips play every track.
+  doesn't have. It makes no sound. With `--no-length`, the rip contains it, silent. No track map names `a_zawinul01` or
+  the pieces that `caveboss` and `iron` play. Their rips play every track.
 - The game fades some tracks of a piece in and out as it goes on: the layers for events, treasure, enemies nearby,
   battles and the ground. The bosses' music has layers for the Pikmin's attack and for the tension, and the two players'
-  battle has eight layers. A rip plays those layers muted, as each piece starts in the game. Each piece with layers also
-  gets a rip of each layer, named after the piece and the layer, such as `forest battle layer`. That rip plays the layer
-  from the start, at the highest level that the game gives it. Five of the battle's layers take the names of their
-  directors in the game's code, such as `battle_t OriBeedaD layer`.
+  battle has eight layers. A rip plays those layers muted. Each piece starts that way in the game. Each piece with
+  layers also gets a rip of each layer, named after the piece and the layer, such as `forest battle layer`. That rip
+  plays the layer from the start, at the highest level that the game gives it. Five of the battle's layers take the
+  names of their directors in the game's code, such as `battle_t OriBeedaD layer`.
 - The game plays most effects at a place in its world, and moves their levels as the camera and the sound's source move.
   A rip plays each effect at the listener, with no place in the game's world. Some effects play until the game stops
   them. Their rips loop, then fade.
@@ -132,14 +133,14 @@ from the game:
 
 Players without Pikmin 2's support, such as HSF 1.2.0, refuse its rips with a message.
 
-For Pikmin, give `hsfrip` a folder that holds the game's RomFS and ExeFS, as `romfs` and `exefs`. `hsfrip` finds the
-game's sound files in the RomFS's `SndData` folder: the bank file, `Banks/pikibank.bx`, the wave archives beside it and
-the sequence archive, `Seqs/pikiseq.arc`. The game keeps the rest of its sound settings in its code, the ExeFS's `main`:
-the sequence archive's index, the settings of the music and the effects, the FX lines and the cutscenes' table.
-`hsfrip` reads them from the `main` of the game's version 1.0.0 or of its update, version 1.1.0. The two builds hold the
-same settings. The update leaves the sound files as they are. For another build of `main`, or without it, `hsfrip`
-stops with a message. `hsfrip` rips each piece of music, each piece of the cutscenes' music and each sound effect into
-one folder. `--bgm` rips the music. Some things differ from the game:
+For Pikmin, give `hsfrip` a folder that contains the game's RomFS and ExeFS, in folders named `romfs` and `exefs`.
+`hsfrip` finds the game's sound files in the RomFS's `SndData` folder: the bank file, `Banks/pikibank.bx`, the wave
+archives beside it and the sequence archive, `Seqs/pikiseq.arc`. The game keeps the rest of its sound settings in its
+code, the ExeFS's `main`: the sequence archive's index, the settings of the music and the effects, the FX lines and the
+cutscenes' table. `hsfrip` reads them from the `main` of the game's version 1.0.0 or of its update, version 1.1.0. The
+two builds contain the same settings. The update leaves the sound files as they are. For another build of `main`, or
+without it, `hsfrip` stops with a message. `hsfrip` rips each piece of music, each piece of the cutscenes' music and
+each sound effect into one folder. `--bgm` rips the music. Some things differ from the game:
 
 - The game never plays `d_end2`, and the bank file has no wave system for it. `hsfrip` leaves it out with a warning.
 - The game plays most effects at a place in its world, and moves their levels as the camera and the sound's source move.
@@ -148,8 +149,9 @@ one folder. `--bgm` rips the music. Some things differ from the game:
   Pikmin by its size. The formation's rip plays the sound with the stick pushed all the way. A Pikmin's cry as it's
   plucked is one of several. The rip of the pluck plays one of them.
 - The Switch's release plays nothing for the crowd of Pikmin, or for the system's effect `SYSSE_JUNGLE`. Their notes
-  play waves that the bank file lacks. `hsfrip` skips them as sounds that make no sound. With `--no-length`, the rip
-  holds a silent `.minihsf` for each of them: `SYSSE_JUNGLE` and the crowd's 29 sizes, `crowd-01` to `crowd-29`.
+  play waves that are missing from the bank file. `hsfrip` skips them as sounds that make no sound. With `--no-length`,
+  the rip contains a silent `.minihsf` for each of them: `SYSSE_JUNGLE` and the crowd's 29 sizes, `crowd-01` to
+  `crowd-29`.
 - A cutscene plays its sounds at the points of its timeline. Each sound of a cutscene gets a rip of its own, such as
   `cutscene-004-01` for sound 1 of cutscene 4.
 - A cutscene can stop one of its sounds with a later event. The rip of the stopped sound fades out over the time that
@@ -162,11 +164,11 @@ Players without Pikmin's support refuse its rips with a message too.
 
 For The Legend of Zelda: Skyward Sword HD, give `hsfrip` the game's RomFS folder. `hsfrip` finds the game's Wii sound
 archive, `Sound/WZSound.brsar`, and the cutscenes' archives in `Sound/demo`. It rips each sequence of an archive, the
-music and the sound effects, into a folder with the archive's name. `--bgm` rips the music. The library holds only the
-part of the archive that the rip's sequences play. Some things differ from the game:
+music and the sound effects, into a folder with the archive's name. `--bgm` rips the music. The library contains only
+the part of the archive that the rip's sequences play. Some things differ from the game:
 
-- The game puts a reverb on each of its two aux buses, and changes the first one's with the scene. A rip plays bus A's
-  reverb for a scene that names no type of room, and bus B's from the game's start-up.
+- The game puts a reverb on each of its two aux buses, and changes the reverb on bus A with the scene. A rip plays the
+  reverb of a scene that names no type of room on bus A, and the reverb of the game's start-up on bus B.
 - The game mixes for 5.1 speakers, in NW4R SND's mode for Dolby Pro Logic II. On a stereo output, such as the
   console's speakers, headphones or a TV in stereo, the console mixes the six channels down to two. A rip plays that
   downmix. A TV with 5.1 speakers plays the six channels as they are, and a rip can't.
@@ -184,7 +186,7 @@ HSF's earlier players refuse version 2 rips with a message. In a version 2 rip, 
 foobar2000 component or the XMPlay plugin keeps plays the track again from its start.
 
 Both tools accept several inputs and continue if one fails. A path that doesn't exist stops the command before it writes
-any files. For example, `hsfrip romfs` writes `romfs_hsf/`. That folder holds a folder for each of the game's sound
+any files. For example, `hsfrip romfs` writes `romfs_hsf/`. That folder contains a folder for each of the game's sound
 archives. Then `hsfplay romfs_hsf/*/*.minihsf` renders every sequence in it. `--version` shows a tool's version.
 
 ### Downloads
@@ -242,10 +244,11 @@ The format test (`tests/format_test.cpp`) checks the descriptor and the loading 
 reverb's tail and a delay's echoes. It also plays a small Wii sound archive on Skyward Sword HD's layer. The ripper's
 test (`tests/rip_test.cpp`) measures a sequence of each kind that the length analysis distinguishes. The model test
 (`tests/model_test.cpp`) checks how long the effects ring after a sequence. The ripper's other tests check the jobs of a
-sound's states (`tests/sound_states_test.cpp`), the JAudio games' descriptors (`tests/jaudio_rip_test.cpp`) and the
-parts of a rip of a Wii sound archive (`tests/nw4r_rip_test.cpp`). The game test (`tests/game_test.cpp`) builds a Bezel
-Engine archive, data sheets with a sound effect list and sounds' levels, and a `boot.lua`. It checks what `hsfrip` finds
-in a folder of them, in the archive alone and in a title's folder that holds the archive unpacked. The test also checks
+sound's states (`tests/sound_states_test.cpp`), the JAudio games' descriptors (`tests/jaudio_rip_test.cpp`), the parts
+of a rip of a Wii sound archive (`tests/nw4r_rip_test.cpp`), and Pikmin's tables and choice of sounds
+(`tests/jac_tables_test.cpp` and `tests/jac_rip_test.cpp`). The game test (`tests/game_test.cpp`) builds a Bezel Engine
+archive, data sheets with a sound effect list and sounds' levels, and a `boot.lua`. It checks what `hsfrip` finds in a
+folder of them, in the archive alone and in a title's folder that contains the archive unpacked. The test also checks
 that the readers refuse damaged files.
 
 ## Layout
@@ -266,5 +269,5 @@ externals/    xsflib, the code that the PSF players share, and ntdlib, for Ninte
 
 HSF is under the MIT licence (`LICENSE`). It builds on xsflib and ntdlib, both under the MIT licence too, in the
 submodules `externals/xsflib` and `externals/ntdlib`. `THIRD-PARTY-NOTICES.md` lists the libraries HSF uses and what a
-binary distribution must include. Game data is not covered by this licence. Rips contain a game's sound data, and they
+binary distribution must include. This licence doesn't cover game data. Rips contain a game's sound data, and they
 are for personal use.

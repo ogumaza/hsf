@@ -39,7 +39,7 @@ namespace
 // The wave scenes that the game loads as it starts, in its order. Jac_Start (0x266f2c) sets scene 0 of wave system 0.
 // As the first title screen starts, Jac_SceneSetup (0x265e30 to 0x265e84) loads scenes 1 and 2 of system 0, scene 0 of
 // system 22 and scene 3 of system 0, then sets scene 0 of systems 14, 15 and 2. The title's piece sets its scene before
-// them. The game closes that scene before it sets another piece's.
+// them. The game closes that scene before it sets the scene of another piece.
 constexpr std::array<JacLoad, 8> kLoads = {{
     {{0, 0}, 1},
     {{0, 1}, 0},
@@ -209,8 +209,8 @@ std::optional<std::size_t> GroupSlot(const EventActions& actions, const std::arr
     return last_free;
 }
 
-// The first slot whose action has the lowest priority, if that priority is no higher than the action's. A free slot
-// counts with row 0's priority. The game does the same. kSlots if no slot qualifies.
+// The first slot whose action has the lowest priority, if that priority is no higher than that of the action. A free
+// slot counts with row 0's priority. The game does the same. kSlots if no slot qualifies.
 std::size_t LowestSlot(const EventActions& actions, const std::array<Slot, kSlots>& slots, const EventAction& status)
 {
     std::size_t target = kSlots;
@@ -309,7 +309,7 @@ std::string Decimal(unsigned value, int digits)
     return text;
 }
 
-// Whether the bank file's systems hold `scene`: a system at the scene's place with a group at the scene's.
+// Whether the bank file's systems contain `scene`: a system at the scene's place with a group at the scene's.
 bool HoldsScene(const std::vector<ntdlib::jaudio::WaveSystem>& systems, JacScene scene)
 {
     return std::any_of(systems.begin(), systems.end(), [scene](const ntdlib::jaudio::WaveSystem& system)
@@ -576,12 +576,12 @@ void AddCutsceneEffects(const std::vector<Cutscene>& cutscenes, EffectChoice& ef
 constexpr uint32_t kInnerLoops = 0x80000000;
 
 // The model of the C JAudio for the length analysis (JaudioModelBase), with JAudio2's rules. A frame's output is what
-// AudioOut plays of the frame. The FX lines ring while their delays hold a sample louder than xsflib's level of silence
-// (jac::Engine::FxRinging), and the output rings while it has sound. The FX lines' feedback can hold a few quieter
-// values for ever. Every loop of the main track counts, in a subroutine or a counted loop too. Such a jump counts by
-// the levels below it: their places and counts (jac::LoopJump). Its target doesn't count. A random branch can send an
-// endless loop in a subroutine back to either of two places. Each set of levels takes an ID above every target, from
-// kInnerLoops on. A change of the levels therefore starts the count again.
+// AudioOut plays of the frame. The FX lines ring while their delays contain a sample louder than xsflib's level of
+// silence (jac::Engine::FxRinging), and the output rings while it has sound. The FX lines' feedback can keep a few
+// quieter values for ever. Every loop of the main track counts, in a subroutine or a counted loop too. Such a jump
+// counts by the levels below it: their places and counts (jac::LoopJump). Its target doesn't count. A random branch can
+// send an endless loop in a subroutine back to either of two places. Each set of levels takes an ID above every target,
+// from kInnerLoops on. A change of the levels therefore starts the count again.
 class JacLengthModel : public JaudioModelBase<jac::Engine, jac::Channels::kDspChannels, jac::kNone>
 {
 public:
@@ -636,7 +636,7 @@ private:
     std::vector<jac::LoopJump> levels_; // the levels below the inner loops, by their IDs from kInnerLoops
 };
 
-// The later events of the sound with ID `sound`, as the model queues them. An effect's ID holds no bits above its
+// The later events of the sound with ID `sound`, as the model queues them. An effect's ID has no bits above its
 // place.
 std::vector<jac::DemoEvent> DemoEventsOf(const std::vector<std::vector<JacLaterEvent>>& later_events, uint32_t sound)
 {
@@ -653,7 +653,7 @@ std::vector<jac::DemoEvent> DemoEventsOf(const std::vector<std::vector<JacLaterE
 }
 
 // Measures the sound with ID `sound` with the events `queued` unheard. The count of notes without a wave goes to
-// `missing_bank_notes`.
+// `missing_bank_notes`. Music, a piece or a part of the cutscenes' music, runs to the long limit.
 std::optional<Timing> MeasureJacSound(const jac::SoundFiles& files, const JaudioSettings& jaudio, uint32_t sound,
                                       const std::vector<jac::DemoEvent>& queued, uint32_t& missing_bank_notes)
 {
@@ -667,8 +667,10 @@ std::optional<Timing> MeasureJacSound(const jac::SoundFiles& files, const Jaudio
 
         engine.QueueDemoEvents(queued, true);
 
+        const bool music = (sound & kSoundSectionMask) != JaudioLibrary3::kEffectSection;
         JacLengthModel model(engine);
-        const std::optional<Timing> timing = xsflib::rip::MeasureLength(model, JaudioLengthRules());
+        const std::optional<Timing> timing = xsflib::rip::MeasureLength(
+            model, JaudioLengthRules(music ? xsflib::rip::Limit::kLong : xsflib::rip::Limit::kDefault));
         missing_bank_notes = engine.MissingBankNotes();
 
         return timing;
@@ -859,10 +861,10 @@ JaudioTiming JacLengthAnalyzer::Analyze(uint32_t sound) const
     }
 
     // The rip of such a sound fades out from the frame in which the game's sound first differs from the rip's. The fade
-    // ends where the game's sound ends, without the tail. Two engines play the sound side by side up to there, one with
-    // the events unheard and one without them.
+    // ends where the game's sound ends: at its last sound. Two engines play the sound side by side up to there, one
+    // with the events unheard and one without them.
     const xsflib::rip::LengthRules rules = JaudioLengthRules();
-    const auto end_ms = timing.length_ms - static_cast<long long>(rules.tail_ms);
+    const long long end_ms = timing.length_ms;
     const auto end_frame = static_cast<uint64_t>(static_cast<double>(end_ms) / rules.frame_ms);
     const uint64_t frame = FirstDifferentFrame(files_, settings_.jaudio, sound, events, end_frame);
     timing.length_ms = std::min(static_cast<long long>(static_cast<double>(frame) * rules.frame_ms), end_ms);

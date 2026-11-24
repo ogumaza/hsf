@@ -20,7 +20,7 @@ namespace hsf::cli
 {
 
 // Rips a game that plays its sound with JAudio: one library of its sound files, and a mini for each sound that plays
-// a sequence. The settings come from the game's code when HSF holds them for the game. The folder of the rip has the
+// a sequence. The settings come from the game's code when HSF has them for the game. The folder of the rip has the
 // start-up archive's name. Returns the exit code.
 int RipJaudioGame(const std::string& input, const hsf::game::GameFiles& game, const hsf::rip::JaudioPaths& paths,
                   const std::filesystem::path& out_dir, const Options& o, xsflib::cli::FileNameRegistries& registries);

@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <map>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -24,19 +25,6 @@ namespace hsf::rip
 namespace
 {
 
-// The module's header (MOD0): its tag, read little-endian, and the place of the dynamic section's offset in it.
-constexpr uint32_t kMod0 = 0x30444f4d;
-constexpr uint64_t kMod0At = 4;
-constexpr uint64_t kDynamicOffsetAt = 4;
-
-// The entries of the dynamic section (Elf64_Dyn) and the relocations (Elf64_Rela).
-constexpr std::size_t kDynamicEntry = 16;
-constexpr uint64_t kDtNull = 0;
-constexpr uint64_t kDtRela = 7;
-constexpr uint64_t kDtRelaSize = 8;
-constexpr std::size_t kRelocation = 24;
-constexpr uint32_t kRelative = 1027; // R_AARCH64_RELATIVE
-
 // The places in a row of the cutscenes' table, the events' size, and the values that end a cutscene's events.
 constexpr std::size_t kEventsAt = 8;
 constexpr std::size_t kEvent = 4;
@@ -48,22 +36,6 @@ constexpr int16_t kEndEventsToo = -3;
 constexpr std::size_t kNameAt = 8;
 constexpr std::size_t kLoopAt = 0x10;
 constexpr std::size_t kEventTypeAt = 0x14;
-
-// The bytes from `address` to the end of the segment that holds it, or an empty span if no segment does. An address at
-// a segment's end gives an empty span too.
-std::span<const uint8_t> SegmentFrom(const ntdlib::nx::Nso& main, uint64_t address)
-{
-    for (const ntdlib::nx::NsoSegment* segment : {&main.text, &main.rodata, &main.data})
-    {
-        if (address >= segment->address && address - segment->address <= segment->bytes.size())
-        {
-            return std::span<const uint8_t>(segment->bytes)
-                .subspan(static_cast<std::size_t>(address - segment->address));
-        }
-    }
-
-    return {};
-}
 
 [[noreturn]] void ThrowOutside(std::string_view what)
 {
@@ -115,72 +87,46 @@ uint64_t RelocatedAt(const std::map<uint64_t, uint64_t>& pointers, uint64_t addr
 std::span<const uint8_t> MainBytes(const ntdlib::nx::Nso& main, uint64_t address, std::size_t size,
                                    std::string_view what)
 {
-    for (const ntdlib::nx::NsoSegment* segment : {&main.text, &main.rodata, &main.data})
-    {
-        if (address >= segment->address && address - segment->address <= segment->bytes.size() &&
-            size <= segment->bytes.size() - (address - segment->address))
-        {
-            return std::span<const uint8_t>(segment->bytes)
-                .subspan(static_cast<std::size_t>(address - segment->address), size);
-        }
-    }
-
-    ThrowOutside(what);
-}
-
-std::string MainString(const ntdlib::nx::Nso& main, uint64_t address, std::string_view what)
-{
-    const std::span<const uint8_t> rest = SegmentFrom(main, address);
-    const auto end = std::find(rest.begin(), rest.end(), uint8_t{0});
-    if (end == rest.end())
+    const std::optional<std::span<const uint8_t>> bytes = ntdlib::nx::SegmentBytes(main, address, size);
+    if (!bytes)
     {
         ThrowOutside(what);
     }
 
-    return std::string(rest.begin(), end);
+    return *bytes;
+}
+
+std::string MainString(const ntdlib::nx::Nso& main, uint64_t address, std::string_view what)
+{
+    // The string and its terminating 0 lie in one segment.
+    for (std::size_t size = 1;; ++size)
+    {
+        const std::optional<std::span<const uint8_t>> bytes = ntdlib::nx::SegmentBytes(main, address, size);
+        if (!bytes)
+        {
+            ThrowOutside(what);
+        }
+
+        if (bytes->back() == 0)
+        {
+            return std::string(bytes->begin(), bytes->end() - 1);
+        }
+    }
 }
 
 std::map<uint64_t, uint64_t> RelativePointers(const ntdlib::nx::Nso& main)
 {
-    const uint32_t mod0 = Le32(main, kMod0At, "the offset of the module's header");
-    if (Le32(main, mod0, "the module's header") != kMod0)
-    {
-        throw xsflib::FormatError("main has no MOD0 header");
-    }
-
-    const auto offset = static_cast<int32_t>(Le32(main, mod0 + kDynamicOffsetAt, "the module's header"));
-    uint64_t rela = 0;
-    uint64_t rela_size = 0;
-    bool has_rela = false;
-    bool has_size = false;
-    for (uint64_t at = mod0 + static_cast<uint64_t>(static_cast<int64_t>(offset));; at += kDynamicEntry)
-    {
-        const std::span<const uint8_t> entry = MainBytes(main, at, kDynamicEntry, "the dynamic section");
-        const uint64_t tag = xsflib::LoadLe64(entry.data());
-        const uint64_t value = xsflib::LoadLe64(entry.data() + 8);
-        if (tag == kDtNull)
-        {
-            break;
-        }
-
-        if (tag == kDtRela)
-        {
-            rela = value;
-            has_rela = true;
-        }
-        else if (tag == kDtRelaSize)
-        {
-            rela_size = value;
-            has_size = true;
-        }
-    }
-
-    if (!has_rela || !has_size)
+    const std::map<int64_t, uint64_t> entries = ntdlib::nx::DynamicEntries(main);
+    const auto rela_at = entries.find(ntdlib::nx::kDtRela);
+    const auto rela_size_at = entries.find(ntdlib::nx::kDtRelaSize);
+    if (rela_at == entries.end() || rela_size_at == entries.end())
     {
         throw xsflib::FormatError("main's dynamic section has no DT_RELA or no DT_RELASZ");
     }
 
-    if (rela_size % kRelocation != 0)
+    const uint64_t rela = rela_at->second;
+    const uint64_t rela_size = rela_size_at->second;
+    if (rela_size % ntdlib::nx::kRelocationSize != 0)
     {
         throw xsflib::FormatError("main's relocations don't take 24 bytes each");
     }
@@ -188,10 +134,10 @@ std::map<uint64_t, uint64_t> RelativePointers(const ntdlib::nx::Nso& main)
     const std::span<const uint8_t> table =
         MainBytes(main, rela, static_cast<std::size_t>(rela_size), "the relocations");
     std::map<uint64_t, uint64_t> pointers;
-    for (std::size_t at = 0; at < table.size(); at += kRelocation)
+    for (std::size_t at = 0; at < table.size(); at += ntdlib::nx::kRelocationSize)
     {
         const uint64_t info = xsflib::LoadLe64(table.data() + at + 8);
-        if ((info & 0xffffffff) == kRelative)
+        if ((info & 0xffffffff) == ntdlib::nx::kRelocationRelative)
         {
             pointers[xsflib::LoadLe64(table.data() + at)] = xsflib::LoadLe64(table.data() + at + 16);
         }

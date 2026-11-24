@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: MIT
 
 // Tests the ripper's length analysis on ntdlib's length cases (ntdlib/testing/length_cases.h): sequences that each take
-// one of its paths, in a little-endian archive. A counted loop that runs past the limit follows. The analysis plays a
-// sound's tracks at the volumes that the game gives them, and with the variables that the game sets. The frames until a
-// variable takes a value and the delay that makes a sound that draws sound come next. Last, the test checks that the
-// ripper takes a big-endian archive, and only that, for a Wii U archive.
+// one of its paths, in a little-endian archive. The counted loops that run past the limit follow. The analysis plays a
+// sound's tracks at the volumes that the game gives them, and with the variables that the game sets. Last come the
+// frames until a variable takes a value, and the delay after which a sound that draws a number sounds.
 
 #include "rip/rip.h"
 
-#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -17,7 +15,6 @@
 
 #include "ntdlib/rip/archive.h"
 #include "ntdlib/testing/length_cases.h"
-#include "ntdlib/testing/sar_files.h"
 #include "xsflib/testing/check.h"
 
 #include "hsf/format.h"
@@ -28,67 +25,6 @@ using namespace xsflib::testing;
 
 namespace
 {
-
-// The length that the ripper gives the case `name`, or -1.
-long long LengthOf(const hsf::rip::LengthAnalyzer& analyzer, const std::string& name)
-{
-    for (std::size_t i = 0; i < length_cases::Cases().size(); ++i)
-    {
-        if (name == length_cases::Cases()[i].name)
-        {
-            const std::optional<hsf::rip::Timing> timing = analyzer.Analyze(static_cast<uint32_t>(i));
-            return timing ? timing->length_ms : -1;
-        }
-    }
-
-    return -1;
-}
-
-// A little-endian archive with one sequence sound `name` of `code`, on the tracks in the mask `tracks`. Program 0 plays
-// a wave of 1 s that ends, as in the length cases.
-std::vector<uint8_t> OneSequenceArchive(const std::string& name, const std::vector<uint8_t>& code, uint32_t tracks)
-{
-    sar_files::ArchiveSpec spec;
-    spec.banks = {{"BANK", 0}};
-    spec.wave_archives = {{"WARC", 1}};
-    spec.players = {{"PLAYER", 1}};
-    spec.files = {{sar_files::Bank(false, sar_files::OneRegionBank()), "", false},
-                  {sar_files::WaveArchive(false, {sar_files::Wave(false, sar_files::ConstantWave(false))}), "", false},
-                  {sar_files::Sequence(false, code, {{"Start", 0}}), "", false}};
-    sar_files::SoundSpec sound;
-    sound.name = name;
-    sound.volume = 127;
-    sound.allocate_track_flags = tracks;
-    sound.banks = {0};
-    sound.file = 2;
-    spec.sounds = {sound};
-
-    return sar_files::Archive(false, spec);
-}
-
-// A little-endian archive with one sequence: a loop of 64 passes, each C4 for 250 ms and a rest, 10 s in all. The
-// passes take 640 s, past the limit of 600 s. Program 0 plays a wave of 1 s that ends, as in the length cases.
-std::vector<uint8_t> CountedLoopArchive()
-{
-    length_cases::Code code(false);
-    code.LoopStart(64).Note(60, 127, 24).Wait(936).LoopEnd().End();
-
-    return OneSequenceArchive("SEQ_COUNTED_LOOP", code.Bytes(), 1);
-}
-
-// A little-endian archive with one sequence of two tracks. Track 0 plays C4 for 250 ms at the start. Track 1 waits 5 s,
-// then plays C4 for 250 ms too. Program 0 plays a wave of 1 s that ends, as in the length cases.
-std::vector<uint8_t> TwoTrackArchive()
-{
-    // Track 1 starts after the timebase and the tempo (5 bytes), and track 0's open (5), note (3) and end (1).
-    constexpr uint32_t kTrack1 = 14;
-    length_cases::Code code(false);
-    code.OpenTrack(1, kTrack1).Note(60, 127, 24).End();
-    XSFLIB_CHECK(code.Bytes().size() == kTrack1);
-    code.Wait(480).Note(60, 127, 24).End();
-
-    return OneSequenceArchive("SEQ_TWO_TRACKS", code.Bytes(), 3);
-}
 
 // A little-endian archive with one sequence that waits until the global variable 28 holds 5 and then until its
 // variable 3 holds 7. It then plays C4 for 250 ms, like SEQ_END. Program 0 plays a wave of 1 s that ends, like the one
@@ -106,7 +42,7 @@ std::vector<uint8_t> WaitingArchive()
     XSFLIB_CHECK(code.Bytes().size() == kNote);
     code.Note(60, 127, 24).End();
 
-    return OneSequenceArchive("SEQ_WAITING", code.Bytes(), 1);
+    return length_cases::SequenceArchive(false, "SEQ_WAITING", code);
 }
 
 // A little-endian archive with one sequence that waits 48 ticks, 500 ms at tempo 120, then writes 7 to the global
@@ -116,7 +52,7 @@ std::vector<uint8_t> WritingArchive()
     length_cases::Code code(false);
     code.Wait(48).SetVariable(20, 7).End();
 
-    return OneSequenceArchive("SEQ_WRITING", code.Bytes(), 1);
+    return length_cases::SequenceArchive(false, "SEQ_WRITING", code);
 }
 
 // A little-endian archive with one sequence that draws a number from 0 to 9 into its variable 0 and plays C4 for 250 ms
@@ -127,12 +63,12 @@ std::vector<uint8_t> DrawingArchive(uint16_t value)
     code.SetRandomVariable(0, 0, 9);
     code.CompareEqual(0, value).If().Note(60, 127, 24).End();
 
-    return OneSequenceArchive("SEQ_DRAWING", code.Bytes(), 1);
+    return length_cases::SequenceArchive(false, "SEQ_DRAWING", code);
 }
 
 // SoundingDelay finds the first later start of a sound that sounds only on some of its draws. At the first start, the
-// sequence draws one of the ten numbers, so nine of the ten sequences never sound. Each of them sounds when the game
-// starts it after the delay, and not one frame earlier. A sound that never sounds and draws nothing gets no delay.
+// sequence draws one of the ten numbers. Nine of the ten sequences therefore never sound. Each of them sounds when the
+// game starts it after the delay, and not one frame earlier. A sound that never sounds and draws nothing gets no delay.
 void TestSoundingDelay()
 {
     using hsf::ScriptStep;
@@ -194,7 +130,7 @@ void TestFramesUntil()
 // The analysis starts a sound by its script, just like the player. With the global variable 28 at 5 and the sound's
 // variable 3 at 7, the waiting sequence plays its note and ends as SEQ_END does. Without either of them, it never
 // sounds. A lead-in of 20 frames takes 100 ms off the length. A write of variable 3 a second in holds the note back by
-// that second, give or take a tick of the sequence.
+// that second, give or take a tick of the sequence. A run of the script alone gives the analysis's first sample.
 void TestVariables(long long end)
 {
     using hsf::ScriptStep;
@@ -227,26 +163,36 @@ void TestVariables(long long end)
     const std::optional<hsf::rip::Timing> late = analyze({global, start, ScriptStep::Write(200, 3, 7, kSound)});
     Check(late && !late->silent && late->length_ms >= end + 1000 && late->length_ms <= end + 1011,
           "a write a second in holds the note back by a second: " + length(late));
+
+    const auto first_sample = [&analyzer](std::vector<ScriptStep> steps, uint32_t lead_in, uint32_t limit)
+    {
+        const hsf::ScriptedStart script = {kSound, lead_in, std::move(steps)};
+        return analyzer.FirstSampleMs(script, ntdlib::rip::kFullTrackVolumes, limit);
+    };
+    const std::optional<long long> late_first =
+        first_sample({global, start, ScriptStep::Write(200, 3, 7, kSound)}, 0, 400);
+    Check(both && both->first_sample_ms && lead && lead->first_sample_ms && late && late->first_sample_ms &&
+              first_sample({global, start, local}, 0, 400) == both->first_sample_ms &&
+              first_sample({global, start, local}, 20, 400) == lead->first_sample_ms &&
+              late_first == late->first_sample_ms && *late_first >= 1000,
+          "a run of the script gives the analysis's first sample");
+    Check(
+        !first_sample({global, start, ScriptStep::Write(200, 3, 7, kSound)}, 0, 150) && !first_sample({start}, 0, 400),
+        "no first sample before the limit, or from a sequence that never sounds");
 }
 
-// The analysis plays the tracks at the volumes that the game gives them as it starts the sound. Track 1's late note
-// sets the length: 5 s more than SEQ_END's. With track 1 at 0, the sequence ends after track 0's note, as SEQ_END does.
-// With track 0 at 0, the length stays. With both at 0, the sequence never sounds.
+// The analysis plays the tracks at the volumes that the game gives them as it starts the sound
+// (length_cases::CheckTrackVolumes).
 void TestTrackVolumes()
 {
-    const hsf::rip::LengthAnalyzer analyzer(hsf::fsar::SoundArchive::Load(TwoTrackArchive(), hsf::kSarOptions));
-    const auto length = [&analyzer](uint16_t muted)
+    const hsf::rip::LengthAnalyzer analyzer(
+        hsf::fsar::SoundArchive::Load(length_cases::TwoTracksArchive(ntdlib::sar::Flavor::kNx), hsf::kSarOptions));
+    const auto analyze = [&analyzer](uint16_t muted)
     {
-        const std::optional<hsf::rip::Timing> timing = analyzer.Analyze(0, ntdlib::rip::TrackVolumesOf(muted));
-        return timing && !timing->silent ? timing->length_ms : -1;
+        return analyzer.Analyze(0, ntdlib::rip::TrackVolumesOf(muted));
     };
 
-    const long long full = length(0);
-    Check(full >= 5740 && full <= 5780, "two tracks with a note 5 s apart play for " + std::to_string(full) + " ms");
-    Check(length(2) >= 740 && length(2) <= 780, "with track 1 at 0, the sequence ends after track 0's note");
-    Check(length(1) == full, "with track 0 at 0, the length stays");
-    const std::optional<hsf::rip::Timing> muted = analyzer.Analyze(0, ntdlib::rip::TrackVolumesOf(3));
-    Check(muted && muted->silent, "with both tracks at 0, the sequence never sounds");
+    length_cases::CheckTrackVolumes(analyze);
 }
 
 } // namespace
@@ -255,21 +201,26 @@ int main()
 {
     const hsf::rip::LengthAnalyzer analyzer(
         hsf::fsar::SoundArchive::Load(length_cases::Archive(false), hsf::kSarOptions));
+    const auto analyze = [&analyzer](uint32_t index)
+    {
+        return analyzer.Analyze(index);
+    };
 
     // HSF's analysis waits for the loops of the tracks other than the main track (its model's OthersLooped).
-    length_cases::CheckCases([&analyzer](uint32_t index) { return analyzer.Analyze(index); }, true);
+    length_cases::CheckCases(analyze, true);
 
     // In HSF, SEQ_END ends at the same frame as SEQ_REST_LOOP and SEQ_LONG_REST. A different rule ends each one. A
     // model whose output runs a frame behind its engine can end SEQ_END sooner.
-    const long long end = LengthOf(analyzer, "SEQ_END");
-    Check(end > 0 && end == LengthOf(analyzer, "SEQ_REST_LOOP"), "SEQ_END ends at the same frame as SEQ_REST_LOOP");
+    const long long end = length_cases::LengthOf(analyze, "SEQ_END");
+    Check(end > 0 && end == length_cases::LengthOf(analyze, "SEQ_REST_LOOP"),
+          "SEQ_END ends at the same frame as SEQ_REST_LOOP");
 
-    // The counted loop reaches the limit. The analysis then takes it as endless: two passes of 10 s, then the fade.
-    const hsf::rip::LengthAnalyzer counted(hsf::fsar::SoundArchive::Load(CountedLoopArchive(), hsf::kSarOptions));
-    const std::optional<hsf::rip::Timing> timing = counted.Analyze(0);
-    Check(timing && timing->length_ms >= 19995 && timing->length_ms <= 20015 && timing->fade_ms == 10000,
-          "a counted loop that runs past the limit loops after two passes, " +
-              std::to_string(timing ? timing->length_ms : -1) + " ms");
+    // The counted loops that reach the limit. The analysis then takes the outermost loop of each track as endless.
+    const auto measure = [](const std::vector<uint8_t>& bytes)
+    {
+        return hsf::rip::LengthAnalyzer(hsf::fsar::SoundArchive::Load(bytes, hsf::kSarOptions)).Analyze(0);
+    };
+    length_cases::CheckLongLoops(ntdlib::sar::Flavor::kNx, measure, "the Switch");
 
     TestTrackVolumes();
     TestVariables(end);

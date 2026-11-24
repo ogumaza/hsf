@@ -50,19 +50,21 @@ public:
     explicit LengthAnalyzer(fsar::SoundArchive archive, ArchiveDescriptor settings = {});
     ~LengthAnalyzer();
 
-    // A looping sequence gets two loops and a 10 s fade. Any other sequence runs to its end, or to where it falls
-    // silent for good, its effects' tails included. No sequence runs for more than 600 s. A sequence that never makes a
-    // sound is marked silent, and gets the 0.5 s that follows a sequence's last sound. The sequence's tracks play at
-    // `track_volumes`. The game's code sets those volumes as it starts the sound. The sound starts by `script`
-    // (docs/hsf.md, "Scripted starts"), or at once with no variables set. The script's sound has to be `sound_index`'s.
-    // The length counts from the end of the script's lead-in. `settings`, when given, take the place of the analyzer's:
-    // a sound with a reverb on aux bus B rings longer (rip/sound_states.h). The player scales the output by the mini's
-    // volume tag. `volume` scales the output that the analysis judges in the same way. Returns nullopt when the length
-    // can't be worked out (and then no length tag is written). Throws std::bad_alloc when memory runs out.
+    // A looping sequence gets two loops and a 7 s fade. Any other sequence runs to its last sound, its effects' tails
+    // included. No sequence runs for more than 600 s. A sequence that never makes a sound is marked silent, and gets a
+    // length of 0. The timing has the first sample that isn't 0 of the device's output, before the volume below scales
+    // it, as the player renders it. The sequence's tracks play at `track_volumes`. The game's code sets those volumes
+    // as it starts the sound. The sound starts by `script` (docs/hsf.md, "Scripted starts"), or at once with no
+    // variables set. The script has to start `sound_index`. The length counts from the end of the script's lead-in.
+    // `settings`, when given, replace the analyzer settings: a sound with a reverb on aux bus B rings longer
+    // (rip/sound_states.h). The player scales the output by the mini's volume tag. `volume` scales the output that the
+    // analysis judges in the same way. The rip gives music the long limit. With it, a measure that reaches 600 s runs
+    // again to 3,600 s. Returns nullopt when the length can't be worked out (and then no length tag is written). Throws
+    // std::bad_alloc when memory runs out.
     std::optional<Timing> Analyze(uint32_t sound_index,
                                   const ntdlib::rip::TrackVolumes& track_volumes = ntdlib::rip::kFullTrackVolumes,
                                   const ScriptedStart* script = nullptr, const ArchiveDescriptor* settings = nullptr,
-                                  float volume = 1.0f) const;
+                                  float volume = 1.0f, xsflib::rip::Limit limit = xsflib::rip::Limit::kDefault) const;
 
     // The frames that the model runs, with the sounds that `script` starts, until the global variable `variable` (16
     // to 31) holds `value`. The model plays `addons` as the script's add-on archives, in order. The steps of each frame
@@ -76,10 +78,18 @@ public:
     // random numbers step once a frame (atk::Engine). A sound whose sequence draws a number therefore draws another
     // one when the game starts the sound later. Returns nothing when the sound's sequence draws no number in the
     // window without a delay, or when no delay up to `limit` makes the sound sound. The sound's tracks play at
-    // `track_volumes`. `settings`, when given, take the place of the analyzer's, as in Analyze.
+    // `track_volumes`. `settings`, when given, replace the analyzer settings, as in Analyze.
     std::optional<uint32_t> SoundingDelay(const ScriptedStart& script, const ntdlib::rip::TrackVolumes& track_volumes,
                                           uint32_t limit, uint32_t window,
                                           const ArchiveDescriptor* settings = nullptr) const;
+
+    // The milliseconds from the end of `script`'s lead-in to the first sample that isn't 0 of the device's output,
+    // rounded as Analyze rounds Timing::first_sample_ms. The model plays as in Analyze, for at most `limit` frames
+    // after the lead-in. A timing that a rip builds without Analyze takes its first sample from here. Returns nothing
+    // when a start fails or when every sample of those frames is 0. The sound's tracks play at `track_volumes`.
+    // `settings`, when given, replace the analyzer settings.
+    std::optional<long long> FirstSampleMs(const ScriptedStart& script, const ntdlib::rip::TrackVolumes& track_volumes,
+                                           uint32_t limit, const ArchiveDescriptor* settings = nullptr) const;
 
 private:
     struct Impl;
